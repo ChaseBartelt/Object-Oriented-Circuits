@@ -2,10 +2,10 @@
 # 63 components, 9 ideal op amps, 3 phased signals, and a DC reference.
 # Select DC + AC, or leave Circuit Preview on Auto.
 
-V1 inA 0 0.45 V | 1.20 Vpk
-V2 inB 0 0.25 V | 0.60<65 Vpk
-V3 pilot 0 0 V | 0.20<-110 Vpk
-V4 ref 0 2.5 V | 0 Vpk
+V1(0.45 V | 1.20 Vpk) between(inA, 0);
+V2(0.25 V | 0.60<65 Vpk) between(inB, 0);
+V3(0 V | 0.20<-110 Vpk) between(pilot, 0);
+V4(2.5 V | 0 Vpk) between(ref, 0);
 f = 10k
 
 series inputFeed(a, b) {
@@ -106,9 +106,9 @@ main {
     op2(preB, bufB, bufB);
 
     # Mix both channels and inject the phase-shifted pilot.
-    RmixA bufA sum 15k;
-    RmixB bufB sum 22k;
-    Rpilot pilot sum 47k;
+    RmixA(15k) between(bufA, sum);
+    RmixB(22k) between(bufB, sum);
+    Rpilot(47k) between(pilot, sum);
     mixFeedback(sum, mixed);
     op3(ref, sum, mixed);
 
@@ -126,23 +126,23 @@ main {
     op6(high, highBuf, highBuf);
 
     # Recombine the bands with independent weights.
-    Rlow lowBuf toneSum 18k;
-    Rmid midBuf toneSum 8.2k;
-    Rhigh highBuf toneSum 27k;
+    Rlow(18k) between(lowBuf, toneSum);
+    Rmid(8.2k) between(midBuf, toneSum);
+    Rhigh(27k) between(highBuf, toneSum);
     toneFeedback(toneSum, master);
     op7(ref, toneSum, master);
 
     # Drive the load from both ends with opposite-phase signals.
     op8(master, driveP, driveP);
-    Rinv master bridgeSum 10k;
-    Rfb driveN bridgeSum 10k;
+    Rinv(10k) between(master, bridgeSum);
+    Rfb(10k) between(driveN, bridgeSum);
     op9(ref, bridgeSum, driveN);
 
     outputFeed(driveP, outP);
     outputFeed(driveN, outN);
     speaker(outP, outN);
-    RbleedP outP ref 100k;
-    RbleedN outN ref 100k;
+    RbleedP(100k) between(outP, ref);
+    RbleedN(100k) between(outN, ref);
 
     # Expect about -0.888 V DC and 0.372 V RMS at -23.1 degrees across the load.
     measure = V mixed ref;

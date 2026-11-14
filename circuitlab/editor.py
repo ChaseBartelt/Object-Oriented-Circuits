@@ -2,7 +2,7 @@
 
 import re
 
-from PySide6.QtCore import QEvent, QRect, QSize, QStringListModel, Qt
+from PySide6.QtCore import QEvent, QRect, QSize, QStringListModel, Qt, Signal
 from PySide6.QtGui import (
     QColor,
     QFont,
@@ -13,11 +13,17 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import QCompleter, QPlainTextEdit, QTextEdit, QToolTip, QWidget
 
+from .device_reference import gate_inputs
+from .gates import GATE_HELP, gate_call_help
 from .numbers import NUMBER
-from .syntax import DEFAULT_TERMINALS, MAIN, MARKER, OP, SECTION, source_rows
+from .syntax import CALL, CONNECTOR, DEFAULT_TERMINALS, INCLUDE, MAIN, MARKER, OP, SECTION, TRANS_CALL, source_rows
 
 IDENTIFIER = re.compile(r"[A-Za-z][A-Za-z0-9_]*")
 INDENT = " " * 4
+BUILTIN_CALL = re.compile(
+    rf"\b(?:{OP.pattern}|{TRANS_CALL.pattern}|{'|'.join(GATE_HELP)})\b(?=\s*\()",
+    re.I,
+)
 
 
 def _methods(source):
@@ -71,15 +77,18 @@ class CircuitHighlighter(QSyntaxHighlighter):
     """Color source tokens without requiring the circuit to compile."""
 
     rules = (
+        (re.compile(r"^\s*(@override)\b", re.I), "#b5d49d"),
         (
             re.compile(
-                r"\b(?:series|parallel|circuit|between|battery|opamp|end|main|return|measure|wire|ground|model|port)\b",
+                r"\b(?:series|parallel|circuit|chip|gate|between|battery|opamp|transistor|"
+                r"end|main|return|measure|wire|ground|model|port|input|output|connector|include)\b",
                 re.I,
             ),
             "#92bfff",
         ),
-        (re.compile(r"\b(?:[RCLXVI]\d[\w]*|op\d+)\b"), "#e3b5f5"),
+        (re.compile(r"\b(?:[RCLXVIQ]\d[\w]*|op\d+)\b"), "#e3b5f5"),
         (re.compile(rf"(?<![\w.])[+-]?{NUMBER}(?:[A-Za-zµμΩ°]+)?"), "#ffd18b"),
+        (BUILTIN_CALL, "#e3b5f5"),
     )
 
     def highlightBlock(self, text):
@@ -127,12 +136,18 @@ class Gutter(QWidget):
 class CircuitEditor(QPlainTextEdit):
     """Edit circuit source with completion, indentation, and diagnostic marks."""
 
+    wire_hovered = Signal(object, object)
+    device_hovered = Signal(object, object, str)
+
     def __init__(self):
         super().__init__()
         self.setFont(QFont("Consolas", 11))
         self.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
         self.setTabStopDistance(self.fontMetrics().horizontalAdvance(INDENT))
         self.setAccessibleName("Circuit source code")
+        self.viewport().setMouseTracking(True)
+        self.hovered_wire = None
+        self.hovered_device = None
         self.gutter = Gutter(self)
         self.highlighter = CircuitHighlighter(self.document())
         self.completions = QStringListModel(self)
@@ -147,6 +162,7 @@ class CircuitEditor(QPlainTextEdit):
         )
         self.cursorPositionChanged.connect(self.completer.popup().hide)
         self.textChanged.connect(self.completer.popup().hide)
+        self.textChanged.connect(self.clear_hover)
         self.blockCountChanged.connect(self.resize_gutter)
         self.updateRequest.connect(self.update_gutter)
         self.resize_gutter()
@@ -179,6 +195,10 @@ class CircuitEditor(QPlainTextEdit):
         builtin = prefix if OP.fullmatch(prefix) else "op1"
         names = {key: method[1] for key, method in methods.items()}
         names[builtin.casefold()] = builtin
+        for gate in GATE_HELP:
+            names.setdefault(gate, gate)
+        transistor = prefix if TRANS_CALL.fullmatch(prefix) else "transQ1"
+        names.setdefault(transistor.casefold(), transistor)
         self.completions.setStringList([names[key] for key in sorted(names)])
         self.completer.setCompletionPrefix(prefix)
         if not self.completer.setCurrentRow(0):
@@ -337,6 +357,15 @@ class CircuitEditor(QPlainTextEdit):
     def hover_help(self, cursor):
         code = cursor.block().text().partition("#")[0]
         column = cursor.positionInBlock()
+        if CONNECTOR.fullmatch(code.strip()) and column <= code.lower().index("connector") + 9:
+            return "connector(pin, ...)\nShare these nets by name with files in the same build."
+        if INCLUDE.fullmatch(code.strip()):
+            return 'include("file.ckt")\nBuild this circuit with a file relative to its folder.'
+        if code.strip().casefold() == "@override":
+            return (
+                "Put @Override above a built-in gate definition. Calls with the same "
+                "number of pins use your gate in this file."
+            )
         for match in IDENTIFIER.finditer(code):
             if match.start() <= column <= match.end():
                 name = match[0]
@@ -355,19 +384,120 @@ class CircuitEditor(QPlainTextEdit):
                 if method:
                     kind, declared, pins = method
                     return f"{declared}({pins})\nCall this {kind} section with wires in the listed order."
+                if TRANS_CALL.fullmatch(name) and re.match(r"\s*\(", code[match.end():]):
+                    return (
+                        f"{name}(base, collector, emitter, npn or pnp, [model])\n"
+                        "1. Base controls conduction.\n"
+                        "2. Collector and 3. emitter carry the main current.\n"
+                        "4. Choose npn or pnp. A fifth argument can name a SPICE model."
+                    )
+                if name.casefold() in GATE_HELP and re.match(r"\s*\(", code[match.end():]):
+                    key = name.casefold()
+                    return (
+                        f"{gate_call_help(key)}\n"
+                        "Omit ground to use the enclosing gnd pin or 0. "
+                        "Group multiple inputs on a variable-input gate to omit ground.\n"
+                        f"Built-in behavior: {GATE_HELP[key]} This gate expands to transistor circuitry."
+                    )
                 break
         return ""
 
     def viewportEvent(self, event):
+        if event.type() == QEvent.Type.MouseMove:
+            cursor = self.cursorForPosition(event.position().toPoint())
+            if self.hovered_wire and self.wire_at(cursor) != self.hovered_wire:
+                self.set_hovered_wire(None)
+            if self.hovered_device and self.device_at(cursor) != self.hovered_device:
+                self.set_hovered_device(None)
+        elif event.type() == QEvent.Type.Leave:
+            self.clear_hover()
         if event.type() == QEvent.Type.ToolTip:
-            help_text = self.hover_help(self.cursorForPosition(event.pos()))
-            if help_text:
+            cursor = self.cursorForPosition(event.pos())
+            wire = self.wire_at(cursor)
+            if reference := self.device_at(cursor):
+                QToolTip.hideText()
+                self.set_hovered_wire(None)
+                self.set_hovered_device(reference, event.globalPos(), self.hover_help(cursor))
+            elif wire:
+                self.set_hovered_device(None)
+                QToolTip.hideText()
+                self.set_hovered_wire(wire, event.globalPos())
+            elif help_text := self.hover_help(cursor):
+                self.clear_hover()
                 QToolTip.showText(event.globalPos(), help_text, self.viewport())
             else:
+                self.clear_hover()
                 QToolTip.hideText()
                 event.ignore()
             return True
         return super().viewportEvent(event)
+
+    def clear_hover(self):
+        self.set_hovered_wire(None)
+        self.set_hovered_device(None)
+
+    def set_hovered_device(self, reference, position=None, help_text=""):
+        if reference != self.hovered_device:
+            self.hovered_device = reference
+            self.device_hovered.emit(reference, position, help_text)
+
+    def device_at(self, cursor):
+        code = cursor.block().text().partition("#")[0]
+        column = cursor.positionInBlock()
+        start = max(code.rfind(mark, 0, column) for mark in ";{}") + 1
+        statement = re.split(r"[;{}]", code[start:], maxsplit=1)[0]
+        column -= start + len(statement) - len(statement.lstrip())
+        declaration = SECTION.fullmatch(statement.strip() + " {") if (
+            start + len(statement) < len(code) and code[start + len(statement)] == "{"
+        ) else None
+        call = CALL.fullmatch(statement.strip())
+        match = declaration or call
+        if not match:
+            return None
+        if declaration:
+            kind, name, raw = match.groups()
+            if kind.lower() not in {"gate", "chip"} or not 0 <= column <= match.end(2):
+                return None
+            return kind, name, tuple(pin.strip() for pin in (raw or "").split(",") if pin.strip())
+        name, raw = match.groups()
+        if not 0 <= column < len(name):
+            return None
+        method = _methods(self.toPlainText()).get(name.casefold())
+        if method and method[0] in {"chip", "gate"}:
+            kind, name, pins = method
+            return kind, name, tuple(pin.strip() for pin in pins.split(",") if pin.strip())
+        if name.casefold() in GATE_HELP and not method:
+            return "builtin", name.upper(), gate_inputs(name.casefold(), raw)
+        return None
+
+    def set_hovered_wire(self, wire, position=None):
+        if wire != self.hovered_wire:
+            self.hovered_wire = wire
+            self.wire_hovered.emit(wire, position)
+
+    @staticmethod
+    def wire_at(cursor):
+        code = cursor.block().text().split("#", 1)[0]
+        column = cursor.positionInBlock()
+        start = max(code.rfind(mark, 0, column) for mark in ";{}") + 1
+        code, column = re.split(r"[;{}]", code[start:], maxsplit=1)[0], column - start
+        match = re.fullmatch(
+            r"\s*([A-Za-z][\w]*)\s*(?:\([^()]*\)\s+between\s*)?"
+            r"\(((?:[^()]|\([^()]*\))*)\)\s*", code, re.I
+        )
+        if match:
+            for index, token in enumerate(re.finditer(r"[^,()]+", match[2])):
+                first = match.start(2) + token.start() + len(token[0]) - len(token[0].lstrip())
+                last = match.start(2) + token.start() + len(token[0].rstrip())
+                if first <= column < last:
+                    return cursor.blockNumber() + 1, match[1], index, token[0].strip()
+        else:
+            match = re.match(r"\s*([RCLVI][\w]*)\s+(\S+)\s+(\S+)\s+\S", code, re.I)
+            if match:
+                for index in (0, 1):
+                    if match.start(index + 2) <= column < match.end(index + 2):
+                        return cursor.blockNumber() + 1, match[1], index, match[index + 2]
+        return None
 
     def resize_gutter(self):
         width = (
@@ -409,6 +539,8 @@ class CircuitEditor(QPlainTextEdit):
     def annotate(self, issues):
         selections = []
         for issue in issues:
+            if issue.line is None:
+                continue
             selection = QTextEdit.ExtraSelection()
             selection.cursor = self.line_cursor(issue.line)
             selection.format.setUnderlineStyle(

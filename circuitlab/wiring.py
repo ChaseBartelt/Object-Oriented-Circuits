@@ -63,11 +63,15 @@ def labeled(circuit, labels):
     names = connector_names(nets)
 
     label_width = max(len(line) for lines in labels.values() for line in lines)
-    pitch = max(11, 6.1 + max(map(len, names.values())) * 0.7, label_width * 0.55 + 1)
+    pitch = max(11, 6.1 + max(map(len, names.values()), default=0) * 0.7, label_width * 0.55 + 1)
+    row_pitch = max(5.6, max((abs(p[3]) for p in pins), default=0) * 2 + 3)
+    if any(part.kind == "H" for part in parts):
+        pitch += 2.5
+        row_pitch += 0.7
     for i, part in enumerate(parts):
         row, col = cells[i]
         symbol = grid_symbol(
-            part, col * pitch, -row * 5.6, circuit.grounds, reverse=i in reversed_parts
+            part, col * pitch, -row * row_pitch, circuit.grounds, reverse=i in reversed_parts
         )
         layout.positions[part.name] = symbol[1]
         layout.symbols.append(symbol)
@@ -107,14 +111,15 @@ def labeled(circuit, labels):
                 continue
             left = pin[2] and not parts[pin[0]].is_source
             b = (a[0] + (-0.72 if left else 0.72), a[1])
-            if net in circuit.grounds and pin[3] > 0:
+            if net in circuit.grounds and left and pin[3] > 0:
                 # Keep the ground symbol outside the other input's approach.
                 b = (b[0] - 0.95, b[1])
             add_wire(layout, net, a, b)
             if net in circuit.grounds:
                 ground_at(layout, b, net)
             else:
-                layout.connectors.append((net, b, names[net], left, pin[3] < 0))
+                below = pin[3] < 0 and parts[pin[0]].kind != "H"
+                layout.connectors.append((net, b, names[net], left, below))
     return layout
 
 

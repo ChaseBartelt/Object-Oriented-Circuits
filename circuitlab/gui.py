@@ -3,16 +3,19 @@
 import argparse
 import re
 import sys
+from dataclasses import dataclass, replace
 from pathlib import Path
 
-from PySide6.QtCore import QIODevice, QSaveFile, Qt
+from PySide6.QtCore import QDir, QIODevice, QPoint, QSaveFile, QSignalBlocker, Qt
 from PySide6.QtGui import QColor, QKeySequence, QTextCursor
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
     QComboBox,
     QDialog,
+    QDockWidget,
     QFileDialog,
+    QFileSystemModel,
     QHBoxLayout,
     QHeaderView,
     QInputDialog,
@@ -24,24 +27,34 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QSplitter,
+    QStyle,
     QTableWidget,
     QTableWidgetItem,
     QTabWidget,
+    QToolButton,
+    QTreeView,
     QVBoxLayout,
     QWidget,
 )
 
 from .analysis import Diagnostic, analyze, diagnostics
 from .compiler import analysis_mode, compile_circuit
+from .device_reference import DeviceReference
 from .editor import CircuitEditor
-from .graph import CircuitError
-from .ltspice import export_schematic
+from .graph import Circuit, CircuitError, MethodInstance
+from .ltspice import export_hierarchy, export_schematic
 from .numbers import format_value
 from .pins import circuit_text, pin_comment, pin_entries, read_pins
+from .placement import placement_path, read_placement, write_placement
 from .quantities import QUANTITIES
-from .report import pin_rows, result_rows
+from .report import component_labels, pin_rows, result_rows
+from .routing import fast_layout
 from .schematic import SchematicView
+from .scope import Oscilloscope
 from .spice import export_spice
+from .syntax import INCLUDE, has_chip, source_rows
+from .trace import wire_trace
+from .verilog import compile_chips, export_verilog
 
 MODES = {
     "auto": "Auto",
@@ -51,11 +64,11 @@ MODES = {
     "transient": "Transient",
 }
 MIXED_TEMPLATES = {
-    "V": ("Voltage source (DC | AC)", "in 0 0 V | 0 Vpk"),
-    "I": ("Current source (DC | AC)", "0 out 0 A | 0 Apk"),
-    "R": ("Resistor", "in out 1k"),
-    "C": ("Capacitor", "out 0 1u"),
-    "L": ("Inductor", "out 0 1m"),
+    "V": ("Voltage source (DC | AC)", "(0 V | 0 Vpk) between(in, 0);"),
+    "I": ("Current source (DC | AC)", "(0 A | 0 Apk) between(0, out);"),
+    "R": ("Resistor", "(1k) between(in, out);"),
+    "C": ("Capacitor", "(1u) between(out, 0);"),
+    "L": ("Inductor", "(1m) between(out, 0);"),
     "port": ("Equivalent at two nodes", "port = out 0"),
 }
 STYLESHEET = """
@@ -126,6 +139,17 @@ class Results(QWidget):
                 self.table.setItem(i, j, item)
 
 
+@dataclass
+class CircuitTab:
+    editor: CircuitEditor
+    path: Path | None = None
+    disk_bytes: bytes | None = None
+    placements: dict | None = None
+    placement_dirty: bool = False
+    wiring: str = "auto"
+    mode: int = 0
+
+
 class MainWindow(QMainWindow):
     """Coordinate the source document, analysis results, and schematic view."""
 
@@ -135,7 +159,9 @@ class MainWindow(QMainWindow):
         self.disk_bytes = None
         self.solution = None
         self.pins = {}
+        self.placement_dirty = False
         self.circuit_text = ""
+        self.documents = {}
         self.resize(1280, 780)
         self.setStyleSheet(STYLESHEET)
         central = QWidget()
@@ -154,6 +180,8 @@ class MainWindow(QMainWindow):
         self.views.addTab(self._create_schematic_page(), "Schematic")
 
         self.results = Results()
+        self.scope = Oscilloscope()
+        self.results.layout().insertWidget(0, self.scope)
         self.views.addTab(self.results, "Results")
         self.status = QLabel("Open a circuit or enter known quantities.")
         self.status.setTextFormat(Qt.TextFormat.PlainText)
@@ -169,10 +197,31 @@ class MainWindow(QMainWindow):
         self.analysis_results = Results()
         QVBoxLayout(self.analysis_window).addWidget(self.analysis_results)
 
+        self.trace_popup = QWidget(self, Qt.WindowType.ToolTip)
+        self.trace_popup.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+        self.trace_popup.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.trace_view = SchematicView()
+        self.trace_view.setInteractive(False)
+        self.trace_view.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        popup_layout = QVBoxLayout(self.trace_popup)
+        popup_layout.setContentsMargins(2, 2, 2, 2)
+        popup_layout.addWidget(self.trace_view)
+        self.trace_popup.setFixedSize(300, 300)
+        self.device_popup = QWidget(self, Qt.WindowType.ToolTip)
+        self.device_popup.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+        self.device_popup.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self.device_reference = DeviceReference()
+        self.device_help = QLabel()
+        self.device_help.setTextFormat(Qt.TextFormat.PlainText)
+        self.device_help.setWordWrap(True)
+        self.device_help.setMaximumWidth(340)
+        device_layout = QVBoxLayout(self.device_popup)
+        device_layout.setContentsMargins(4, 4, 4, 4)
+        device_layout.addWidget(self.device_reference)
+        device_layout.addWidget(self.device_help)
+        self.create_explorer()
         self._create_menus()
         self.mode.currentIndexChanged.connect(self.mode_changed)
-        self.editor.textChanged.connect(self.source_changed)
-        self.editor.document().modificationChanged.connect(self.setWindowModified)
         self.update_title()
         self.refresh_picker()
         self.show_issues([])
@@ -189,24 +238,187 @@ class MainWindow(QMainWindow):
         toolbar.addWidget(self.picker, 1)
         button("Compile / Solve", self.compile_source, toolbar).setObjectName("compile")
         button("Render schematic", self.render_source, toolbar)
+        self.preview_button = button("Hide preview", self.toggle_preview, toolbar)
+        self.preview_button.setToolTip("Hide or show the schematic and results panel.")
         button("Analysis window", self.show_analysis, toolbar)
         button("Export to SPICE", self.export_netlist, toolbar).setToolTip(
             "Save the current circuit as an LTspice netlist (.cir)."
         )
         return toolbar
 
+    def toggle_preview(self):
+        hidden = self.views.isHidden()
+        self.views.setVisible(hidden)
+        self.preview_button.setText("Hide preview" if hidden else "Show preview")
+        if not hidden:
+            self.editor.setFocus()
+
     def _create_editor_panel(self):
         """Pair the source editor with its line-linked diagnostics."""
         source_panel = QWidget()
         source_layout = QVBoxLayout(source_panel)
         source_layout.setContentsMargins(0, 0, 0, 0)
-        self.editor = CircuitEditor()
-        source_layout.addWidget(self.editor, 1)
+        self.editor_tabs = QTabWidget()
+        self.editor_tabs.setTabsClosable(True)
+        self.editor_tabs.setMovable(True)
+        self.editor_tabs.currentChanged.connect(self.switch_tab)
+        self.editor_tabs.tabCloseRequested.connect(self.close_tab)
+        source_layout.addWidget(self.editor_tabs, 1)
+        self.editor = self.add_tab()
         self.issues = QListWidget()
         self.issues.setMaximumHeight(95)
         self.issues.itemClicked.connect(self.select_diagnostic)
         source_layout.addWidget(self.issues)
         return source_panel
+
+    def create_explorer(self):
+        self.explorer = QDockWidget("Files", self)
+        panel = QWidget()
+        panel_layout = QVBoxLayout(panel)
+        panel_layout.setContentsMargins(4, 4, 4, 4)
+        controls = QHBoxLayout()
+        self.folder_back = self.folder_button(
+            controls, "Back", QStyle.StandardPixmap.SP_ArrowBack, lambda: self.navigate_folder(-1)
+        )
+        self.folder_forward = self.folder_button(
+            controls, "Forward", QStyle.StandardPixmap.SP_ArrowForward, lambda: self.navigate_folder(1)
+        )
+        self.folder_up = self.folder_button(
+            controls, "Up", QStyle.StandardPixmap.SP_ArrowUp, self.parent_folder
+        )
+        controls.addStretch()
+        panel_layout.addLayout(controls)
+        self.file_tree = QTreeView()
+        self.file_model = QFileSystemModel(self.file_tree)
+        self.file_model.setReadOnly(True)
+        self.file_model.setFilter(QDir.Filter.AllDirs | QDir.Filter.Files | QDir.Filter.NoDotAndDotDot)
+        self.file_model.setNameFilters(["*.ckt", "*.txt"])
+        self.file_model.setNameFilterDisables(False)
+        self.file_tree.setModel(self.file_model)
+        self.file_tree.setHeaderHidden(True)
+        for column in (1, 2, 3):
+            self.file_tree.hideColumn(column)
+        self.file_tree.doubleClicked.connect(self.open_tree_file)
+        panel_layout.addWidget(self.file_tree)
+        self.explorer.setWidget(panel)
+        self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self.explorer)
+        self.folder = None
+        self.folder_history = []
+        self.folder_index = -1
+        self.set_folder(Path.cwd())
+        self.explorer.hide()
+
+    def folder_button(self, layout, name, icon, action):
+        button = QToolButton()
+        button.setIcon(self.style().standardIcon(icon))
+        button.setToolTip(name)
+        button.setAccessibleName(name)
+        button.clicked.connect(action)
+        layout.addWidget(button)
+        return button
+
+    def set_folder(self, folder):
+        folder = folder.resolve()
+        if self.folder_index >= 0 and folder == self.folder_history[self.folder_index]:
+            return
+        self.folder_history[self.folder_index + 1:] = [folder]
+        self.folder_index += 1
+        self.show_folder()
+
+    def show_folder(self):
+        folder = self.folder_history[self.folder_index]
+        self.file_tree.setRootIndex(self.file_model.setRootPath(str(folder)))
+        self.file_tree.setToolTip(str(folder))
+        self.folder_back.setEnabled(self.folder_index > 0)
+        self.folder_forward.setEnabled(self.folder_index + 1 < len(self.folder_history))
+        self.folder_up.setEnabled(folder != folder.parent)
+
+    def navigate_folder(self, direction):
+        for index in range(self.folder_index + direction,
+                           len(self.folder_history) if direction > 0 else -1, direction):
+            if self.folder_history[index].is_dir():
+                self.folder_index = index
+                self.folder = self.folder_history[index]
+                self.show_folder()
+                return
+
+    def parent_folder(self):
+        self.folder = self.folder_history[self.folder_index].parent
+        self.set_folder(self.folder)
+
+    def pick_folder(self):
+        name = QFileDialog.getExistingDirectory(self, "Open circuit folder", self.file_model.rootPath())
+        if name:
+            self.folder = Path(name)
+            self.set_folder(self.folder)
+            self.explorer.show()
+
+    def open_tree_file(self, index):
+        if not index.isValid():
+            return
+        path = Path(self.file_model.filePath(index))
+        if self.file_model.isDir(index):
+            self.folder = path
+            self.set_folder(path)
+        else:
+            self.open_path(path)
+
+    def add_tab(self, path=None, data=None, source=""):
+        editor = CircuitEditor()
+        editor.setPlainText(source)
+        state = CircuitTab(editor, path, data)
+        if path is not None:
+            state.wiring, state.placements = read_placement(path)
+        self.documents[editor] = state
+        editor.textChanged.connect(lambda: self.source_changed() if editor is self.editor else None)
+        editor.document().modificationChanged.connect(lambda: self.update_tab_title(editor))
+        editor.wire_hovered.connect(self.trace_editor_wire)
+        editor.device_hovered.connect(self.show_device_reference)
+        with QSignalBlocker(self.editor_tabs):
+            self.editor_tabs.addTab(editor, path.name if path else "Untitled.ckt")
+        return editor
+
+    def store_tab(self):
+        state = self.documents[self.editor]
+        state.path, state.disk_bytes = self.path, self.disk_bytes
+        state.placement_dirty = self.placement_dirty
+        state.placements = self.schematic.placements()
+        state.wiring = self.schematic.layout_mode
+        state.mode = self.mode.currentIndex()
+
+    def switch_tab(self, index):
+        editor = self.editor_tabs.widget(index)
+        if editor is None or editor is self.editor:
+            return
+        self.trace_popup.hide()
+        self.device_popup.hide()
+        self.store_tab()
+        self.editor = editor
+        state = self.documents[editor]
+        self.path, self.disk_bytes = state.path, state.disk_bytes
+        source = editor.toPlainText()
+        self.pins, self.circuit_text = read_pins(source), circuit_text(source)
+        self.load_placement(state.wiring, dict(state.placements or {}))
+        self.placement_dirty = state.placement_dirty
+        with QSignalBlocker(self.mode):
+            self.mode.setCurrentIndex(state.mode)
+        self.update_title()
+        self.update_modified()
+        self.refresh_picker()
+        self.compile_source()
+
+    def close_tab(self, index):
+        active = self.editor_tabs.currentIndex()
+        self.editor_tabs.setCurrentIndex(index)
+        if not self.confirm_edits():
+            self.editor_tabs.setCurrentIndex(active)
+            return
+        editor = self.editor
+        if self.editor_tabs.count() == 1:
+            self.add_tab()
+        self.editor_tabs.removeTab(index)
+        del self.documents[editor]
+        editor.deleteLater()
 
     def _create_schematic_page(self):
         """Build the diagram view, wire display controls, and pin tools."""
@@ -216,10 +428,14 @@ class MainWindow(QMainWindow):
         controls = QHBoxLayout()
         controls.setContentsMargins(4, 4, 4, 0)
         self.schematic = SchematicView()
+        self.schematic.placement_changed.connect(self.placement_changed)
         self.schematic.probed.connect(self.probe)
         self.schematic.pin_requested.connect(self.name_pin)
         self.schematic.pin_renamed.connect(self.name_pin)
         self.schematic.pin_removed.connect(lambda net: self.write_pin(net, None))
+        self.schematic.move_refused.connect(
+            lambda: self.status.setText("Try an open spot where the existing nets can stay connected.")
+        )
         self.wire_style = QComboBox()
         for label, mode, tip in (
             ("Auto layout", "auto", "Use matching net labels when wires get crowded."),
@@ -231,7 +447,7 @@ class MainWindow(QMainWindow):
             (
                 "All wires",
                 "routed",
-                "Draw each non-ground connection as a continuous wire.",
+                "Start with continuous wires.",
             ),
         ):
             self.wire_style.addItem(label, mode)
@@ -239,11 +455,12 @@ class MainWindow(QMainWindow):
                 self.wire_style.count() - 1, tip, Qt.ItemDataRole.ToolTipRole
             )
         self.wire_style.setAccessibleName("Schematic wiring style")
-        self.wire_style.setToolTip(
-            "Choose how connections are drawn. Ground symbols all connect to node 0."
-        )
+        self.wire_style.setToolTip("Choose the starting layout for connections.")
         self.wire_style.currentIndexChanged.connect(self.change_wiring)
         controls.addWidget(self.wire_style)
+        button("Reset placement", self.schematic.reset_placement, controls).setToolTip(
+            "Restore the automatic layout. Press Ctrl+Z in the schematic to undo a move."
+        )
         self.pin_button = button("Add pin", self.toggle_pin_tool, controls)
         self.pin_button.setCheckable(True)
         self.pin_button.setToolTip(
@@ -264,14 +481,19 @@ class MainWindow(QMainWindow):
         files = self.menuBar().addMenu("&File")
         files.addAction("&New", self.new_file, QKeySequence.StandardKey.New)
         files.addAction("&Open…", self.pick_file, QKeySequence.StandardKey.Open)
+        files.addAction("Open &Folder…", self.pick_folder)
+        files.addAction("Close &Tab", lambda: self.close_tab(self.editor_tabs.currentIndex()),
+                        QKeySequence.StandardKey.Close)
         files.addAction("&Save", self.save, QKeySequence.StandardKey.Save)
         files.addAction("Save &As…", self.save_as, QKeySequence.StandardKey.SaveAs)
         files.addAction("&Reload from disk", self.reload_file)
         files.addSeparator()
         files.addAction("Export to &SPICE...", self.export_netlist)
         files.addAction("Export LTspice &Schematic...", self.export_ltspice)
+        files.addAction("Export &Verilog…", self.export_verilog)
         files.addSeparator()
         files.addAction("&Quit", self.close, QKeySequence.StandardKey.Quit)
+        self.menuBar().addMenu("&View").addAction(self.explorer.toggleViewAction())
         compile_action = (
             self.menuBar()
             .addMenu("&Circuit")
@@ -284,6 +506,22 @@ class MainWindow(QMainWindow):
     def effective_mode(self):
         mode = self.mode.currentData()
         return analysis_mode(self.editor.toPlainText()) if mode == "auto" else mode
+
+    def read_linked_source(self, path):
+        for editor, state in self.documents.items():
+            if (self.path if editor is self.editor else state.path) == path:
+                return editor.toPlainText()
+        return path.read_text(encoding="utf-8-sig")
+
+    def build_circuit(self, source, mode, *, render_only=False):
+        return compile_circuit(
+            source, mode, render_only=render_only,
+            path=self.path, read_source=self.read_linked_source,
+        )
+
+    @staticmethod
+    def includes_files(source):
+        return any(INCLUDE.fullmatch(text) for text, _, _ in source_rows(source))
 
     def refresh_picker(self):
         self.picker.clear()
@@ -310,12 +548,12 @@ class MainWindow(QMainWindow):
         if mixed:
             entry = MIXED_TEMPLATES[key][1]
             if key != "port":
-                names = set(re.findall(r"^[ \t]*([A-Za-z]\w*)[ \t]", source, re.M))
+                names = re.findall(r"(?:^|[;{}])[ \t]*([A-Za-z]\w*)[ \t(]", source, re.M)
                 names = {name.casefold() for name in names}
                 count = 1
                 while f"{key}{count}".casefold() in names:
                     count += 1
-                entry = f"{key}{count} {entry}"
+                entry = f"{key}{count}{entry}"
         cursor = self.editor.textCursor()
         cursor.movePosition(cursor.MoveOperation.End)
         cursor.insertText(
@@ -326,24 +564,28 @@ class MainWindow(QMainWindow):
         self.editor.setFocus()
 
     def show_issues(self, issues):
-        self.editor.annotate(issues)
+        self.editor.annotate([issue for issue in issues if issue.path in (None, self.path)])
         self.issues.clear()
         if not issues:
             item = QListWidgetItem("No compiler diagnostics.")
             item.setFlags(Qt.ItemFlag.ItemIsEnabled)
             self.issues.addItem(item)
         for issue in issues:
-            item = QListWidgetItem(
-                f"Line {issue.line} · {issue.severity} · {issue.message}"
-            )
+            location = f"{issue.path.name} · " if issue.path and issue.path != self.path else ""
+            label = f"Line {issue.line}" if issue.line is not None else "Simulation"
+            item = QListWidgetItem(f"{location}{label} · {issue.severity} · {issue.message}")
             item.setForeground(
                 QColor("#f87171" if issue.severity == "error" else "#ffd18b")
             )
             item.setData(Qt.ItemDataRole.UserRole, issue.line)
+            item.setData(Qt.ItemDataRole.UserRole + 1, str(issue.path) if issue.path else None)
             item.setToolTip(issue.message)
             self.issues.addItem(item)
 
     def select_diagnostic(self, item):
+        path = item.data(Qt.ItemDataRole.UserRole + 1)
+        if path and not self.open_path(path):
+            return
         if line := item.data(Qt.ItemDataRole.UserRole):
             self.editor.go_to_line(line)
 
@@ -355,6 +597,8 @@ class MainWindow(QMainWindow):
         self.analysis_results.update_rows(rows)
 
     def source_changed(self):
+        self.trace_popup.hide()
+        self.device_popup.hide()
         source = self.editor.toPlainText()
         previous_pins, self.pins = self.pins, read_pins(source)
         code = circuit_text(source)
@@ -364,14 +608,19 @@ class MainWindow(QMainWindow):
             self.set_solution(self.solution)
             return
         self.circuit_text = code
+        self.scope.set_circuit(None)
         if self.effective_mode() != self.picker_mode:
             self.refresh_picker()
         self.set_solution(None)
-        self.schematic.clear()
+        self.schematic.clear(preserve_placement=True)
         self.pin_button.setChecked(False)
         self.schematic.set_pin_tool(False)
         self.show_issues([])
-        self.status.setText("Compile to refresh the schematic and results.")
+        self.status.setText(
+            "Compile to refresh the schematic."
+            if has_chip(source)
+            else "Compile to refresh the schematic and results."
+        )
 
     def mode_changed(self):
         self.refresh_picker()
@@ -379,15 +628,25 @@ class MainWindow(QMainWindow):
 
     def compile_source(self):
         source = self.editor.toPlainText()
-        mode = self.effective_mode()
+        self.scope.set_circuit(None)
         self.set_solution(None)
-        self.schematic.clear()
+        self.schematic.clear(preserve_placement=True)
         issues = []
         if not any(row.partition("#")[0].strip() for row in source.splitlines()):
             self.status.setText("Open a circuit or enter known quantities.")
-        else:
+        elif has_chip(source) and not self.includes_files(source):
             try:
-                result = analyze(compile_circuit(source, mode))
+                self._draw_source(source, "dc")
+            except CircuitError as error:
+                issues = [self.issue(error)]
+                self.status.setText(issues[0].message)
+            else:
+                self.views.setCurrentIndex(0)
+                self.status.setText("Schematic rendered.")
+        else:
+            mode = self.mode.currentData()
+            try:
+                result = analyze(self.build_circuit(source, mode))
                 self.set_solution(result)
                 issues = diagnostics(source, result)
             except CircuitError as error:
@@ -409,14 +668,32 @@ class MainWindow(QMainWindow):
 
     def _draw_source(self, source, mode):
         """Render a compiled graph even when electrical analysis cannot solve it."""
-        circuit = compile_circuit(source, mode, render_only=True)
+        if has_chip(source) and not self.includes_files(source):
+            chips = compile_chips(source)
+            circuit = Circuit(
+                "dc",
+                instances=[
+                    MethodInstance(
+                        "chip", name, None,
+                        tuple(
+                            (pin, pin if len(chips) == 1 else f"@{name}.{pin}")
+                            for pin, _ in pins
+                        ),
+                        body,
+                    )
+                    for name, pins, body, _ in chips
+                ],
+            )
+        else:
+            circuit = self.build_circuit(source, mode, render_only=True)
         self.schematic.draw(circuit, self.pins)
+        self.scope.set_circuit(circuit)
 
     def render_source(self):
         try:
             self._draw_source(self.editor.toPlainText(), self.mode.currentData())
         except CircuitError as error:
-            self.schematic.clear()
+            self.schematic.clear(preserve_placement=True)
             issue = self.issue(error)
             self.show_issues([issue])
             self.status.setText(issue.message)
@@ -428,9 +705,56 @@ class MainWindow(QMainWindow):
         self.schematic.layout_mode = self.wire_style.currentData()
         if self.schematic.circuit:
             selected = self.schematic.highlight
-            self.schematic.draw(self.schematic.circuit, self.pins)
+            self.schematic.redraw(self.pins)
             if selected:
                 self.schematic.highlight_net(selected)
+        if self.schematic.placements():
+            self.placement_changed()
+
+    def trace_editor_wire(self, location, position):
+        circuit = self.schematic.circuit
+        if circuit is None or location is None or position is None:
+            self.trace_popup.hide()
+            return
+        names, nets = wire_trace(circuit, location, self.path)
+        if not names:
+            self.trace_popup.hide()
+            return
+        circuit = replace(
+            circuit, components=[part for part in circuit.components if part.name in names],
+            groups=[], instances=[], owners={},
+            wire_taps=[tap for tap in circuit.wire_taps if tap.component in names],
+        )
+        self.trace_view.clear()
+        self.trace_view.circuit = circuit
+        self.trace_view.trace_nets = nets
+        self.trace_view.level_layouts[None, "auto"] = fast_layout(circuit, component_labels(circuit))
+        self.trace_view.redraw({})
+        self.show_hover_popup(self.trace_popup, position)
+        self.trace_view.fit()
+
+    def show_device_reference(self, reference, position, help_text):
+        if reference is None or position is None:
+            self.device_popup.hide()
+            return
+        self.device_reference.reference = reference
+        kind, _, pins = reference
+        self.device_reference.setFixedHeight(160 if kind == "builtin" else min(640, 65 + 19 * ((len(pins) + 1) // 2)))
+        self.device_reference.update()
+        self.device_help.setText(help_text)
+        self.device_help.setVisible(bool(help_text))
+        self.device_popup.adjustSize()
+        self.show_hover_popup(self.device_popup, position)
+
+    def show_hover_popup(self, popup, position):
+        screen = QApplication.screenAt(position) or self.screen()
+        bounds = screen.availableGeometry()
+        x = position.x() + 16
+        if x + popup.width() > bounds.right():
+            x = position.x() - popup.width() - 16
+        y = max(bounds.top(), position.y() - popup.height() - 12)
+        popup.move(QPoint(max(bounds.left(), x), y))
+        popup.show()
 
     def toggle_pin_tool(self, active):
         if active and not self.schematic.circuit:
@@ -504,8 +828,12 @@ class MainWindow(QMainWindow):
 
     @staticmethod
     def issue(error):
-        message = re.sub(r"^Line \d+\.\s*", "", str(error))
-        return Diagnostic("error", error.line or 1, message)
+        if error.code == "NonlinearConvergence":
+            return Diagnostic(
+                "error", None, error.message + " Try a transient in Results or export to SPICE.",
+                error.path,
+            )
+        return Diagnostic("error", error.line or 1, error.message, error.path)
 
     def show_analysis(self):
         self.analysis_window.show()
@@ -548,39 +876,83 @@ class MainWindow(QMainWindow):
         name = self.path.name if self.path else "Untitled.ckt"
         self.setWindowTitle(f"{name}[*] — Electric Circuits")
 
+    def update_modified(self):
+        self.update_tab_title(self.editor)
+
+    def update_tab_title(self, editor):
+        if editor not in self.documents:
+            return
+        state = self.documents[editor]
+        path, layout_dirty = (self.path, self.placement_dirty) if editor is self.editor else (
+            state.path, state.placement_dirty,
+        )
+        dirty = editor.document().isModified() or layout_dirty
+        index = self.editor_tabs.indexOf(editor)
+        self.editor_tabs.setTabText(index, (path.name if path else "Untitled.ckt") + (" *" if dirty else ""))
+        self.editor_tabs.setTabToolTip(index, str(path) if path else "Unsaved circuit")
+        if editor is self.editor:
+            self.setWindowModified(dirty)
+
+    def placement_changed(self):
+        self.placement_dirty = True
+        self.update_modified()
+
+    def load_placement(self, mode, records):
+        self.schematic.clear()
+        index = self.wire_style.findData(mode if isinstance(mode, str) else "auto")
+        self.wire_style.setCurrentIndex(max(0, index))
+        self.schematic.layout_mode = self.wire_style.currentData()
+        self.schematic.placement_records = records
+        self.placement_dirty = False
+        self.update_modified()
+
     def new_file(self):
-        if self.confirm_edits():
-            self.path, self.disk_bytes = None, None
-            self.editor.setPlainText("")
-            self.update_title()
-            self.compile_source()
+        if self.path or self.editor.toPlainText() or self.editor.document().isModified() or self.placement_dirty:
+            self.editor_tabs.setCurrentWidget(self.add_tab())
+        self.editor.setFocus()
 
     def pick_file(self):
-        if self.confirm_edits():
-            name, _ = QFileDialog.getOpenFileName(
-                self, "Open circuit", "", "Circuit files (*.ckt *.txt);;All files (*)"
-            )
-            if name:
-                self.open_path(name)
+        name, _ = QFileDialog.getOpenFileName(
+            self, "Open circuit", self.file_model.rootPath(), "Circuit files (*.ckt *.txt);;All files (*)"
+        )
+        if name:
+            self.open_path(name)
 
-    def open_path(self, path):
-        path = Path(path).absolute()
+    def open_path(self, path, *, reload=False):
+        path = Path(path).resolve()
+        if not reload:
+            for state in self.documents.values():
+                existing = self.path if state.editor is self.editor else state.path
+                if existing == path:
+                    self.editor_tabs.setCurrentWidget(state.editor)
+                    return True
         try:
             data = path.read_bytes()
             source = data.decode("utf-8-sig")
         except (OSError, UnicodeError) as error:
             QMessageBox.warning(self, "Open circuit", str(error))
             return False
-        self.path, self.disk_bytes = path, data
-        self.editor.setPlainText(source)
-        self.editor.document().setModified(False)
-        self.update_title()
-        self.compile_source()
+        if reload or (
+            self.path is None and not self.editor.toPlainText()
+            and not self.editor.document().isModified() and not self.placement_dirty
+        ):
+            self.path, self.disk_bytes = path, data
+            self.editor.setPlainText(source)
+            self.load_placement(*read_placement(path))
+            self.editor.document().setModified(False)
+            self.update_title()
+            self.compile_source()
+        else:
+            self.editor_tabs.setCurrentWidget(self.add_tab(path, data, source))
+        self.update_modified()
+        if self.folder is None:
+            self.set_folder(path.parent)
+        self.editor.setFocus()
         return True
 
     def reload_file(self):
         if self.path and self.confirm_edits():
-            self.open_path(self.path)
+            self.open_path(self.path, reload=True)
 
     def save_as(self):
         name, _ = QFileDialog.getSaveFileName(
@@ -596,23 +968,49 @@ class MainWindow(QMainWindow):
 
     def export_netlist(self):
         return self._export_file(
-            lambda: export_spice(self.editor.toPlainText(), self.mode.currentData()),
+            lambda: export_spice(
+                self.editor.toPlainText(), self.mode.currentData(),
+                path=self.path, read_source=self.read_linked_source,
+            ),
             "Export to SPICE",
             ".cir",
             "SPICE netlists (*.cir)",
         )
 
+    def export_verilog(self):
+        return self._export_file(
+            lambda: export_verilog(self.editor.toPlainText()),
+            "Export Verilog",
+            ".v",
+            "Verilog source (*.v)",
+            next_step="Add it to your FPGA project.",
+        )
+
     def export_ltspice(self):
         used_labels = False
+        block_files = {}
 
         def schematic_text():
-            nonlocal used_labels
-            if self.schematic.layout is None:
-                self._draw_source(self.editor.toPlainText(), self.mode.currentData())
+            nonlocal used_labels, block_files
+            source = self.editor.toPlainText()
+            if has_chip(source):
+                raise CircuitError("Use File > Export Verilog for this chip.")
+            if self.schematic.layout is None or self.includes_files(source):
+                self._draw_source(source, self.mode.currentData())
                 self.views.setCurrentIndex(0)
-            text, used_labels = export_schematic(
-                self.schematic.circuit, self.schematic.layout
-            )
+            circuit = self.schematic.circuit
+            drawing = self.schematic.layout
+            if drawing is None:
+                raise CircuitError("Enter components before exporting an LTspice schematic.")
+            if drawing.uses_packages:
+                mode = self.schematic.layout_mode
+                details = {
+                    name: layout for (name, style), layout in self.schematic.manual_layouts.items()
+                    if name is not None and style == mode
+                }
+                text, block_files, used_labels = export_hierarchy(circuit, drawing, details)
+            else:
+                text, used_labels = export_schematic(circuit, drawing)
             return text
 
         exported = self._export_file(
@@ -620,14 +1018,28 @@ class MainWindow(QMainWindow):
             "Export LTspice Schematic",
             ".asc",
             "LTspice schematics (*.asc)",
+            companions=lambda: block_files,
         )
-        if exported and used_labels:
-            self.status.setText(
-                self.status.text() + " Matching net labels connect the crowded wires."
-            )
+        if exported:
+            notes = []
+            if block_files:
+                notes.append("Keep the exported block sheets and symbols beside the main schematic.")
+            if used_labels:
+                notes.append("Matching net labels connect the crowded wires.")
+            if notes:
+                self.status.setText(" ".join((self.status.text(), *notes)))
         return exported
 
-    def _export_file(self, generate, title, suffix, file_filter):
+    def _export_file(
+        self,
+        generate,
+        title,
+        suffix,
+        file_filter,
+        *,
+        next_step="Open it in LTspice and click Run.",
+        companions=None,
+    ):
         try:
             data = generate().encode("ascii")
         except CircuitError as error:
@@ -655,10 +1067,33 @@ class MainWindow(QMainWindow):
                 != QMessageBox.StandardButton.Yes
             ):
                 return False
+        if companions is not None and not self.write_export_companions(path, companions(), title):
+            return False
         if not write_bytes(self, path, data, title):
             return False
-        self.status.setText(f"Exported {path.name}. Open it in LTspice and click Run.")
+        self.status.setText(f"Exported {path.name}. {next_step}")
         return True
+
+    def write_export_companions(self, path, files, title):
+        pending = []
+        for name, text in files.items():
+            target = path.with_name(name)
+            data = text.encode("ascii")
+            try:
+                existing = target.read_bytes()
+            except FileNotFoundError:
+                pending.append((target, data))
+                continue
+            except OSError as error:
+                QMessageBox.warning(self, title, str(error))
+                return False
+            if existing != data:
+                QMessageBox.warning(self, title, f"An existing block file uses the name {name}. Choose another folder.")
+                return False
+        if any(target == path for target in (path.with_name(name) for name in files)):
+            QMessageBox.warning(self, title, "Choose a different name for the top-level schematic.")
+            return False
+        return all(write_bytes(self, target, data, title) for target, data in pending)
 
     def save(self):
         if not self.path:
@@ -680,7 +1115,10 @@ class MainWindow(QMainWindow):
         return self.write_path(self.path)
 
     def write_path(self, path):
-        path = Path(path).absolute()
+        path = Path(path).resolve()
+        if any(state.editor is not self.editor and state.path == path for state in self.documents.values()):
+            QMessageBox.warning(self, "Save circuit", "This file is already open in another tab.")
+            return False
         source = self.editor.toPlainText()
         old = self.disk_bytes or b""
         if not self.editor.document().isModified() and self.disk_bytes is not None:
@@ -698,27 +1136,43 @@ class MainWindow(QMainWindow):
         self.path, self.disk_bytes = path, data
         self.editor.document().setModified(False)
         self.update_title()
+        placements = self.schematic.placements()
+        sidecar = placement_path(path)
+        if placements or sidecar.exists():
+            layout_data = write_placement(self.schematic.layout_mode, placements)
+            if not write_bytes(self, sidecar, layout_data, "Save schematic layout"):
+                return False
+        self.placement_dirty = False
+        self.update_modified()
+        if self.folder is None:
+            self.set_folder(path.parent)
         self.status.setText(f"Saved {path.name}.")
         return True
 
     def confirm_edits(self):
-        if not self.editor.document().isModified():
+        if not self.editor.document().isModified() and not self.placement_dirty:
             return True
         options = QMessageBox.StandardButton
         choice = QMessageBox.question(
             self,
             "Save changes",
-            "Save your changes to the circuit?",
+            f"Save changes to {self.path.name if self.path else 'Untitled.ckt'}?",
             options.Save | options.Discard | options.Cancel,
             options.Save,
         )
         return choice == options.Discard or (choice == options.Save and self.save())
 
     def closeEvent(self, event):
-        if self.confirm_edits():
-            event.accept()
-        else:
-            event.ignore()
+        for editor, state in self.documents.items():
+            if editor.document().isModified() or (
+                self.placement_dirty if editor is self.editor else state.placement_dirty
+            ):
+                self.editor_tabs.setCurrentWidget(editor)
+                if not self.confirm_edits():
+                    event.ignore()
+                    return
+        self.scope.shutdown()
+        event.accept()
 
 
 def write_bytes(parent, path, data, title):

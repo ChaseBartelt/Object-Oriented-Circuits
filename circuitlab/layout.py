@@ -4,6 +4,64 @@ from collections import deque
 from dataclasses import dataclass, field
 from statistics import median
 
+BJT_PIN_OFFSET = 0.85
+PACKAGE_WIDTH = 6.8
+
+
+def wire_axis(edge):
+    """Return the coordinate parallel to the segment, or None for a diagonal."""
+    a, b = edge
+    if a[1] == b[1]:
+        return 0
+    if a[0] == b[0]:
+        return 1
+    return None
+
+
+def rotate_point(point, a, b, turns):
+    """Rotate clockwise around the center of a symbol, in quarter turns."""
+    if not turns:
+        return point
+    x, y = (a[0] + b[0]) / 2, (a[1] + b[1]) / 2
+    dx, dy = point[0] - x, point[1] - y
+    dx, dy = ((dx, dy), (dy, -dx), (-dx, -dy), (-dy, dx))[turns % 4]
+    return round(x + dx, 8), round(y + dy, 8)
+
+
+def package_pins(part):
+    """Put the first half down the left side and the rest up the right side."""
+    if part.base:
+        for (label, net), (left, offset) in zip(
+            part.package_pins, ((True, 0), (False, BJT_PIN_OFFSET), (False, -BJT_PIN_OFFSET))
+        ):
+            yield label, net, left, offset
+        return
+    left_count = (len(part.package_pins) + 1) // 2
+    middle = (left_count - 1) / 2
+    for index, (label, net) in enumerate(part.package_pins):
+        left = index < left_count
+        row = index if left else len(part.package_pins) - 1 - index
+        yield label, net, left, middle - row
+
+
+def symbol_pins(part, a, b, top):
+    """Yield each net and its coordinates for one placed symbol."""
+    if part.kind == "H":
+        for _, net, left, offset in package_pins(part):
+            yield net, ((a if left else b)[0], a[1] + offset)
+    elif part.kind == "O":
+        plus, minus = (0.35, -0.35) if top == "+" else (-0.35, 0.35)
+        yield part.in_plus, (a[0], a[1] + plus)
+        yield part.in_minus, (a[0], a[1] + minus)
+        yield part.p, b
+    elif part.kind == "Q":
+        yield part.p, (b[0], b[1] + BJT_PIN_OFFSET)
+        yield part.n, (b[0], b[1] - BJT_PIN_OFFSET)
+        yield part.base, a
+    else:
+        yield part.p, a
+        yield part.n, b
+
 
 @dataclass
 class Layout:
@@ -18,18 +76,21 @@ class Layout:
     ground_names: dict = field(default_factory=dict)
     connectors: list = field(default_factory=list)
     crossings: dict = field(default_factory=dict)
+    boundary: dict = field(default_factory=dict)
+    rotations: dict = field(default_factory=dict)
+    ground_rotations: dict = field(default_factory=dict)
+
+    @property
+    def uses_packages(self):
+        return any(part.kind == "H" for part, *_ in self.symbols)
 
     def pins(self):
         """Yield the physical pin coordinates and the net attached to each."""
-        for part, a, b, top in self.symbols:
-            if part.kind == "O":
-                plus, minus = (0.35, -0.35) if top == "+" else (-0.35, 0.35)
-                yield part.in_plus, (a[0], a[1] + plus)
-                yield part.in_minus, (a[0], a[1] + minus)
-                yield part.p, b
-            else:
-                yield part.p, a
-                yield part.n, b
+        for symbol in self.symbols:
+            part, a, b, _ = symbol
+            turns = self.rotations.get(part.name, 0)
+            for net, pin in symbol_pins(*symbol):
+                yield net, rotate_point(pin, a, b, turns)
 
     def visible_segments(self, net):
         """Cut visual gaps at crossings while retaining the original net ID."""
@@ -38,8 +99,19 @@ class Layout:
             if not cuts:
                 yield a, b
                 continue
-            x, start = a
-            end = b[1]
+            if wire_axis((a, b)) is None:
+                length = ((b[0] - a[0]) ** 2 + (b[1] - a[1]) ** 2) ** 0.5
+                start = 0
+                for cut in sorted(cuts):
+                    low, high = max(0, cut - 0.12 / length), min(1, cut + 0.12 / length)
+                    if low > start:
+                        yield along(a, b, start), along(a, b, low)
+                    start = max(start, high)
+                if start < 1:
+                    yield along(a, b, start), b
+                continue
+            x = a[0]
+            start, end = sorted((a[1], b[1]))
             for crossing in sorted(cuts):
                 low, high = crossing - 0.12, crossing + 0.12
                 if low > start:
@@ -49,25 +121,38 @@ class Layout:
                 yield (x, start), (x, end)
 
 
+def along(a, b, fraction):
+    return tuple(x + (y - x) * fraction for x, y in zip(a, b))
+
+
 def component_pins(parts, flipped=(), reversed_parts=()):
     """Describe each grid pin as (component index, net, left side, y offset)."""
-    count = len(parts)
     pins = [
         (i, e.p, e.kind != "O" and i not in reversed_parts, 0.0)
         for i, e in enumerate(parts)
+        if e.kind not in {"Q", "H"}
     ]
     pins += [
         (i, e.in_plus, True, -0.35 if i in flipped else 0.35)
         if e.kind == "O"
         else (i, e.n, i in reversed_parts, 0.0)
         for i, e in enumerate(parts)
+        if e.kind not in {"Q", "H"}
     ]
     pins += [
         (i, e.in_minus, True, 0.35 if i in flipped else -0.35)
         for i, e in enumerate(parts)
         if e.kind == "O"
     ]
-    assert len(pins) >= count * 2
+    for i, part in enumerate(parts):
+        if part.kind == "H":
+            pins.extend((i, net, left, offset) for _, net, left, offset in package_pins(part))
+        elif part.kind == "Q":
+            pins.extend((
+                (i, part.p, False, BJT_PIN_OFFSET),
+                (i, part.n, False, -BJT_PIN_OFFSET),
+                (i, part.base, True, 0.0),
+            ))
     return pins
 
 
@@ -119,7 +204,7 @@ def series_runs(circuit):
         incident.setdefault(net, []).append(i)
     passive = {
         i for i, part in enumerate(parts)
-        if not part.is_source and part.kind != "O" and part.p != part.n
+        if not part.is_source and part.kind not in {"O", "Q", "H"} and part.p != part.n
     }
     joins = {i: {} for i in passive}
 
@@ -239,9 +324,7 @@ def source_cells(circuit, order, columns, runs=(), *, source_rails=False):
         neighbors = [
             cells[j]
             for j in other
-            if nets.intersection(
-                (parts[j].p, parts[j].n, parts[j].in_plus, parts[j].in_minus)
-            )
+            if nets.intersection(parts[j].terminal_nets)
         ]
         if not neighbors:
             preceding = [j for j in other if 0 < parts[j].order < parts[i].order]
@@ -273,7 +356,8 @@ def grid_symbol(part, x, y, grounds, *, top="+", reverse=False):
         if not source_pin_is_upper(part, True, grounds):
             start, end = end, start
     else:
-        start, end = (x, y), (x + 4.3, y)
+        width = PACKAGE_WIDTH if part.kind == "H" else 4.3
+        start, end = (x, y), (x + width, y)
         if reverse:
             start, end = end, start
     return part, start, end, top
@@ -696,7 +780,7 @@ def _divider_bank(circuit, source, tree, ground):
 def compact(circuit, labels=None):
     """Choose a conventional layout when the resolved topology supports one."""
     parts = circuit.components
-    if len(parts) > 12:
+    if len(parts) > 12 or any(part.kind == "Q" for part in parts):
         return None
     if any(part.kind == "O" for part in parts):
         return compact_amplifier(circuit)

@@ -1,5 +1,5 @@
 ## RC low-pass filter with a cutoff near 1.6 kHz.
-V1 vin 0 1 Vrms
+V1(1 Vrms) between(vin, 0);
 f = 1k
 
 series lowpass(input, output) {

@@ -1,25 +1,35 @@
 """Place and route arbitrary circuit graphs with orthogonal wire channels."""
 
 import math
-from collections import defaultdict, deque
+from collections import Counter, defaultdict, deque
 from copy import deepcopy
+from dataclasses import replace
 from statistics import median_low
 
 from .layout import (
+    BJT_PIN_OFFSET,
     Layout,
+    PACKAGE_WIDTH,
     add_wire,
+    along,
     compact,
     component_pins,
     grid_symbol,
     ground_at,
     input_source_indices,
+    rotate_point,
     series_runs,
     source_cells,
     source_pin_is_upper,
+    symbol_pins,
+    wire_axis,
 )
-from .layout_checks import preserves_nets, segments_intersect
+from .layout_checks import intersection, preserves_nets, segments_intersect
 from .layout_search import evolve_placements, feedback_pairs, placement_penalty
 from .wiring import connector_names, labeled, signal_flow
+from .wire_edit import (
+    clean_point, replace_route, route_anchors, terminal_run, wire_graph, wire_slide_candidates,
+)
 
 SYMBOL_WIDTH = 4.3
 LANE_PITCH = 0.46
@@ -30,11 +40,444 @@ def schematic_layout(circuit, labels, mode):
     """Choose a layout and check that its visible connections preserve the graph."""
     if mode == "labeled":
         return labeled(circuit, labels)
+    if len(circuit.components) > 64 or any(part.kind == "H" for part in circuit.components):
+        return fast_layout(circuit, labels)
     conventional = compact(circuit, labels) or signal_flow(circuit)
     if conventional and preserves_nets(circuit, conventional):
         return conventional
     layout = connected_layout(circuit, labels, simplify=mode == "auto")
     return layout if preserves_nets(circuit, layout) else labeled(circuit, labels)
+
+
+def fast_layout(circuit, labels, *, boundary=()):
+    """Route a small fixed set of placements and skip iterative refinement."""
+    parts = circuit.components
+    if not parts:
+        return Layout()
+    runs, reversed_parts = series_runs(circuit)
+    pins = component_pins(parts, reversed_parts=reversed_parts)
+    if not pins:
+        return labeled(circuit, labels)
+    order = next(_orders(parts, pins, circuit.grounds))
+    center = math.ceil(math.sqrt(len(parts) * 0.72))
+    widths = (center,) if len(parts) > 32 else range(max(1, center - 1), center + 2)
+    sources = [i for i in order if parts[i].is_source]
+    others = [i for i in order if not parts[i].is_source]
+    candidates = []
+    for width in widths:
+        cells = source_cells(circuit, order, width, runs)
+        candidates.append(cells)
+        if len(parts) <= 32:
+            compact_cells = {
+                i: divmod(j, width) for j, i in enumerate(sources + others)
+            }
+            candidates.append(compact_cells)
+    best = None
+    for regular in (False, True):
+        for cells in candidates:
+            layout = _channel_layout(
+                circuit, labels, pins, set(), reversed_parts, cells, set(), set(),
+                tight=True, regular=regular, boundary=boundary,
+            )
+            _mark_crossings(layout)
+            cost = _layout_cost(layout)
+            if best is not None and cost >= best[0]:
+                continue
+            if preserves_nets(circuit, layout):
+                best = cost, layout
+        if best is not None:
+            return best[1]
+    return labeled(circuit, labels)
+
+
+def move_symbol(circuit, original, name, delta, *, diagonal=False, rotate=0, align_axis=None):
+    """Move or rotate one symbol and reroute the leads to its pins."""
+    drawing = replace(
+        original,
+        symbols=list(original.symbols),
+        positions=dict(original.positions),
+        wires={net: list(edges) for net, edges in original.wires.items()},
+        junctions={net: list(dots) for net, dots in original.junctions.items()},
+        labels=dict(original.labels),
+        crossings={},
+        rotations=dict(original.rotations),
+    )
+    i, symbol = next(
+        (i, symbol) for i, symbol in enumerate(drawing.symbols)
+        if symbol[0].name == name
+    )
+    part, a, b, top = symbol
+
+    def shift(point):
+        return tuple(round(coordinate + change, 8) for coordinate, change in zip(point, delta))
+
+    moved = part, shift(a), shift(b), top
+    previous_turns = original.rotations.get(name, 0)
+    turns = (previous_turns + rotate) % 4
+    if moved == symbol and not rotate and align_axis is None:
+        return original
+    if turns:
+        drawing.rotations[name] = turns
+    else:
+        drawing.rotations.pop(name, None)
+
+    def bounds(symbol, turns):
+        part, a, b, _ = symbol
+        height = (
+            max(0.8, (len(part.package_pins) + 1) // 2 / 2 + 0.2)
+            if part.kind == "H" else 0.9 if part.kind in {"Q", "O"} else 0.45
+        )
+        return (
+            rotate_point((min(a[0], b[0]) - 0.45, min(a[1], b[1]) - height), a, b, turns),
+            rotate_point((max(a[0], b[0]) + 0.45, max(a[1], b[1]) + height), a, b, turns),
+        )
+
+    body = bounds(moved, turns)
+    if any(
+        boxes_overlap(body, bounds(other, original.rotations.get(other[0].name, 0)))
+        for j, other in enumerate(drawing.symbols) if j != i
+    ):
+        return None
+    drawing.symbols[i] = moved
+    drawing.positions[name] = moved[1]
+
+    return _reroute_move(
+        circuit, original, drawing,
+        _routed_pins(symbol, previous_turns), _routed_pins(moved, turns),
+        (a[0] + b[0]) / 2,
+        stationary_pins=[
+            pin for j, placed in enumerate(original.symbols) if j != i
+            for pin in _routed_pins(placed, original.rotations.get(placed[0].name, 0))
+        ],
+        diagonal=diagonal, rotate=rotate, align_axis=align_axis,
+    )
+
+
+def _routed_pins(symbol, turns):
+    _, a, b, _ = symbol
+    return tuple(
+        (net, rotate_point(pin, a, b, turns)) for net, pin in symbol_pins(*symbol)
+    )
+
+
+def symbol_wire_alignments(drawing, name):
+    """Find offsets that place the symbol's pins on their connected wire runs."""
+    symbol = next(symbol for symbol in drawing.symbols if symbol[0].name == name)
+    _, a, b, _ = symbol
+    turns = drawing.rotations.get(name, 0)
+    axis = wire_axis((a, b))
+    if axis is None:
+        return None, {}
+    axis = (axis + turns) % 2
+    pins = list(drawing.pins())
+    moving_pins = _routed_pins(symbol, turns)
+    for pin in moving_pins:
+        pins.remove(pin)
+    return 1 - axis, _terminal_wire_alignments(drawing, moving_pins, axis, pins)
+
+
+def ground_wire_alignments(drawing, point):
+    """Align a ground with the run or terminal that feeds its lead."""
+    net = drawing.ground_names.get(point, "0")
+    axis = 1 - drawing.ground_rotations.get(point, 0) % 2
+    return 1 - axis, _terminal_wire_alignments(
+        drawing, ((net, point),), axis, moving_ground=point
+    )
+
+
+def ground_attachment(drawing, point):
+    net = drawing.ground_names.get(point, "0")
+    fixed = route_anchors(drawing, net, moving_ground=point)
+    graph = wire_graph(drawing.wires.get(net, ()), route_anchors(drawing, net))
+    return terminal_run(graph, clean_point(point), fixed)[-1]
+
+
+def _terminal_wire_alignments(drawing, moving_pins, axis, stationary_pins=None, *, moving_ground=None):
+    coordinate = 1 - axis
+    nets = {net for net, _ in moving_pins}
+    fixed = {
+        net: route_anchors(drawing, net, stationary_pins, moving_ground=moving_ground)
+        for net in nets
+    }
+    graphs = {
+        net: wire_graph(drawing.wires.get(net, ()), route_anchors(drawing, net))
+        for net in nets
+    }
+    offsets = Counter()
+    for net, pin in moving_pins:
+        pin = clean_point(pin)
+        graph = graphs[net]
+        run = terminal_run(graph, pin, fixed[net])
+        # A tee can have a straight continuation one corner past the end of the lead.
+        junction = run[-1]
+        edges = list(zip(run, run[1:]))
+        for neighbor in graph.get(junction, ()):
+            edges.append((junction, neighbor))
+            if wire_axis((junction, neighbor)) == coordinate:
+                edges.extend((neighbor, point) for point in graph[neighbor])
+        targets = {start[coordinate] for start, end in edges if wire_axis((start, end)) == axis}
+        offsets.update({round(target - pin[coordinate], 8) for target in targets})
+        if moving_ground is not None and junction in fixed[net]:
+            # Prefer the source pin over vertical stubs introduced by previous moves.
+            offsets[round(junction[coordinate] - pin[coordinate], 8)] = 2
+    return offsets
+
+
+def move_ground(circuit, original, point, delta, *, diagonal=False, align_axis=None):
+    """Move one ground symbol and reconnect its existing branch."""
+    end = clean_point((point[0] + delta[0], point[1] + delta[1]))
+    if end == clean_point(point) and align_axis is None:
+        return original
+    if any(other != point and end == clean_point(other) for other in original.grounds):
+        return None
+    net = original.ground_names.get(point, "0")
+    drawing = replace(
+        original,
+        grounds=[end if pos == point else pos for pos in original.grounds],
+        ground_names=dict(original.ground_names),
+        ground_rotations=dict(original.ground_rotations),
+    )
+    if point in drawing.ground_names:
+        drawing.ground_names[end] = drawing.ground_names.pop(point)
+    if point in drawing.ground_rotations:
+        drawing.ground_rotations[end] = drawing.ground_rotations.pop(point)
+    return _reroute_move(
+        circuit, original, drawing, ((net, point),), ((net, end),), point[0],
+        moving_ground=point, diagonal=diagonal, align_axis=align_axis,
+        direct=end == ground_attachment(original, point),
+    )
+
+
+def move_connector(circuit, original, index, end, *, join=None, diagonal=False):
+    """Move a labeled wire end, optionally joining it to a matching end."""
+    net, start, name, left, below = original.connectors[index]
+    end = clean_point(end)
+    if join is None and end == clean_point(start):
+        return original
+    if join is not None:
+        other_net, other_end, other_name, *_ = original.connectors[join]
+        if index == join or net != other_net or name != other_name or end != clean_point(other_end):
+            return None
+    if join is None:
+        ports = list(original.connectors)
+        ports[index] = net, end, name, left, below
+    else:
+        ports = [port for i, port in enumerate(original.connectors) if i not in (index, join)]
+    drawing = _reroute_move(
+        circuit, original, replace(original, connectors=ports),
+        ((net, start),), ((net, end),), start[0], moving_connector=index, diagonal=diagonal,
+    )
+    if drawing is None and join is not None and any(port[0] == net for port in ports):
+        # A third disconnected end still needs a label on the newly joined run.
+        drawing = _reroute_move(
+            circuit, original, replace(original, connectors=[*ports, original.connectors[join]]),
+            ((net, start),), ((net, end),), start[0], moving_connector=index, diagonal=diagonal,
+        )
+    return drawing
+
+
+def split_wire(circuit, original, net, edge, at):
+    """Replace a short span of wire with two matching labeled ends."""
+    a, b = sorted(map(clean_point, edge))
+    if a == b or net in circuit.grounds:
+        return None
+    anchors = route_anchors(original, net) | {a, b}
+    graph = wire_graph(original.wires[net], anchors)
+    runs = [
+        (p, q) for p, neighbors in graph.items() for q in neighbors if p < q
+        and math.dist(p, q) >= 0.25
+        and all(segments_intersect((point, point), (a, b)) for point in (p, q))
+    ]
+    if not runs:
+        return None
+    axis = max(range(2), key=lambda i: abs(b[i] - a[i]))
+    a, b = min(
+        runs,
+        key=lambda run: max(0, min(p[axis] for p in run) - at[axis],
+                            at[axis] - max(p[axis] for p in run)),
+    )
+    length = math.dist(a, b)
+    direction = tuple((v - u) / length for u, v in zip(a, b))
+    along_run = sum((coordinate - origin) * step for coordinate, origin, step in zip(at, a, direction))
+    margin = min(0.6, length / 4)
+    center = max(margin, min(length - margin, along_run))
+    low, high = (
+        clean_point(along(a, b, (center + side * margin / 2) / length))
+        for side in (-1, 1)
+    )
+    graph[a].remove(b)
+    graph[b].remove(a)
+    existing = {wire: caption for wire, _, caption, *_ in original.connectors}
+    name = existing.get(net)
+    if name is None:
+        used = {caption.casefold() for caption in existing.values()}
+        name = connector_names((net,))[net]
+        suffix = 1
+        while name.casefold() in used:
+            name = f"N{suffix}"
+            suffix += 1
+    drawing = replace(
+        original, wires=dict(original.wires), junctions=dict(original.junctions),
+        labels=dict(original.labels), crossings={},
+        connectors=[*original.connectors, (net, low, name, True, False),
+                    (net, high, name, False, True)],
+    )
+    edges = [(p, q) for p, neighbors in graph.items() for q in neighbors if p < q]
+    replace_route(drawing, net, [*edges, (a, low), (high, b)])
+    _mark_crossings(drawing)
+    return drawing if preserves_nets(circuit, drawing) else None
+
+
+def _reroute_move(
+    circuit, original, drawing, old_pins, new_pins, center_x, *,
+    stationary_pins=None, moving_ground=None, moving_connector=None,
+    diagonal=False, rotate=0, align_axis=None, direct=False,
+):
+    affected = {net for net, _ in old_pins}
+    # Attach at the first fixed corner, branch, or terminal. The old lead
+    # is then shortened or pruned instead of leaving a stub at the old pin.
+    fixed_anchors = {
+        net: route_anchors(
+            original, net, stationary_pins,
+            moving_ground=moving_ground, moving_connector=moving_connector,
+        )
+        for net in affected
+    }
+    graphs = {
+        net: wire_graph(original.wires.get(net, ()), route_anchors(original, net))
+        for net in affected
+    }
+    connections = []
+    for index, ((net, start), (_, end)) in enumerate(zip(old_pins, new_pins)):
+        start, end = clean_point(start), clean_point(end)
+        graph = graphs[net]
+        fixed = fixed_anchors[net] | {
+            clean_point(pin) for i, (other, pin) in enumerate(old_pins)
+            if i != index and other == net
+        }
+        run = terminal_run(graph, start, fixed)
+        # Keep the first bend, unless a later point can meet the pin in a straight line.
+        stop = next((
+            i for i in range(1, len(run) - 1)
+            if not segments_intersect((run[i], run[i]), (run[i - 1], run[i + 1]))
+        ), len(run) - 1)
+        if direct:
+            stop = len(run) - 1
+        elif align_axis is not None:
+            aligned = next((
+                i for i in range(stop, len(run)) if run[i][align_axis] == end[align_axis]
+            ), None)
+            if aligned is not None:
+                stop = aligned
+        attachment = run[stop]
+        if align_axis is not None and attachment[align_axis] != end[align_axis]:
+            junction = run[-1]
+            for neighbor in graph.get(junction, ()):
+                if (
+                    wire_axis((junction, neighbor)) == align_axis
+                    and neighbor[align_axis] == end[align_axis]
+                    and any(
+                        wire_axis((neighbor, point)) == 1 - align_axis
+                        for point in graph[neighbor]
+                    )
+                ):
+                    stop, attachment = len(run) - 1, neighbor
+                    break
+        for previous, neighbor in zip(run[:stop], run[1:stop + 1]):
+            graph[previous].remove(neighbor)
+            graph[neighbor].remove(previous)
+        connections.append((net, attachment, end))
+    fixed_edges = {
+        net: [(a, b) for a, neighbors in graph.items() for b in neighbors if a < b]
+        for net, graph in graphs.items()
+    }
+    bends = (
+        ("x", 0.5), ("y", 0.5), ("x", 0), ("y", 0),
+        ("x", 1), ("y", 1), ("x", 0.25), ("y", 0.25),
+        ("outside", 0.35), ("outside", 0.6),
+    )
+    if diagonal:
+        bends = (("diagonal", 0), *bends)
+    if rotate:
+        bends += (("diagonal", 0), ("around", 0.7), ("around", 1.3))
+    best = _shortest_move(drawing, circuit, affected, connections, fixed_edges, bends, center_x)
+    if best is not None:
+        return best
+    # Preserve the old junction geometry if trimming leaves no valid route.
+    connections = [
+        (net, clean_point(start), clean_point(end))
+        for (net, start), (_, end) in zip(old_pins, new_pins)
+    ]
+    return _shortest_move(
+        drawing, circuit, affected, connections, original.wires, bends, center_x
+    )
+
+
+def boxes_overlap(first, second):
+    return all(
+        max(min(a, b), min(c, d)) <= min(max(a, b), max(c, d))
+        for (a, b), (c, d) in zip(zip(*first), zip(*second))
+    )
+
+
+def _shortest_move(drawing, circuit, affected, connections, fixed_edges, bends, center_x):
+    best = None
+    for axis, ratio in bends:
+        routed = replace(
+            drawing,
+            wires={net: list(edges) for net, edges in drawing.wires.items()},
+            junctions={net: list(dots) for net, dots in drawing.junctions.items()},
+            labels=dict(drawing.labels), crossings={},
+        )
+        for net in affected:
+            routed.wires[net] = list(fixed_edges.get(net, ()))
+        for index, (net, start, end) in enumerate(connections):
+            x, y = start
+            u, v = end
+            if axis == "diagonal":
+                points = (start, end)
+            elif axis == "around":
+                approach = min(x, u) - 0.6 if x <= center_x else max(x, u) + 0.6
+                exit_lane = min(x, u) - 0.4 if u <= center_x else max(x, u) + 0.4
+                across = min(y, v) - ratio if index % 2 == 0 else max(y, v) + ratio
+                points = (
+                    start, (approach, y), (approach, across),
+                    (exit_lane, across), (exit_lane, v), end,
+                )
+            elif axis == "y":
+                lane = y + (v - y) * ratio
+                points = (start, (x, lane), (u, lane), end)
+            else:
+                lane = x + (u - x) * ratio
+                if axis == "outside":
+                    spacing = 0.5 + index * ratio
+                    lane = min(x, u) - spacing if x <= center_x else max(x, u) + spacing
+                points = (start, (lane, y), (lane, v), end)
+            for first, second in zip(points, points[1:]):
+                if first != second:
+                    add_wire(routed, net, *sorted((first, second)))
+        for net in affected:
+            replace_route(routed, net, routed.wires[net])
+        length = sum(
+            math.dist(a, b) for net in affected for a, b in routed.wires.get(net, ())
+        )
+        if best is not None and length >= best[0] - 1e-8:
+            continue
+        _mark_crossings(routed)
+        if preserves_nets(circuit, routed):
+            best = length, routed
+    return best[1] if best else None
+
+
+def move_wire(circuit, original, net, edge, distance, *, snap=0):
+    """Return the first electrically valid slide and its snapped offset, if any."""
+    for drawing, offset in wire_slide_candidates(original, net, edge, distance, snap=snap):
+        if drawing is original:
+            return drawing, None
+        _mark_crossings(drawing)
+        if preserves_nets(circuit, drawing):
+            return drawing, offset
+    return None, None
 
 
 def _orders(parts, pins, grounds):
@@ -70,7 +513,8 @@ def _orders(parts, pins, grounds):
 
 def _channel_layout(
     circuit, labels, pins, flipped, reversed_parts, cells, separated, local,
-    *, tight=False, rotate=False, source_offsets=None, source_flips=(),
+    *, tight=False, rotate=False, source_offsets=None, source_flips=(), regular=False,
+    boundary=(),
 ):
     """Route from pins through column gutters to shared horizontal net tracks."""
     parts, grounds = circuit.components, circuit.grounds
@@ -87,7 +531,10 @@ def _channel_layout(
     source_rails = {}
     for net, indices in groups.items():
         sources = [i for i in indices if parts[pins[i][0]].is_source]
-        if net not in grounds and sources and len(indices) > 1:
+        if (
+            not regular and net not in grounds and net not in boundary
+            and sources and len(indices) > 1
+        ):
             source_rails[net] = min(sources, key=lambda i: (rows[i], i))
 
     rotated = {}
@@ -126,7 +573,7 @@ def _channel_layout(
     vertical = {}
     for net, indices in groups.items():
         if (
-            net in grounds or net in separated or net in source_rails
+            regular or net in grounds or net in boundary or net in separated or net in source_rails
             or (len(indices) != 2 and net not in local)
         ):
             continue
@@ -158,7 +605,8 @@ def _channel_layout(
     for i, (part, net, left, _) in enumerate(pins):
         g = gutters[i]
         left = left and not parts[part].is_source
-        if net not in grounds and (net in separated or len(groups[net]) == 1):
+        single = len(groups[net]) == 1 and net not in boundary
+        if net not in grounds and (net in separated or single):
             padding[g][left] = max(padding[g][left], 0.43 * len(names[net]))
         elif (
             net not in grounds and net not in vertical and net != rotated.get(part)
@@ -174,6 +622,8 @@ def _channel_layout(
         label_width = max([min(len(name), 24), *map(len, values)])
         if not part.is_source:
             widths[col] = max(widths[col], 0.35 * label_width + (0.55 if tight else 0.8))
+        if part.kind == "H":
+            widths[col] = max(widths[col], PACKAGE_WIDTH + 0.4)
 
     centers, lane_x, vertical_x = [], {}, {}
     x = 0.0
@@ -213,7 +663,7 @@ def _channel_layout(
             lane_x[i] = centers[cells[part][1]]
     for net, indices in groups.items():
         if (
-            net in grounds or len(indices) == 1 or net in separated
+            net in grounds or (len(indices) == 1 and net not in boundary) or net in separated
             or net in source_rails or net in vertical
         ):
             continue
@@ -233,7 +683,11 @@ def _channel_layout(
 
     row_y, track_y = [0.0], {}
     source_rows = {cells[i][0] for i, part in enumerate(parts) if part.is_source}
-    for row in range(max(rows) + 1):
+    package_rows = defaultdict(float)
+    for i, _, _, offset in pins:
+        if parts[i].kind == "H":
+            package_rows[cells[i][0]] = max(package_rows[cells[i][0]], abs(offset) + 0.9)
+    for row in range(max(row for row, _ in cells.values()) + 1):
         tracks = sorted(
             channels[row],
             key=lambda n: (
@@ -242,16 +696,19 @@ def _channel_layout(
                 n,
             ),
         )
+        clearance = max(2.8, package_rows[row])
         for j, net in enumerate(tracks):
-            track_y[net] = row_y[-1] - 2.8 - TRACK_PITCH * j
+            track_y[net] = row_y[-1] - clearance - TRACK_PITCH * j
         pitch = 4.15 if tight else 4.8 if row in source_rows else 5.0
+        if package_rows:
+            pitch = max(pitch, clearance + package_rows[row + 1] + 1.2)
         row_y.append(row_y[-1] - pitch - TRACK_PITCH * len(tracks))
 
     for i, part in enumerate(parts):
         row, col = cells[i]
         symbol = grid_symbol(
             part,
-            centers[col] - SYMBOL_WIDTH / 2,
+            centers[col] - (PACKAGE_WIDTH if part.kind == "H" else SYMBOL_WIDTH) / 2,
             row_y[row],
             grounds,
             top="-" if i in flipped else "+",
@@ -308,7 +765,7 @@ def _channel_layout(
                 else:
                     ground_at(drawing, b, net)
             continue
-        if len(indices) == 1 or net in separated:
+        if (len(indices) == 1 and net not in boundary) or net in separated:
             for i in indices:
                 a = terminals[i]
                 left = pins[i][2] and not parts[pins[i][0]].is_source
@@ -364,19 +821,47 @@ def _channel_layout(
                 if left < x < right:
                     drawing.junctions.setdefault(net, []).append((x, ty))
 
+    if boundary:
+        attach_boundary(drawing, track_y, boundary, grounds)
     return drawing
+
+
+def attach_boundary(drawing, track_y, boundary, grounds):
+    """Bring each used package port to a short terminal at the edge of its detail."""
+    left = min(
+        [a[0] for _, a, _, _ in drawing.symbols]
+        + [p[0] for wires in drawing.wires.values() for edge in wires for p in edge]
+    ) - 1.1
+    for net in boundary:
+        if net in grounds:
+            point = next(
+                (p for p in drawing.grounds if drawing.ground_names.get(p, "0") == net),
+                None,
+            )
+        elif net in track_y:
+            y = track_y[net]
+            start = min(
+                p[0] for edge in drawing.wires[net] for p in edge if p[1] == y
+            )
+            point = left, y
+            add_wire(drawing, net, point, (start, y))
+        else:
+            point = None
+        if point is not None:
+            drawing.boundary[net] = point
 
 
 def _mark_crossings(drawing):
     """Mark junctions for the same net and visual gaps for distinct nets."""
-    horizontal, vertical = [], []
+    horizontal, vertical, diagonal = [], [], []
     for net, segments in drawing.wires.items():
         for a, b in segments:
-            (horizontal if a[1] == b[1] else vertical).append((net, a, b))
+            axis = wire_axis((a, b))
+            (diagonal if axis is None else (horizontal, vertical)[axis]).append((net, a, b))
     contacts = []
     for net, a, b in vertical:
-        x, low = a
-        high = b[1]
+        x = a[0]
+        low, high = sorted((a[1], b[1]))
         for other, c, d in horizontal:
             left, right = sorted((c[0], d[0]))
             y = c[1]
@@ -387,8 +872,24 @@ def _mark_crossings(drawing):
                     drawing.crossings.setdefault((net, a, b), []).append(y)
                     contacts.append((net, other))
 
+    straight = horizontal + vertical
+    for index, (net, a, b) in enumerate(diagonal):
+        for other, c, d in straight + diagonal[:index]:
+            crossing = intersection((a, b), (c, d))
+            if crossing is None:
+                continue
+            first, second = crossing
+            if 0 < first < 1 and 0 < second < 1:
+                if net == other:
+                    drawing.junctions.setdefault(net, []).append(along(a, b, first))
+                else:
+                    drawing.crossings.setdefault((net, a, b), []).append(first)
+                    contacts.append((net, other))
+
     # Prefer a clear span of the trunk for its label.
     for net, (center, y) in drawing.labels.items():
+        if not drawing.wires.get(net):
+            continue
         a, b = drawing.wires[net][0]
         left, right = sorted((a[0], b[0]))
         stops = sorted(
@@ -596,8 +1097,9 @@ def _compact_channels(
         wires = [edge for segments in layout.wires.values() for edge in segments]
         for part, a, b, _ in layout.symbols:
             x, y = (a[0] + b[0]) / 2, (a[1] + b[1]) / 2
-            if part.kind == "O":
-                body = ((a[0] + 0.08, y - 0.73), (b[0] - 0.08, y + 0.73))
+            if part.kind in {"O", "Q"}:
+                height = BJT_PIN_OFFSET if part.kind == "Q" else 0.73
+                body = ((a[0] + 0.08, y - height), (b[0] - 0.08, y + height))
             elif a[0] == b[0]:
                 body = ((x - 0.44, min(a[1], b[1]) + 0.08),
                         (x + 0.44, max(a[1], b[1]) - 0.08))

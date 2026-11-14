@@ -4,7 +4,8 @@ import unittest
 from pathlib import Path
 
 from circuitlab.compiler import compile_circuit
-from circuitlab.ltspice import export_schematic
+from circuitlab.hood import hood_levels
+from circuitlab.ltspice import export_hierarchy, export_schematic
 from circuitlab.report import component_labels
 from circuitlab.routing import schematic_layout
 from circuitlab.spice import spice_circuit
@@ -16,13 +17,16 @@ PIN_OFFSETS = {
     "ind": ((16, 16), (16, 96)),
     "voltage": ((0, 16), (0, 96)),
     "current": ((0, 0), (0, 80)),
+    "npn": ((64, 0), (0, 48), (64, 96)),
+    "pnp": ((64, 0), (0, 48), (64, 96)),
     r"OpAmps\opamp2": ((-32, 80), (-32, 48), (0, 32), (0, 96), (32, 64)),
 }
 
 
-def read_connections(text):
+def read_connections(text, extra_pins=None):
     """Resolve wires by physical endpoint and flags by net name."""
     adjacent, flags, symbols = {}, {}, []
+    offsets = PIN_OFFSETS | (extra_pins or {})
     for row in text.splitlines():
         fields = row.split()
         if fields[0] == "WIRE":
@@ -35,7 +39,7 @@ def read_connections(text):
         elif fields[0] == "SYMBOL":
             _, symbol, x, y, orientation = fields
             pins = []
-            for u, v in PIN_OFFSETS[symbol]:
+            for u, v in offsets[symbol]:
                 for _ in range(int(orientation[1:]) // 90):
                     u, v = -v, u
                 if orientation.startswith("M"):
@@ -64,6 +68,94 @@ def read_connections(text):
 
 
 class LtspiceSchematicTest(unittest.TestCase):
+    def test_555_exports_as_a_native_hierarchy_with_eight_connected_pins(self):
+        circuit = compile_circuit((EXAMPLES / "timer555.ckt").read_text(encoding="utf-8-sig"))
+        top = next(hood_levels(circuit, set()))[1]
+        layout = schematic_layout(top, component_labels(top), "auto")
+        sheet, files, used_labels = export_hierarchy(circuit, layout)
+        self.assertFalse(used_labels)
+        self.assertEqual(sheet.count("\nSYMBOL "), 6)
+        self.assertIn("\nWIRE ", sheet)
+        self.assertIn("!.op", sheet)
+        self.assertIn(".model EC_BJT_NPN NPN", sheet)
+
+        offsets, ports, sheets = {}, {}, {}
+        for name, content in files.items():
+            stem, suffix = name.rsplit(".", 1)
+            if suffix == "asy":
+                self.assertIn("SymbolType BLOCK", content)
+                rows = [row.split() for row in content.splitlines()]
+                offsets[stem] = tuple(tuple(map(int, row[1:3])) for row in rows if row[0] == "PIN")
+                ports[stem] = tuple(row[2] for row in rows if row[:2] == ["PINATTR", "PinName"])
+            else:
+                sheets[stem] = content
+                self.assertNotIn("!.op", content)
+        self.assertEqual(ports.keys(), sheets.keys())
+        for stem, content in sheets.items():
+            rows = [row.split() for row in content.splitlines()]
+            flags = {tuple(row[1:3]): row[3] for row in rows if row[0] == "FLAG"}
+            self.assertCountEqual(
+                [flags[tuple(row[1:3])] for row in rows if row[0] == "IOPIN"], ports[stem]
+            )
+        chip = next(stem for stem in ports if stem.startswith("ec_timer555_"))
+        actual = read_connections(sheet, offsets)
+        self.assertEqual(ports[chip], ("ground", "trig", "out", "reset_n", "ctrl", "thres", "disch", "vcc"))
+        self.assertEqual(actual["X_timer555"][0],
+                         ("0", "timing", "out", "reset_n", "control", "timing", "discharge", "supply"))
+        self.assertIn("SYMBOL Misc\\jumper", sheets[chip])
+
+        # Follow every sheet from the root and check that it contains each
+        # original element exactly once, with no missing symbol dependencies.
+        spice = spice_circuit(circuit)
+        expected = {spice.parts[part.name].name: part for part in circuit.components}
+        primitives = []
+        parents = {}
+
+        def representative(node):
+            while node in parents:
+                node = parents[node]
+            return node
+
+        def connect(a, b):
+            a, b = representative(a), representative(b)
+            if a != b:
+                parents[b] = a
+
+        def visit(content, scope=(), connections=None):
+            actual = read_connections(content, offsets | {r"Misc\jumper": ((-32, 64), (32, 64))})
+            for port, parent in (connections or {}).items():
+                connect((scope, port), parent)
+            pending = []
+            for row in content.splitlines():
+                key, *fields = row.split()
+                if key == "SYMBOL":
+                    symbol = fields[0]
+                elif key == "SYMATTR" and fields[0] == "InstName":
+                    name = fields[1]
+                    nodes = tuple((scope, net) for net in actual[name][0])
+                    if symbol in sheets:
+                        pending.append((sheets[symbol], (*scope, name), dict(zip(ports[symbol], nodes))))
+                    elif symbol == r"Misc\jumper":
+                        connect(*nodes)
+                    else:
+                        primitives.append((name, nodes))
+            for child in pending:
+                visit(*child)
+
+        visit(sheet)
+        self.assertCountEqual([name for name, _ in primitives], list(expected))
+        compiled_to_export, export_to_compiled = {}, {}
+        for name, actual in primitives:
+            part = expected[name]
+            nets = {
+                "Q": (part.p, part.base, part.n),
+                "O": (part.in_plus, part.in_minus, part.n, part.n, part.p),
+            }.get(part.kind, (part.p, part.n))
+            for compiled, emitted in zip(nets, actual):
+                emitted = representative(emitted)
+                self.assertEqual(compiled_to_export.setdefault(compiled, emitted), emitted)
+                self.assertEqual(export_to_compiled.setdefault(emitted, compiled), compiled)
+
     def check_export(self, circuit, mode):
         layout = schematic_layout(circuit, component_labels(circuit), mode)
         text, used_labels = export_schematic(circuit, layout)

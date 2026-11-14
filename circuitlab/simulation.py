@@ -24,6 +24,7 @@ class Network:
     equivalent: dict | None = None
     equivalent_issue: str = ""
     references: dict[str, str] = field(default_factory=dict)
+    base_current: dict[str, float] = field(default_factory=dict)
 
 
 class SimulationBackend(Protocol):
@@ -79,6 +80,13 @@ class NodalBackend:
 
     def solve(self, circuit, *, ac, frequency=None, port=None):
         parts = circuit.components
+        if any(part.kind == "Q" for part in parts):
+            if ac or port or circuit.mode != "dc":
+                raise CircuitError("Use DC for the built-in BJT operating point. Use SPICE for BJT AC or port analysis.",
+                                   code="UnsupportedComponent")
+            from .nonlinear import TimeDomain
+
+            return TimeDomain(circuit).operating_point()
         names = tuple(e.name for e in parts)
         if not parts or len({name.casefold() for name in names}) != len(names):
             raise CircuitError(

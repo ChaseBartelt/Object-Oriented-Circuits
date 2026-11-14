@@ -3,17 +3,40 @@
 from collections import Counter, defaultdict
 from itertools import combinations
 
+from .layout import wire_axis
 
-def segments_intersect(first, second):
-    """Check whether two orthogonal segments or points touch."""
+
+def intersection(first, second):
+    """Return intersection parameters for two nonparallel line segments."""
     a, b = first
     c, d = second
-    return (
+    x, y = b[0] - a[0], b[1] - a[1]
+    u, v = d[0] - c[0], d[1] - c[1]
+    determinant = x * v - y * u
+    if abs(determinant) < 1e-10:
+        return None
+    dx, dy = c[0] - a[0], c[1] - a[1]
+    return (dx * v - dy * u) / determinant, (dx * y - dy * x) / determinant
+
+
+def segments_intersect(first, second):
+    """Check whether two segments or points touch."""
+    a, b = first
+    c, d = second
+    overlaps = (
         max(min(a[0], b[0]), min(c[0], d[0]))
         <= min(max(a[0], b[0]), max(c[0], d[0])) + 1e-8
         and max(min(a[1], b[1]), min(c[1], d[1]))
         <= min(max(a[1], b[1]), max(c[1], d[1])) + 1e-8
     )
+    if not overlaps or (wire_axis(first) is not None and wire_axis(second) is not None):
+        return overlaps
+    crossing = intersection(first, second)
+    if crossing is not None:
+        return all(-1e-8 <= pos <= 1 + 1e-8 for pos in crossing)
+    if a == b:
+        a, b, c = c, d, a
+    return abs((c[0] - a[0]) * (b[1] - a[1]) - (c[1] - a[1]) * (b[0] - a[0])) < 1e-8
 
 
 def preserves_nets(circuit, drawing):
@@ -22,6 +45,8 @@ def preserves_nets(circuit, drawing):
         return False
     pins, links = defaultdict(list), defaultdict(list)
     for net, point in drawing.pins():
+        pins[net].append((point, point))
+    for net, point in drawing.boundary.items():
         pins[net].append((point, point))
     for point in drawing.grounds:
         net = drawing.ground_names.get(point, "0")
@@ -42,8 +67,6 @@ def preserves_nets(circuit, drawing):
     visible = []
     for net, terminals in pins.items():
         wires = drawing.wires.get(net, [])
-        if any(a[0] != b[0] and a[1] != b[1] for a, b in wires):
-            return False
         junctions = [(p, p) for p in drawing.junctions.get(net, [])]
         # A ground or matching connector can join physically separate islands.
         pending = [*terminals, *wires, *junctions]

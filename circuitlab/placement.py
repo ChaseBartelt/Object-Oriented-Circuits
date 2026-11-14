@@ -1,0 +1,108 @@
+"""Save schematic geometry separately from the circuit source."""
+
+import json
+import math
+
+from .layout import Layout
+from .layout_checks import preserves_nets
+
+
+def placement_path(path):
+    return path.with_name(path.name + ".layout.json")
+
+
+def read_placement(path):
+    try:
+        data = json.loads(placement_path(path).read_bytes())
+        if data["version"] == 1 and isinstance(data["layouts"], list):
+            records = {
+                (level, mode): layout for level, mode, layout in data["layouts"]
+                if (level is None or isinstance(level, str))
+                and mode in ("auto", "routed", "labeled") and isinstance(layout, dict)
+            }
+            return data["mode"], records
+    except (OSError, ValueError, TypeError, KeyError):
+        pass
+    return "auto", {}
+
+
+def write_placement(mode, records):
+    return json.dumps({
+        "version": 1,
+        "mode": mode,
+        "layouts": [[level, style, layout] for (level, style), layout in records.items()],
+    }, ensure_ascii=False, allow_nan=False, indent=2).encode("utf-8")
+
+
+def pack_layout(layout):
+    return {
+        "symbols": [[part.name, part.kind, list(part.terminal_nets), a, b, top]
+                    for part, a, b, top in layout.symbols],
+        "wires": layout.wires,
+        "junctions": layout.junctions,
+        "labels": layout.labels,
+        "grounds": layout.grounds,
+        "ground_names": list(layout.ground_names.items()),
+        "ground_rotations": list(layout.ground_rotations.items()),
+        "connectors": layout.connectors,
+        "boundary": layout.boundary,
+        "rotations": layout.rotations,
+        "crossings": [[net, a, b, cuts] for (net, a, b), cuts in layout.crossings.items()],
+    }
+
+
+def restore_layout(record, circuit, boundary):
+    """Bind saved coordinates to the current parts and verify their wiring."""
+    def point(position):
+        x, y = position
+        if not (math.isfinite(x) and math.isfinite(y)):
+            raise ValueError("Invalid schematic coordinate")
+        return x, y
+
+    def points_map(values):
+        return {net: point(p) for net, p in values.items()}
+
+    def rotation(turns):
+        if type(turns) is not int or turns not in range(4):
+            raise ValueError("Invalid schematic rotation")
+        return turns
+
+    def finite(value):
+        if not math.isfinite(value):
+            raise ValueError("Invalid crossing coordinate")
+        return value
+
+    try:
+        parts = {part.name: part for part in circuit.components}
+        symbols = []
+        for name, kind, nets, a, b, top in record["symbols"]:
+            part = parts[name]
+            if part.kind != kind or part.terminal_nets != tuple(nets) or top not in {"+", "-"}:
+                return None
+            a, b = point(a), point(b)
+            if a == b:
+                return None
+            symbols.append((part, a, b, top))
+        drawing = Layout(
+            symbols=symbols,
+            positions={part.name: a for part, a, _, _ in symbols},
+            rotations={name: rotation(turns) for name, turns in record["rotations"].items()},
+            grounds=[point(p) for p in record["grounds"]],
+            ground_names={point(p): net for p, net in record["ground_names"]},
+            ground_rotations={point(p): rotation(turns) for p, turns in record["ground_rotations"]},
+            connectors=[(net, point(p), name, bool(left), bool(below))
+                        for net, p, name, left, below in record["connectors"]],
+            wires={net: [(point(a), point(b)) for a, b in edges]
+                   for net, edges in record["wires"].items()},
+            junctions={net: [point(p) for p in positions]
+                       for net, positions in record["junctions"].items()},
+            labels=points_map(record["labels"]),
+            boundary=points_map(record["boundary"]),
+            crossings={(net, point(a), point(b)): [finite(cut) for cut in cuts]
+                       for net, a, b, cuts in record["crossings"]},
+        )
+        if drawing.boundary.keys() <= set(boundary) and preserves_nets(circuit, drawing):
+            return drawing
+    except (AttributeError, KeyError, TypeError, ValueError, OverflowError):
+        pass
+    return None

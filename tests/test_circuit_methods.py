@@ -15,6 +15,80 @@ from circuitlab.wiring import signal_flow
 
 
 class CircuitMethods(unittest.TestCase):
+    def test_builtin_gates_expand_without_definitions(self):
+        for gate, args, transistor_count in (
+            ("not", "a", 1), ("buf", "a", 2), ("and", "a, b", 3),
+            ("nand", "a, b", 2), ("or", "a, b", 3), ("nor", "a", 1),
+            ("nor", "a, b, c", 3), ("xor", "a, b", 8), ("xnor", "a, b", 9),
+        ):
+            explicit = compile_circuit(f"main {{ {gate}(v, 0, {args}, y); }}")
+            if gate in {"and", "nand", "or", "nor"} and "," in args:
+                args = f"({args})"
+            with self.subTest(gate=gate, args=args):
+                circuit = compile_circuit(f"main {{ {gate}(v, {args}, y); }}")
+                self.assertEqual(circuit.instances[0].kind, "gate")
+                self.assertEqual(circuit.instances[0].name, gate)
+                self.assertEqual(circuit.components, explicit.components)
+                self.assertEqual(
+                    sum(part.kind == "Q" for part in circuit.components), transistor_count
+                )
+
+    def test_omitted_gate_ground_uses_the_enclosing_pin(self):
+        circuit = compile_circuit("""
+        circuit logic(vcc, gnd, a, b, return_net) {
+            nor(vcc, (a, b), inherited);
+            nor(vcc, return_net, a, explicit);
+        }
+        main { logic(v, local_ground, a, b, separate_ground); }
+        """)
+        self.assertEqual(
+            [dict(gate.pins)["gnd"] for gate in circuit.instances if gate.kind == "gate"],
+            ["local_ground", "separate_ground"],
+        )
+
+    def test_override_replaces_only_the_matching_builtin_gate_calls(self):
+        source = """
+        nor(v, 0, a, b, first);
+        circuit nested(vcc, gnd, a, b, y) {
+            nor(vcc, (a, b), y);
+        }
+        main {
+            nested(v, 0, a, b, second);
+            nor(v, a, third);
+        }
+        @override
+        gate nor(vcc, gnd, a, b, y) {
+            RCustom vcc y 3.3k;
+        }
+        """
+        circuit = compile_circuit(source)
+        loads = {
+            part.n: part.value for part in circuit.components
+            if part.kind == "R" and part.p == "v"
+        }
+        self.assertEqual(loads, {"first": 3300, "second": 3300, "third": 2200})
+        self.assertEqual(sum(part.kind == "Q" for part in circuit.components), 1)
+        file_without_main = """
+        @Override
+        gate nor(vcc, gnd, a, y) { RX vcc y 10k; }
+        nor(v, 0, a, out);
+        """
+        self.assertEqual(compile_circuit(file_without_main).components[0].value, 10000)
+
+    def test_override_requires_a_builtin_gate_and_rejects_duplicates(self):
+        gate = "@Override\ngate nor(vcc, gnd, a, y) { R1 vcc y 2k; }"
+        for source, diagnostic in (
+            ("@Override", "directly above a gate"),
+            ("main { @Override; }", "top-level gate"),
+            (gate.replace("gate nor", "circuit nor"), "directly above a gate"),
+            (gate.replace("gate nor", "gate nope"), "No built-in gate"),
+            (gate.replace("gate nor", "gate xor"), "Use gate xor"),
+            (f"{gate}\n{gate}", "already has an override"),
+        ):
+            with self.subTest(source=source):
+                with self.assertRaisesRegex(CircuitError, diagnostic):
+                    compile_circuit(source)
+
     def test_part_parameters_build_both_twin_t_branches(self):
         source = """
         battery V1 { Vrms = 1; rad/s = 10000; wire = IN; }

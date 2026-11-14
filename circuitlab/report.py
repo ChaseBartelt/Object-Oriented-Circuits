@@ -61,6 +61,17 @@ def pin_rows(result, pins):
             indices = {part_name: i for i, part_name in enumerate(network.names)}
             for part in result.circuit.components:
                 part_name = (part.label or part.name).replace("_", " ")
+                if part.kind == "Q" and part.name in network.base_current:
+                    collector = network.branch_current[indices[part.name]]
+                    base = network.base_current[part.name]
+                    for terminal, net, amps in (
+                        ("base", part.base, base), ("collector", part.p, collector),
+                        ("emitter", part.n, -collector - base),
+                    ):
+                        if node == net:
+                            add(f"{part_name} {terminal} current", f"Into {terminal}",
+                                format_value(amps, "A"))
+                    continue
                 if part.kind == "O":
                     for terminal, net in (
                         ("in+", part.in_plus),
@@ -184,6 +195,9 @@ def result_rows(result):
         )
         for p in c.components:
             name = p.label or p.name
+            if p.kind == "Q":
+                add(name + " model", "Generic Ebers–Moll", p.transistor_type.upper(), provided=True)
+                continue
             if p.kind == "O":
                 add(
                     prefix + name + " model",
@@ -224,6 +238,14 @@ def result_rows(result):
             network.branch_power,
         ):
             name = prefix + (p.label if c.grouped else p.name)
+            if p.kind == "Q":
+                base = network.base_current[p.name]
+                add(name + " collector-emitter voltage", "V(C) − V(E)", v, "V")
+                add(name + " base current", "Into base", base, "A")
+                add(name + " collector current", "Into collector", i, "A")
+                add(name + " emitter current", "−I(B) − I(C)", -base - i, "A")
+                add(name + " power", "V(CE) × I(C) + V(BE) × I(B)", power, "W")
+                continue
             if p.kind == "O":
                 add(
                     name + " output voltage" + basis,
@@ -355,7 +377,13 @@ def component_labels(circuit):
     for p in circuit.components:
         name = p.label or p.name
         label = [name.replace("_", " ")]
-        if p.kind == "O":
+        if p.kind in {"O", "H"}:
+            labels[p.name] = label
+            continue
+        if p.kind == "Q":
+            label.append(p.transistor_type.upper())
+            if p.model:
+                label.append(p.model)
             labels[p.name] = label
             continue
         unit = UNITS[p.kind]

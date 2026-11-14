@@ -16,16 +16,25 @@ from .syntax import (
     BATTERY_ALIAS,
     BATTERY_BRACE,
     BATTERY_MARKER,
+    BJT_MODEL_NAME,
+    BJT_PINS,
+    BJT_TYPES,
     CALL,
+    CONNECTOR,
     FREQUENCY,
+    INCLUDE,
     INLINE,
     OP,
     PLACEMENT,
     SECTION,
     SOURCE_WIRE,
+    TRANSISTOR,
+    TRANS_CALL,
+    TRANS_POSITIONAL,
     UNITS,
     WAVE,
     analysis_mode,
+    has_chip,
     parse_wires,
     source_rows,
 )
@@ -116,27 +125,74 @@ def _group_voltage(known, mode, label):
     return values["V"], equation
 
 
-def compile_circuit(source, mode="auto", *, render_only=False):
+def compile_circuit(source, mode="auto", *, render_only=False, path=None, read_source=None):
     """Compile source into a circuit graph or standalone quantity inputs."""
     if not isinstance(source, str):
         source = "\n".join(source)
+    if path is not None:
+        from .linked import compile_linked
+
+        return compile_linked(source, path, mode, render_only=render_only, read_source=read_source)
+    if has_chip(source):
+        raise CircuitError(
+            "Use File > Export Verilog for this chip."
+        )
     mode = mode.lower()
     if mode == "auto":
         mode = analysis_mode(source)
     if mode not in {"dc", "ac", "mixed", "transient"}:
         raise CircuitError(f"Unknown analysis mode {mode!r}.")
+    rows = []
+    connectors = {}
+    depth = 0
+    for text, line, binding in source_rows(source):
+        declaration = CONNECTOR.fullmatch(text)
+        if declaration:
+            if depth:
+                raise CircuitError("Put connector(...) at the top level.", line)
+            try:
+                pins = parse_wires(declaration[1])
+            except CircuitError:
+                raise CircuitError("List wire names in connector(pin, ...).", line) from None
+            for pin in pins:
+                if pin in connectors:
+                    raise CircuitError(f'Connector pin "{pin}" is already declared.', line)
+                connectors[pin] = line
+        elif INCLUDE.fullmatch(text):
+            raise CircuitError("Save this circuit to resolve its relative include paths.", line)
+        else:
+            rows.append((text, line, binding))
+            depth += text.count("{") - text.count("}")
     compiler = Compiler(mode)
+    compiler.circuit.named_wires.update(connectors)
+    compiler.circuit.connector_pins = tuple(connectors)
+    owners, lines = {}, {}
     for order, (text, line, binding) in enumerate(
-        expand_main(list(source_rows(source))), 1
+        expand_main(rows, compiler.circuit.instances), 1
     ):
         compiler.order = order
+        lines[order] = line
+        if binding.instance is not None:
+            owners[order] = binding.instance
         try:
             compiler.read(text, line, binding)
         except CircuitError as error:
             if error.line is not None:
                 raise
             raise CircuitError(str(error), line, error.code) from None
-    return compiler.finish(render_only)
+    circuit = compiler.finish(render_only)
+    for pin, line in connectors.items():
+        if circuit.resolve_wire(pin) not in circuit.nodes:
+            raise CircuitError(f'Connector pin "{pin}" is not a net in this file.', line)
+    circuit.owners = {
+        part.name: owners[part.order]
+        for part in circuit.components
+        if part.order in owners
+    }
+    circuit.component_lines = {
+        part.name: lines[part.order] for part in circuit.components if part.order in lines
+    }
+    return circuit
 
 
 class Compiler:
@@ -150,6 +206,8 @@ class Compiler:
         self.amp = None
         self.battery = None
         self.amps = []
+        self.transistor = None
+        self.transistors = []
         self.sources = []
         self.names = set()
         self.standalone = False
@@ -177,12 +235,15 @@ class Compiler:
         return self.circuit.groups[self.active] if self.active is not None else None
 
     def read(self, text, line, binding):
-        """Consume a statement in the current op-amp, source, or group context."""
-        amp_call = CALL.fullmatch(text.rstrip(";").strip())
+        """Consume a statement in the current device, source, or group context."""
+        if self.transistor:
+            self.transistor_field(text, binding)
+            return
+        call = CALL.fullmatch(text.rstrip(";").strip())
         amp_name = re.fullmatch(
             r"\(\s*opamp\s+([A-Za-z][A-Za-z0-9_]*)\s*\)", text, re.I
         )
-        if (amp_call and OP.fullmatch(amp_call[1])) or amp_name:
+        if (call and OP.fullmatch(call[1])) or amp_name:
             if self.amp or self.battery or self.group or self.mode == "transient":
                 raise CircuitError(
                     "Use op amps at the top level or in main, in a steady-state mode."
@@ -191,8 +252,8 @@ class Compiler:
                 self.amp = (amp_name[1], line, {})
             else:
                 try:
-                    pins = map(binding.wire, parse_wires(amp_call[2], 3))
-                    self.add_amp(binding.part(amp_call[1]), *pins)
+                    pins = map(binding.wire, parse_wires(call[2], 3))
+                    self.add_amp(binding.part(call[1]), *pins)
                 except CircuitError:
                     raise CircuitError(
                         "Use op1(in+, in-, out); with three wire names."
@@ -218,6 +279,27 @@ class Compiler:
                 pins[pin[1].lower()] = parse_wires(pin[2], 1)[0]
             return
         group = self.group
+        transistor = TRANSISTOR.fullmatch(text)
+        compact = TRANS_CALL.fullmatch(call[1]) if call else None
+        positional = TRANS_POSITIONAL.fullmatch(text.rstrip(";").strip())
+        if transistor or compact or positional:
+            if group or self.battery:
+                raise CircuitError(
+                    "Place a transistor at the top level, in main, or directly in a circuit method."
+                )
+            if self.mode == "transient":
+                raise CircuitError(
+                    "Use a steady-state mode to render or export BJT circuits. "
+                    "The built-in Transient mode supports first-order RC and RL circuits."
+                )
+            if compact or positional:
+                name, arguments = (compact[1], call[2]) if compact else positional.groups()
+                if not name[0].isalpha():
+                    name = f"Q{name}"
+                self.transistor_call(binding.part(name), arguments, line, binding)
+            else:
+                self.transistor = (binding.part(transistor[1]), line, {})
+            return
         if section := SECTION.fullmatch(text):
             kind, name, raw = section.groups()
             if group or self.battery or self.mode == "transient":
@@ -416,6 +498,62 @@ class Compiler:
             )
         )
         self.circuit.named_wires.update((plus, minus, out))
+
+    def add_transistor(self, name, line, base, collector, emitter, polarity, model=""):
+        part = Component(
+            name, "Q", collector, emitter, label=name, order=self.order, base=base,
+            transistor_type=polarity, model=model,
+        )
+        self.transistors.append((part, line))
+        self.circuit.named_wires.update((base, collector, emitter))
+
+    def transistor_call(self, name, raw, line, binding):
+        args = [arg.strip() for arg in raw.split(",")]
+        if len(args) not in (4, 5):
+            raise CircuitError("Use transQ1(base, collector, emitter, npn or pnp, [model]).")
+        polarity = args[3].lower()
+        if polarity not in BJT_TYPES:
+            raise CircuitError("Choose npn or pnp as the fourth argument.")
+        model = args[4] if len(args) == 5 else ""
+        if len(args) == 5 and not BJT_MODEL_NAME.fullmatch(model):
+            raise CircuitError("Use one SPICE model name such as 2N3904.")
+        base, collector, emitter = (
+            binding.wire(parse_wires(net, 1)[0]) for net in args[:3]
+        )
+        self.add_transistor(name, line, base, collector, emitter, polarity, model)
+
+    def transistor_field(self, text, binding):
+        name, line, fields = self.transistor
+        if text == "}":
+            missing = [key for key in (*BJT_PINS, "type") if key not in fields]
+            if missing:
+                raise CircuitError(
+                    f"{name} needs these fields: {', '.join(missing)}.", line
+                )
+            base, collector, emitter = (fields[pin] for pin in BJT_PINS)
+            self.add_transistor(
+                name, line, base, collector, emitter, fields["type"], fields.get("model", "")
+            )
+            self.transistor = None
+            return
+        assignment = ASSIGNMENT.fullmatch(text)
+        if not assignment:
+            raise CircuitError("Use field = value inside a transistor block.")
+        key, value = assignment[1].lower(), assignment[2].strip()
+        if key in fields:
+            raise CircuitError(f'Set "{key}" once in transistor {name}.')
+        if key in BJT_PINS:
+            value = binding.wire(parse_wires(value, 1)[0])
+        elif key == "type":
+            value = value.lower()
+            if value not in BJT_TYPES:
+                raise CircuitError("Use type = npn or type = pnp.")
+        elif key == "model":
+            if not BJT_MODEL_NAME.fullmatch(value):
+                raise CircuitError("Use one SPICE model name such as 2N3904.")
+        else:
+            raise CircuitError(f'Unknown transistor field "{key}".')
+        fields[key] = value
 
     def set_ground(self, name):
         target = self.battery or self.group
@@ -670,7 +808,7 @@ class Compiler:
             set_known(c.known, key, scalar(raw, info[key][1]))
 
     def node_row(self, text, binding):
-        if placement := PLACEMENT.fullmatch(text):
+        if placement := PLACEMENT.fullmatch(text.removesuffix(";").rstrip()):
             name, raw, wires = placement.groups()
             p, n = parse_wires(wires, 2)
         else:
@@ -713,6 +851,9 @@ class Compiler:
         c = self.circuit
         if self.amp:
             raise CircuitError("Missing (end opamp).", self.amp[1])
+        if self.transistor:
+            name, line, _ = self.transistor
+            raise CircuitError(f"Close transistor {name} with }}.", line)
         if self.battery:
             closing = "}" if self.battery.braced else "(end battery)"
             raise CircuitError(f"Missing {closing}.", self.battery.line)
@@ -739,7 +880,7 @@ class Compiler:
             and not any(
                 g.name or (g.braced and g.output and g.parent is None) for g in c.groups
             )
-            and not self.amps
+            and not (self.amps or self.transistors)
             and (c.components or c.port)
             and not (
                 self.standalone
@@ -784,6 +925,13 @@ class Compiler:
                 raise CircuitError("Give each op amp a unique component name.")
             labels.add(amp.name.casefold())
             c.components.append(amp)
+        for part, line in self.transistors:
+            if part.name.casefold() in labels:
+                raise CircuitError(
+                    f'Give transistor "{part.name}" a unique component name.', line
+                )
+            labels.add(part.name.casefold())
+            c.components.append(part)
         if c.wire_taps:
             self.resolve_tap_names()
         if self.amps and c.grounds != {"0"}:
@@ -797,7 +945,11 @@ class Compiler:
     def connect_amp_returns(self):
         """Find each ideal op amp's output reference after wiring is resolved."""
         c = self.circuit
-        branches = [(part.p, part.n) for part in c.components if part.kind != "O"]
+        branches = [
+            (part.p, part.n, part.base) if part.kind == "Q" else (part.p, part.n)
+            for part in c.components
+            if part.kind != "O"
+        ]
         local = ground_references(c.grounds, branches)
         # Follow ideal amplifier inputs when the output has no passive return,
         # as in an unloaded buffer. Exclude the old implicit node 0 here.
@@ -857,6 +1009,7 @@ class Compiler:
                 n=resolve_alias(part.n, aliases),
                 in_plus=resolve_alias(part.in_plus, aliases),
                 in_minus=resolve_alias(part.in_minus, aliases),
+                base=resolve_alias(part.base, aliases),
             )
             for part in c.components
         ]

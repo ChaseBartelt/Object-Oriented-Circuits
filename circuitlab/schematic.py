@@ -2,30 +2,59 @@
 
 import math
 import re
-from collections import Counter, defaultdict
+from collections import Counter, defaultdict, deque
+from dataclasses import dataclass, replace
 
-from PySide6.QtCore import QPointF, Qt, Signal
-from PySide6.QtGui import QBrush, QColor, QFont, QPainter, QPainterPath, QPen
+from PySide6.QtCore import QPoint, QPointF, QRectF, Qt, QTimer, Signal
+from PySide6.QtGui import QBrush, QColor, QFont, QKeySequence, QPainter, QPainterPath, QPen, QShortcut
 from PySide6.QtWidgets import (
-    QGraphicsPathItem,
     QGraphicsScene,
     QGraphicsSimpleTextItem,
     QGraphicsView,
     QMenu,
 )
 
+from .hood import METHOD_PREFIX, hood_levels
+from .layout import BJT_PIN_OFFSET, package_pins, rotate_point
+from .placement import pack_layout, restore_layout
 from .report import component_labels
-from .routing import schematic_layout
+from .routing import (
+    fast_layout, ground_attachment, ground_wire_alignments, move_connector, move_ground,
+    move_symbol, move_wire, schematic_layout, split_wire, symbol_wire_alignments,
+)
+from .wiring import labeled
 
 INK = QColor("#192633")
 NET = QColor("#006565")
 ACCENT = QColor("#006dab")
 PROBE = QColor("#974616")
 SCALE = 24
+SNAP_PIXELS = 28
+SNAP_RELEASE_PIXELS = 44
+GROUND_PIN_SNAP_PIXELS = 18
 
 
 def point(p):
     return QPointF(p[0] * SCALE, -p[1] * SCALE)
+
+
+@dataclass
+class SchematicDrag:
+    kind: str
+    name: str
+    key: tuple
+    start: QPoint
+    original: object
+    circuit: object
+    edge: tuple | None = None
+    terminal: tuple | int | None = None
+    preview: object = None
+    last_position: QPoint | None = None
+    pending: QPoint | None = None
+    diagonal: bool = False
+    align_axis: int | None = None
+    alignments: dict | None = None
+    snapped_offset: float | None = None
 
 
 class SchematicView(QGraphicsView):
@@ -35,6 +64,8 @@ class SchematicView(QGraphicsView):
     pin_requested = Signal(str)
     pin_renamed = Signal(str)
     pin_removed = Signal(str)
+    move_refused = Signal()
+    placement_changed = Signal()
 
     def __init__(self):
         super().__init__()
@@ -43,7 +74,10 @@ class SchematicView(QGraphicsView):
         self.setRenderHint(QPainter.RenderHint.Antialiasing)
         self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
         self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.highlight = None
+        self.trace_nets = set()
         self.paths = {}
         self.net_items = defaultdict(list)
         self.anchors = {}
@@ -57,33 +91,134 @@ class SchematicView(QGraphicsView):
         self.fit_scale = 1.0
         self.label_font = QFont("Inter")
         self.label_font.setPixelSize(12)
+        self.saved_pins = {}
+        self.expanded = set()
+        self.packages = {}
+        self.level_layouts = {}
+        self.levels = {}
+        self.manual_layouts = {}
+        self.placement_records = {}
+        self.rotation_bases = {}
+        self.placement_history = defaultdict(lambda: deque(maxlen=50))
+        undo = QShortcut(QKeySequence.StandardKey.Undo, self)
+        undo.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        undo.activated.connect(self.undo_placement)
+        self.level_offsets = {}
+        self.level = None
+        self.drag = None
+        self.drag_timer = QTimer(self)
+        self.drag_timer.setSingleShot(True)
+        self.drag_timer.setInterval(16)
+        self.drag_timer.timeout.connect(self.paint_pending_drag)
+        self.offset = QPointF()
+        self.symbol_turn = None
 
-    def clear(self):
+    def placements(self):
+        return {**self.placement_records, **{
+            key: pack_layout(layout) for key, layout in self.manual_layouts.items()
+        }}
+
+    def clear(self, *, preserve_placement=False):
+        self.placement_records = self.placements() if preserve_placement else {}
+        self._clear_scene()
+        self.circuit = None
+        self.layout = None
+        self.expanded.clear()
+        self.level_layouts.clear()
+        self.manual_layouts.clear()
+        self.rotation_bases.clear()
+        self.placement_history.clear()
+        self.drag = None
+        self.drag_timer.stop()
+
+    def _clear_scene(self):
         self.scene().clear()
         self.paths.clear()
         self.net_items.clear()
         self.anchors.clear()
         self.pin_items.clear()
         self.captions.clear()
+        self.packages.clear()
+        self.levels.clear()
+        self.level_offsets.clear()
         self.highlight = None
-        self.circuit = None
-        self.layout = None
 
     def draw(self, circuit, pins=None):
-        """Render one circuit and retain its geometry for schematic export."""
-        self.clear()
-        if not circuit.components:
-            return
+        """Open a circuit at its top schematic level."""
+        if circuit is not self.circuit:
+            self.clear(preserve_placement=True)
         self.circuit = circuit
+        self.saved_pins = pins or {}
+        self._redraw()
+
+    def _redraw(self, focus=None, *, preview=None, selected=None):
+        circuit = self.circuit
+        self._clear_scene()
+        if circuit is None or (not circuit.components and not circuit.instances):
+            self.layout = None
+            return
+        self.offset = QPointF()
+        for name, view, body, boundary in hood_levels(circuit, self.expanded):
+            self.level = name
+            package_layout = any(part.kind == "H" for part in view.components)
+            key = name, self.layout_mode
+            if key in self.placement_records:
+                saved = restore_layout(self.placement_records.pop(key), view, boundary)
+                if saved is not None:
+                    self.manual_layouts[key] = saved
+            if key not in self.level_layouts:
+                labels = component_labels(view)
+                if self.layout_mode == "labeled":
+                    layout = labeled(view, labels)
+                elif name is not None or package_layout:
+                    layout = fast_layout(view, labels, boundary=boundary)
+                else:
+                    layout = schematic_layout(view, labels, self.layout_mode)
+                self.level_layouts[key] = layout
+            layout = self.manual_layouts.get(key, self.level_layouts[key])
+            if preview is not None and key == preview.key:
+                layout = preview.preview or layout
+            self.levels[key] = view
+            if name is None:
+                self.layout = layout
+                self._paint_level(view, layout)
+            else:
+                self._paint_details(name, view, layout, body)
+        self.offset = QPointF()
+        self.level = None
+        self.update_pins(self.saved_pins, fit=False)
         scene = self.scene()
+        if preview is not None:
+            if selected:
+                self.highlight_net(selected)
+            return
+        scene.setSceneRect(scene.itemsBoundingRect().adjusted(-20, -20, 20, 20))
+        if focus is not None and not self.fitted:
+            self.centerOn(focus)
+        else:
+            self.fit()
+        if selected:
+            self.highlight_net(selected)
+        for net in self.trace_nets:
+            self.paint_highlight(net, True)
+
+    def mapped(self, position):
+        if self.symbol_turn is not None:
+            position = rotate_point(position, *self.symbol_turn)
+        return point(position) + self.offset
+
+    def _paint_level(self, circuit, layout):
+        scene = self.scene()
+        self.level_offsets[self.level, self.layout_mode] = QPointF(self.offset)
         labels = component_labels(circuit)
-        layout = schematic_layout(circuit, labels, self.layout_mode)
-        self.layout = layout
         for name in layout.wires:
-            path = QPainterPath()
+            path = self.paths[name].path() if name in self.paths else QPainterPath()
             for a, b in layout.visible_segments(name):
-                path.moveTo(point(a))
-                path.lineTo(point(b))
+                path.moveTo(self.mapped(a))
+                path.lineTo(self.mapped(b))
+            if name in self.paths:
+                self.paths[name].setPath(path)
+                continue
             item = scene.addPath(path, self.pen(INK, 1.15))
             self.paths[name] = item
             item.setData(0, "wire")
@@ -91,7 +226,7 @@ class SchematicView(QGraphicsView):
             item.setToolTip(name)
         for net, dots in layout.junctions.items():
             for dot in dots:
-                p = point(dot)
+                p = self.mapped(dot)
                 item = scene.addEllipse(
                     p.x() - 2.4,
                     p.y() - 2.4,
@@ -107,19 +242,47 @@ class SchematicView(QGraphicsView):
         counts = Counter()
         component_captions = []
         for part, a, b, top in layout.symbols:
+            turns = layout.rotations.get(part.name, 0)
+            self.symbol_turn = (a, b, turns) if turns else None
+            if part.kind == "H":
+                number_pins = part.name.startswith(METHOD_PREFIX) and (
+                    circuit.instances[int(part.name.removeprefix(METHOD_PREFIX))].kind == "chip"
+                )
+                if not part.name.startswith(METHOD_PREFIX) and part.name in self.expanded:
+                    self.package(part, a, b, number_pins=False, transistor_open=True)
+                else:
+                    self.package(part, a, b, number_pins=number_pins)
+                self.symbol_turn = None
+                continue
             counts[part.kind] += 1
             name = labels[part.name]
             if len(name[0]) > 24:
                 prefix = "U" if part.kind == "O" else part.kind
                 name = [f"{prefix}#{counts[part.kind]}", *name[1:]]
             pos, alignment = self.symbol(part, a, b, top)
-            component_captions.append((name, pos, part.name, alignment))
+            first, second = self.mapped(a), self.mapped(b)
+            bounds = QRectF(first, second).normalized().adjusted(-8, -14, 8, 14)
+            handle = scene.addRect(
+                bounds, QPen(Qt.PenStyle.NoPen), QBrush(QColor(0, 0, 0, 0))
+            )
+            handle.setZValue(0.5)
+            self.drag_handle(handle, "component", part.name)
+            if turns:
+                start, end = (rotate_point(pin, a, b, turns) for pin in (a, b))
+                x, y = (start[0] + end[0]) / 2, (start[1] + end[1]) / 2
+                if start[0] == end[0]:
+                    pos, alignment = (x - 0.61, y), "right"
+                else:
+                    pos, alignment = (x, y + 0.65), "center"
+            self.symbol_turn = None
+            component_captions.append((name, pos, ("component", part.name), alignment))
         for pos in layout.grounds:
             net = layout.ground_names.get(pos, "0")
-            self.ground(pos, net)
-            self.anchors.setdefault(net, pos)
-        for name, pos, part_name, alignment in component_captions:
-            self.place_caption(name, pos, INK, ("component", part_name), alignment)
+            self.ground(pos, net, layout.ground_rotations.get(pos, 0))
+            self.anchors.setdefault(net, self.scene_position(pos))
+        for name, pos, probe, alignment in component_captions:
+            item = self.place_caption(name, pos, INK, probe, alignment)
+            self.drag_handle(item, *probe)
         for name, pos in layout.labels.items():
             if (
                 pos not in layout.grounds
@@ -131,9 +294,9 @@ class SchematicView(QGraphicsView):
                     self.place_caption(
                         name.replace("_", " "), (pos[0], pos[1] + 0.17), NET, ("node", name)
                     )
-                self.anchors[name] = pos
-        for net, pos, name, left, below in layout.connectors:
-            p = point(pos)
+                self.anchors.setdefault(name, self.scene_position(pos))
+        for index, (net, pos, name, left, below) in enumerate(layout.connectors):
+            p = self.mapped(pos)
             item = scene.addEllipse(
                 p.x() - 2.3,
                 p.y() - 2.3,
@@ -142,19 +305,25 @@ class SchematicView(QGraphicsView):
                 self.pen(NET, 1.2),
                 QBrush(Qt.GlobalColor.white),
             )
-            item.setData(0, "node")
-            item.setData(1, net)
-            item.setToolTip(net)
+            item.setZValue(1.1)
             self.net_items[net].append(item)
-            self.place_caption(
+            caption = self.place_caption(
                 name,
                 (pos[0] + (-0.16 if left else 0.16), pos[1]),
                 NET,
                 ("node", net),
                 ("right" if left else "left") + (" below" if below else ""),
             )
-            self.anchors.setdefault(net, pos)
-        symbols = {part.name: (a, b) for part, a, b, _ in layout.symbols}
+            for handle in (item, caption):
+                self.drag_handle(handle, "connector", net)
+                handle.setData(3, index)
+                handle.setToolTip(net)
+            self.anchors.setdefault(net, self.scene_position(pos))
+        symbols = {
+            part.name: tuple(rotate_point(p, a, b, layout.rotations.get(part.name, 0))
+                             for p in (a, b))
+            for part, a, b, _ in layout.symbols
+        }
         connector_names = {(net, name) for net, _, name, _, _ in layout.connectors}
         tap_points = defaultdict(list)
         for tap in circuit.wire_taps:
@@ -163,7 +332,7 @@ class SchematicView(QGraphicsView):
             pos = symbols[tap.component][tap.terminal]
             tap_points[tap.net, pos].append(tap.name)
         for (net, pos), names in tap_points.items():
-            self.anchors.setdefault(net, pos)
+            self.anchors.setdefault(net, self.scene_position(pos))
             x, y = pos
             alignment = "left" if pos in layout.grounds else "center"
             label_pos = (x + 0.45, y + 0.14) if alignment == "left" else (x, y + 0.17)
@@ -174,7 +343,7 @@ class SchematicView(QGraphicsView):
                 ("node", net),
                 alignment,
             )
-            p = point(pos)
+            p = self.mapped(pos)
             marker = scene.addEllipse(
                 p.x() - 2.7,
                 p.y() - 2.7,
@@ -189,8 +358,8 @@ class SchematicView(QGraphicsView):
             marker.setToolTip(" / ".join(dict.fromkeys(names)))
             self.net_items[net].append(marker)
         for net, pos in layout.pins():
-            self.anchors.setdefault(net, pos)
-            p = point(pos)
+            self.anchors.setdefault(net, self.scene_position(pos))
+            p = self.mapped(pos)
             terminal = scene.addEllipse(
                 p.x() - 4,
                 p.y() - 4,
@@ -203,12 +372,161 @@ class SchematicView(QGraphicsView):
             terminal.setData(1, net)
             terminal.setZValue(1)
             terminal.setToolTip(net)
-        self.update_pins(pins or {}, fit=False)
-        scene.setSceneRect(scene.itemsBoundingRect().adjusted(-20, -20, 20, 20))
-        self.fit()
+
+    def scene_position(self, pos):
+        p = self.mapped(pos)
+        return p.x() / SCALE, -p.y() / SCALE
+
+    def drag_handle(self, item, kind, name):
+        item.setData(0, kind)
+        item.setData(1, name)
+        item.setData(2, (self.level, self.layout_mode))
+        item.setCursor(Qt.CursorShape.OpenHandCursor)
+
+    def package(self, part, a, b, *, number_pins, transistor_open=False):
+        x, y = a
+        height = max(0.8, (len(part.package_pins) + 1) // 2 / 2 + 0.2)
+        left, right = x + 0.55, b[0] - 0.55
+        top = self.mapped((left, y + height))
+        bottom = self.mapped((right, y - height))
+        bounds = QRectF(top, bottom).normalized()
+        rect = self.scene().addRect(
+            bounds, self.pen(INK), QBrush(QColor("#eaf1f5")),
+        )
+        self.drag_handle(rect, "hood", part.name)
+        tooltip = f"{'Close' if part.name in self.expanded else 'Open'} {part.label}"
+        rect.setToolTip(tooltip)
+        self.packages[part.name] = (part, rect.rect())
+        title = self.label(
+            part.label, ((left + right) / 2, y + height + 0.1), INK, ("hood", part.name)
+        )
+        title.setToolTip(tooltip)
+        self.drag_handle(title, "hood", part.name)
+        if transistor_open:
+            self.transistor_symbol(part, a, b)
+            return
+        for index, (pin, net, on_left, offset) in enumerate(package_pins(part), 1):
+            pin_y = y + offset
+            self.lines([
+                ((x if on_left else b[0]), pin_y),
+                ((left if on_left else right), pin_y),
+            ])
+            caption = pin
+            if number_pins:
+                caption = f"{index}  {pin}" if on_left else f"{pin}  {index}"
+            label = self.label(
+                caption, ((left + 0.2 if on_left else right - 0.2), pin_y),
+                NET, ("node", net), "left" if on_left else "right",
+            )
+            if on_left:
+                label.moveBy(0, label.boundingRect().height() / 2)
+            if self.symbol_turn is not None:
+                self.rotate_caption(label, self.symbol_turn[2])
+        if self.symbol_turn is not None:
+            self.rotate_caption(title, self.symbol_turn[2])
+
+    @staticmethod
+    def rotate_caption(label, turns):
+        label.setTransformOriginPoint(label.boundingRect().center())
+        label.setRotation(turns * 90)
+
+    def _paint_details(self, name, circuit, layout, body):
+        part, package = self.packages[name]
+        scene = self.scene()
+        # Leave the package and its external wiring in place.
+        bounds = scene.itemsBoundingRect()
+        top = bounds.bottom() + SCALE * 1.2
+        points = [point(p) for _, a, b, _ in layout.symbols for p in (a, b)]
+        points.extend(
+            point(p) for wires in layout.wires.values() for edge in wires for p in edge
+        )
+        local = QRectF()
+        if points:
+            xs = [p.x() for p in points]
+            ys = [p.y() for p in points]
+            local = QRectF(min(xs), min(ys), max(xs) - min(xs), max(ys) - min(ys))
+        margins = SCALE * 1.8
+        left = max(bounds.left(), package.center().x() - local.width() / 2 - margins)
+        self.offset = QPointF(left + margins - local.left(), top + margins * 1.4 - local.top())
+        self._paint_level(circuit, layout)
+        header = self.label(part.label, (0, 0), INK, ("hood", name), "left below")
+        header.setPos(left + 12, top + 8)
+        header.setToolTip(f"Close {part.label}")
+        if body:
+            text = self.label(list(body), (0, 0), INK, alignment="left below")
+            text.setPos(left + 12, top + 35)
+        pin_names = defaultdict(list)
+        for pin, net in part.package_pins:
+            pin_names[net].append(pin)
+        for net, pos in layout.boundary.items():
+            if net not in circuit.grounds:
+                caption = " / ".join(pin_names[net]) or net
+                self.place_caption(caption, pos, NET, ("node", net), "right")
+        area = QRectF(
+            left, top, max(header.boundingRect().width() + 24, local.width() + margins * 2),
+            local.height() + margins * 2.5,
+        )
+        if body:
+            area.setWidth(max(area.width(), text.boundingRect().width() + 24))
+            area.setHeight(48 + text.boundingRect().height())
+        border = scene.addRect(area, self.pen(QColor("#97aebf")), QBrush(QColor("#f6f9fb")))
+        border.setZValue(-2)
+        leader = QPainterPath(QPointF(package.center().x(), package.bottom()))
+        edge = package.right() + 8
+        leader.lineTo(edge, package.bottom() + 9)
+        leader.lineTo(edge, top - 10)
+        leader.lineTo(left + 12, top)
+        pen = self.pen(QColor("#8ba3b4"), 1)
+        pen.setStyle(Qt.PenStyle.DashLine)
+        scene.addPath(leader, pen).setZValue(-1)
+        self.offset = QPointF()
+
+    def toggle_package(self, name):
+        focus = self.mapToScene(self.viewport().rect().center())
+        if name in self.expanded:
+            self.expanded.remove(name)
+        else:
+            self.expanded.add(name)
+        self._redraw(focus)
+
+    def redraw(self, pins):
+        if self.circuit is not None:
+            self.saved_pins = pins
+            self._redraw()
+
+    def reset_placement(self):
+        if self.manual_layouts or self.placement_records:
+            self.manual_layouts.clear()
+            self.placement_records.clear()
+            self.rotation_bases.clear()
+            self.placement_history.clear()
+            self._redraw()
+            self.placement_changed.emit()
+
+    def remember_placement(self, key):
+        self.placement_history[key[1]].append((
+            key, self.manual_layouts.get(key), self.rotation_bases.get(key)
+        ))
+
+    def undo_placement(self):
+        history = self.placement_history.get(self.layout_mode)
+        if self.drag is not None or not history:
+            return
+        key, layout, rotation = history.pop()
+        for placements, previous in (
+            (self.manual_layouts, layout), (self.rotation_bases, rotation),
+        ):
+            if previous is None:
+                placements.pop(key, None)
+            else:
+                placements[key] = previous
+        focus = self.mapToScene(self.viewport().rect().center())
+        self._redraw(focus, selected=self.highlight)
+        self.placement_changed.emit()
 
     def update_pins(self, pins, *, fit=True):
         """Replace probe markers without recalculating the underlying layout."""
+        self.saved_pins = pins
         for item in self.pin_items:
             self.scene().removeItem(item)
         self.pin_items.clear()
@@ -249,21 +567,28 @@ class SchematicView(QGraphicsView):
         )
 
     def highlight_net(self, name):
-        for net, selected in ((self.highlight, False), (name, True)):
-            color = ACCENT if selected else INK
-            if net in self.paths:
-                self.paths[net].setPen(self.pen(color, 2.6 if selected else 1.15))
-            for item in self.net_items.get(net, ()):
-                if isinstance(item, QGraphicsSimpleTextItem):
-                    item.setBrush(ACCENT if selected else NET)
-                else:
-                    item.setPen(
-                        self.pen(ACCENT if selected else NET, 1.8 if selected else 1.2)
-                    )
+        self.paint_highlight(self.highlight, False)
+        self.paint_highlight(name, True)
         self.highlight = name
 
+    def paint_highlight(self, net, selected):
+        color = ACCENT if selected else INK
+        if net in self.paths:
+            self.paths[net].setPen(self.pen(color, 2.6 if selected else 1.15))
+        for item in self.net_items.get(net, ()):
+            if item.data(0) == "ground_stroke":
+                item.setPen(self.pen(color, 2.6 if selected else 1.55))
+            elif isinstance(item, QGraphicsSimpleTextItem):
+                item.setBrush(ACCENT if selected else NET)
+            else:
+                item.setPen(self.pen(ACCENT if selected else NET, 1.8 if selected else 1.2))
+
+    def probe_wire(self, net):
+        self.highlight_net(None if net == self.highlight else net)
+        self.probed.emit("node", net)
+
     def fit(self):
-        if self.scene().items():
+        if self.layout is not None:
             self.fitInView(self.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
             self.fit_scale = self.transform().m11()
             self.fitted = True
@@ -275,7 +600,7 @@ class SchematicView(QGraphicsView):
 
     def zoom(self, factor):
         scale = self.transform().m11() * factor
-        if self.scene().items() and self.fit_scale / 4 < scale < max(
+        if self.layout is not None and self.fit_scale / 4 < scale < max(
             80, self.fit_scale * 4
         ):
             self.fitted = False
@@ -293,9 +618,9 @@ class SchematicView(QGraphicsView):
         return pen
 
     def lines(self, points):
-        path = QPainterPath(point(points[0]))
+        path = QPainterPath(self.mapped(points[0]))
         for p in points[1:]:
-            path.lineTo(point(p))
+            path.lineTo(self.mapped(p))
         return self.scene().addPath(path, self.pen(INK))
 
     def label(self, text, p, color, probe=None, alignment="center"):
@@ -304,7 +629,7 @@ class SchematicView(QGraphicsView):
         )
         item.setBrush(color)
         item.setZValue(2)
-        anchor = point(p)
+        anchor = self.mapped(p)
         bounds = item.boundingRect()
         if alignment in {"left", "left below", "right below"}:
             offset = bounds.width() if alignment.startswith("right") else 0
@@ -336,8 +661,7 @@ class SchematicView(QGraphicsView):
             if isinstance(other, QGraphicsSimpleTextItem) and other is not item
         ]
         step = item.boundingRect().height() + 2
-        distance = 0
-        while True:
+        for distance in range(4):
             shifts = (0,) if distance == 0 else (-distance, distance)
             for shift in shifts:
                 item.setPos(base + QPointF(0, shift * step))
@@ -345,20 +669,41 @@ class SchematicView(QGraphicsView):
                 if any(bounds.intersects(rect) for rect in obstacles):
                     continue
                 if not any(
-                    isinstance(other, QGraphicsPathItem)
-                    for other in self.scene().items(bounds)
+                    other.data(0) == "wire" for other in self.scene().items(bounds)
                 ):
                     return item
-            distance += 1
+        item.setPos(base)
+        return item
 
-    def ground(self, p, name="0"):
+    def ground(self, p, name="0", turns=0):
         x, y = p
-        self.lines([(x, y), (x, y - 0.27)])
+
+        def turned(position):
+            return rotate_point(position, p, p, turns)
+
+        strokes = [self.lines([p, turned((x, y - 0.27))])]
         for i in range(3):
             width = 0.32 - 0.09 * i
             yy = y - 0.27 - 0.12 * i
-            self.lines([(x - width, yy), (x + width, yy)])
-        self.place_caption(name, (x, y - 0.65), NET, ("node", name), "bottom")
+            strokes.append(self.lines([turned((x - width, yy)), turned((x + width, yy))]))
+        for stroke in strokes:
+            stroke.setData(0, "ground_stroke")
+        self.net_items[name].extend(strokes)
+        caption = self.place_caption(
+            name, turned((x, y - 0.65)), NET, ("node", name),
+            ("bottom", "right", "center", "left")[turns],
+        )
+        bounds = QRectF(
+            self.mapped(turned((x - 0.42, y))), self.mapped(turned((x + 0.42, y - 0.65)))
+        ).normalized()
+        handle = self.scene().addRect(
+            bounds, QPen(Qt.PenStyle.NoPen), QBrush(QColor(0, 0, 0, 0))
+        )
+        handle.setZValue(1.1)
+        for item in (caption, handle):
+            self.drag_handle(item, "ground", name)
+            item.setData(3, p)
+            item.setToolTip(name)
 
     def symbol(self, part, a, b, top):
         if part.kind == "O":
@@ -376,6 +721,8 @@ class SchematicView(QGraphicsView):
                 "-" if top == "+" else "+", (x + 1.85, y - 0.35), INK, alignment="right"
             )
             return (x + 2.15, y + 0.77), "center"
+        if part.kind == "Q":
+            return self.transistor_symbol(part, a, b)
         x, y = (a[0] + b[0]) / 2, (a[1] + b[1]) / 2
         length = math.dist(a, b)
         dx, dy = (b[0] - a[0]) / length, (b[1] - a[1]) / length
@@ -441,11 +788,44 @@ class SchematicView(QGraphicsView):
             return (x, y + 0.42), "center"
         return (x - 0.61, y), "right"
 
+    def transistor_symbol(self, part, a, b):
+        x, y = a
+
+        def path(coords):
+            return self.lines([(x + xx, y + yy) for xx, yy in coords])
+
+        width = b[0] - x
+        base_x, base_offset = 1.7, 0.25
+        elbow_x = base_x + 1
+        path([(0, 0), (base_x, 0)])
+        path([(base_x, 0.66), (base_x, -0.66)])
+        path([(base_x, base_offset), (elbow_x, BJT_PIN_OFFSET), (width, BJT_PIN_OFFSET)])
+        path([(base_x, -base_offset), (elbow_x, -BJT_PIN_OFFSET), (width, -BJT_PIN_OFFSET)])
+
+        # The arrow lies on the emitter lead and points outwards for an NPN.
+        direction = 1 if part.transistor_type == "npn" else -1
+        slope = BJT_PIN_OFFSET - base_offset
+        tip = 0.5 + 0.28 * direction
+        tail = tip - 0.34 * direction
+        tail_x, tail_y = base_x + tail, -(base_offset + slope * tail)
+        wing = 0.13
+        tip_point = (base_x + tip, -(base_offset + slope * tip))
+        arrow = path([
+            tip_point,
+            (tail_x - slope * wing, tail_y - wing),
+            (tail_x + slope * wing, tail_y + wing),
+            tip_point,
+        ])
+        arrow.setBrush(QBrush(INK))
+        return (x + width / 2, y + BJT_PIN_OFFSET + 0.15), "center"
+
     def target(self, pos, nets_only=False):
         for item in self.items(pos):
             kind, name = item.data(0), item.data(1)
+            if kind in {"ground", "connector"}:
+                return "node", name
             if kind in {"wire", "node", "pin"} or (
-                kind == "component" and not nets_only
+                kind in {"component", "hood"} and not nets_only
             ):
                 return kind, name
         if nets_only:
@@ -456,7 +836,7 @@ class SchematicView(QGraphicsView):
             names = {
                 item.data(1)
                 for item in nearby
-                if item.data(0) in {"wire", "node", "pin"}
+                if item.data(0) in {"wire", "node", "pin", "ground", "connector"}
             }
             if len(names) == 1:
                 return "node", names.pop()
@@ -464,19 +844,255 @@ class SchematicView(QGraphicsView):
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
-            target = self.target(event.position().toPoint(), self.place_pin)
+            self.setFocus(Qt.FocusReason.MouseFocusReason)
+            pos = event.position().toPoint()
+            if not self.place_pin:
+                stop_at_terminal = False
+                for item in self.items(pos):
+                    key = item.data(2)
+                    if item.data(0) in {"node", "pin"}:
+                        stop_at_terminal = True
+                        break
+                    if key is not None:
+                        self.start_drag(
+                            item.data(0), item.data(1), tuple(key), pos, terminal=item.data(3)
+                        )
+                        event.accept()
+                        return
+                if not stop_at_terminal and (wire := self.nearest_wire(pos)):
+                    key, net, edge = wire
+                    self.start_drag("wire", net, key, pos, edge)
+                    event.accept()
+                    return
+            target = self.target(pos, self.place_pin)
             if target:
                 kind, name = target
+                if kind == "hood":
+                    self.toggle_package(name)
+                    return
+                if kind == "wire" and not self.place_pin:
+                    self.probe_wire(name)
+                    return
                 if kind != "component":
                     self.highlight_net(name)
                 if self.place_pin:
                     self.pin_requested.emit(name)
                 else:
-                    self.probed.emit("node" if kind == "wire" else kind, name)
+                    self.probed.emit(kind, name)
                 return
         super().mousePressEvent(event)
 
+    def start_drag(self, kind, name, key, pos, edge=None, *, terminal=None):
+        layout = self.manual_layouts.get(key, self.level_layouts[key])
+        self.drag = SchematicDrag(
+            kind, name, key, pos, layout, self.levels[key], edge=edge, terminal=terminal
+        )
+
+    def nearest_wire(self, pos, *, straight_only=True):
+        scene_pos = self.mapToScene(pos)
+        tolerance = 5 / max(self.transform().m11(), 0.01)
+        best = tolerance
+        match = None
+        for key, offset in self.level_offsets.items():
+            layout = self.manual_layouts.get(key, self.level_layouts[key])
+            for net, edges in layout.wires.items():
+                for a, b in edges:
+                    diagonal = a[0] != b[0] and a[1] != b[1]
+                    if a == b or (straight_only and diagonal):
+                        continue
+                    first, second = point(a) + offset, point(b) + offset
+                    run = second - first
+                    fraction = QPointF.dotProduct(scene_pos - first, run) / QPointF.dotProduct(run, run)
+                    fraction = max(0, min(1, fraction))
+                    closest = first + fraction * run
+                    distance = math.hypot(closest.x() - scene_pos.x(), closest.y() - scene_pos.y())
+                    if distance >= best:
+                        continue
+                    cuts = layout.crossings.get((net, a, b), ())
+                    if diagonal:
+                        gap = any(abs(fraction - cut) * math.dist(a, b) < 0.12 for cut in cuts)
+                    else:
+                        gap = a[0] == b[0] and any(
+                            abs(-(closest.y() - offset.y()) / SCALE - cut) < 0.12 for cut in cuts
+                        )
+                    if gap:
+                        continue
+                    best = distance
+                    match = key, net, (a, b)
+        return match
+
+    def preview_drag(self, pos):
+        drag = self.drag
+        if pos == drag.last_position:
+            return
+        drag.last_position = pos
+        delta = self.mapToScene(pos) - self.mapToScene(drag.start)
+        dx, dy = round(delta.x() / SCALE, 2), round(-delta.y() / SCALE, 2)
+        pixels_per_unit = self.transform().m11() * SCALE
+        if drag.kind == "wire":
+            a, b = drag.edge
+            distance = dx if a[0] == b[0] else dy
+            if (
+                drag.snapped_offset is not None
+                and abs(distance - drag.snapped_offset) * pixels_per_unit <= SNAP_RELEASE_PIXELS
+            ):
+                return
+            drag.preview, drag.snapped_offset = move_wire(
+                drag.circuit, drag.original, drag.name, drag.edge, distance,
+                snap=SNAP_PIXELS / pixels_per_unit,
+            )
+        elif drag.kind == "connector":
+            self.preview_connector_drag(drag, (dx, dy), pixels_per_unit)
+        else:
+            self.preview_symbol_drag(drag, (dx, dy), pixels_per_unit)
+        self._redraw(preview=drag, selected=drag.name if drag.kind == "wire" else self.highlight)
+
+    def preview_connector_drag(self, drag, delta, pixels_per_unit):
+        index = drag.terminal
+        net, start, name, *_ = drag.original.connectors[index]
+        end = tuple(a + b for a, b in zip(start, delta))
+        matching = sorted(
+            (math.dist(end, pos), i, pos)
+            for i, (other, pos, label, *_) in enumerate(drag.original.connectors)
+            if i != index and (other, label) == (net, name)
+        )
+        for distance, i, pos in matching:
+            if distance * pixels_per_unit > SNAP_PIXELS:
+                break
+            if distance >= math.dist(start, pos):
+                continue
+            drawing = move_connector(
+                drag.circuit, drag.original, index, pos, join=i, diagonal=drag.diagonal
+            )
+            if drawing is not None:
+                drag.preview = drawing
+                return
+        drag.preview = move_connector(
+            drag.circuit, drag.original, index, end, diagonal=drag.diagonal
+        )
+
+    def preview_symbol_drag(self, drag, delta, pixels_per_unit):
+        ground = tuple(drag.terminal) if drag.kind == "ground" else None
+        move = move_ground if ground is not None else move_symbol
+        target = ground if ground is not None else drag.name
+        if drag.alignments is None and not drag.diagonal:
+            alignments = ground_wire_alignments if ground is not None else symbol_wire_alignments
+            drag.align_axis, drag.alignments = alignments(drag.original, target)
+        if ground is not None and not drag.diagonal:
+            attachment = ground_attachment(drag.original, ground)
+            direct = tuple(end - start for start, end in zip(ground, attachment))
+            if math.dist(delta, direct) * pixels_per_unit <= GROUND_PIN_SNAP_PIXELS:
+                drawing = move(drag.circuit, drag.original, target, direct)
+                if drawing is not None:
+                    drag.preview = drawing
+                    return
+        axis = drag.align_axis
+        if drag.alignments and not drag.diagonal:
+            distance = delta[axis]
+            acquire = SNAP_PIXELS / pixels_per_unit
+            release = SNAP_RELEASE_PIXELS / pixels_per_unit
+            held = drag.snapped_offset
+            offsets = sorted(
+                (offset for offset in drag.alignments if abs(offset - distance) <= acquire),
+                key=lambda offset: (
+                    offset == 0, -drag.alignments[offset], abs(offset - distance), offset
+                ),
+            )
+            if held is not None and abs(held - distance) <= release:
+                offsets.insert(0, held)
+            for offset in dict.fromkeys(offsets):
+                snapped = list(delta)
+                snapped[axis] = offset
+                drawing = move(
+                    drag.circuit, drag.original, target, snapped, align_axis=axis
+                )
+                if drawing is not None:
+                    drag.preview, drag.snapped_offset = drawing, offset
+                    return
+        drag.snapped_offset = None
+        drag.preview = move(
+            drag.circuit, drag.original, target, delta, diagonal=drag.diagonal
+        )
+
+    def paint_pending_drag(self):
+        if self.drag is not None and self.drag.pending is not None:
+            self.preview_drag(self.drag.pending)
+
+    def mouseMoveEvent(self, event):
+        if self.drag is None:
+            super().mouseMoveEvent(event)
+            return
+        end = event.position().toPoint()
+        diagonal = bool(event.modifiers() & Qt.KeyboardModifier.ShiftModifier)
+        if diagonal != self.drag.diagonal:
+            self.drag.diagonal = diagonal
+            self.drag.last_position = None
+        if (end - self.drag.start).manhattanLength() >= 4 or self.drag.last_position is not None:
+            self.drag.pending = end
+            if not self.drag_timer.isActive():
+                self.drag_timer.start()
+        event.accept()
+
+    def mouseReleaseEvent(self, event):
+        if event.button() != Qt.MouseButton.LeftButton or self.drag is None:
+            super().mouseReleaseEvent(event)
+            return
+        drag = self.drag
+        self.drag_timer.stop()
+        end = event.position().toPoint()
+        diagonal = bool(event.modifiers() & Qt.KeyboardModifier.ShiftModifier)
+        if diagonal != drag.diagonal:
+            drag.diagonal = diagonal
+            drag.last_position = None
+        if (end - drag.start).manhattanLength() < 4 and drag.pending is None:
+            self.drag = None
+            if drag.kind == "hood":
+                self.toggle_package(drag.name)
+            elif drag.kind == "wire":
+                self.probe_wire(drag.name)
+            elif drag.kind in {"ground", "connector"}:
+                self.highlight_net(drag.name)
+                self.probed.emit("node", drag.name)
+            else:
+                self.probed.emit(drag.kind, drag.name)
+        else:
+            self.preview_drag(end)
+            self.drag = None
+            if drag.preview is None:
+                self.move_refused.emit()
+            elif drag.preview is not drag.original:
+                self.remember_placement(drag.key)
+                self.rotation_bases.pop(drag.key, None)
+                self.manual_layouts[drag.key] = drag.preview
+                self.placement_changed.emit()
+            focus = self.mapToScene(self.viewport().rect().center())
+            self._redraw(focus, selected=self.highlight)
+        event.accept()
+
     def contextMenuEvent(self, event):
+        wire = None
+        if not self.place_pin:
+            for item in self.items(event.pos()):
+                kind = item.data(0)
+                key = item.data(2)
+                if kind == "ground":
+                    ground, net = tuple(item.data(3)), item.data(1)
+                    menu = QMenu(self)
+                    menu.addAction("Rotate clockwise", lambda: self.rotate_ground(tuple(key), ground))
+                    menu.addAction("Add pin…", lambda: self.pin_requested.emit(net))
+                    menu.exec(event.globalPos())
+                    return
+                if kind in {"node", "pin", "connector"}:
+                    break
+                if key is not None and kind in {"component", "hood"}:
+                    name = item.data(1)
+                    menu = QMenu(self)
+                    menu.addAction(
+                        "Rotate clockwise", lambda: self.rotate_component(tuple(key), name)
+                    )
+                    menu.exec(event.globalPos())
+                    return
+            wire = self.nearest_wire(event.pos(), straight_only=False)
         target = self.target(event.pos(), nets_only=True)
         if not target:
             return
@@ -487,4 +1103,59 @@ class SchematicView(QGraphicsView):
             menu.addAction("Remove pin", lambda: self.pin_removed.emit(net))
         else:
             menu.addAction("Add pin…", lambda: self.pin_requested.emit(net))
+            if wire and wire[1] == net and net not in self.levels[wire[0]].grounds:
+                pos = self.mapToScene(event.pos()) - self.level_offsets[wire[0]]
+                location = pos.x() / SCALE, -pos.y() / SCALE
+                menu.addAction("Split", lambda: self.split_connection(*wire, location))
         menu.exec(event.globalPos())
+
+    def split_connection(self, key, net, edge, location):
+        original = self.manual_layouts.get(key, self.level_layouts[key])
+        drawing = split_wire(self.levels[key], original, net, edge, location)
+        if drawing is None:
+            self.move_refused.emit()
+            return
+        self.remember_placement(key)
+        self.rotation_bases.pop(key, None)
+        self.manual_layouts[key] = drawing
+        self.placement_changed.emit()
+        self._redraw(self.mapToScene(self.viewport().rect().center()), selected=net)
+
+    def rotate_ground(self, key, point):
+        original = self.manual_layouts.get(key, self.level_layouts[key])
+        rotations = dict(original.ground_rotations)
+        turns = (rotations.pop(point, 0) + 1) % 4
+        if turns:
+            rotations[point] = turns
+        self.remember_placement(key)
+        self.rotation_bases.pop(key, None)
+        self.manual_layouts[key] = replace(original, ground_rotations=rotations)
+        self.placement_changed.emit()
+        self._redraw(self.mapToScene(self.viewport().rect().center()), selected=self.highlight)
+
+    def rotate_component(self, key, name):
+        original = self.manual_layouts.get(key, self.level_layouts[key])
+        part, base, turns = self.rotation_bases.get(key, (name, original, 0))
+        if part != name:
+            base, turns = original, 0
+        turns = (turns + 1) % 4
+        drawing = (
+            move_symbol(self.levels[key], base, name, (0, 0), rotate=turns)
+            if turns else base
+        )
+        if drawing is None:
+            # A pin may land on a different net at the exact pivot, as
+            # when flipping a part in an end-to-end chain. Try a small nudge.
+            for offset in ((0, 1.5), (0, -1.5), (1.5, 0), (-1.5, 0),
+                           (0, 2.5), (0, -2.5), (2.5, 0), (-2.5, 0)):
+                drawing = move_symbol(self.levels[key], base, name, offset, rotate=turns)
+                if drawing is not None:
+                    break
+        if drawing is None:
+            self.move_refused.emit()
+            return
+        self.remember_placement(key)
+        self.manual_layouts[key] = drawing
+        self.rotation_bases[key] = name, base, turns
+        self.placement_changed.emit()
+        self._redraw(self.mapToScene(self.viewport().rect().center()), selected=self.highlight)

@@ -137,8 +137,9 @@ def conflicts(notes):
 @dataclass(frozen=True)
 class Diagnostic:
     severity: str
-    line: int
+    line: int | None
     message: str
+    path: object = None
 
 
 def diagnostics(source, result):
@@ -153,7 +154,9 @@ def diagnostics(source, result):
     for node in result.circuit.nodes:
         if node == "0" or node in inputs:
             continue
-        incident = [p for p in parts if node in (p.p, p.n)]
+        incident = [
+            p for p in parts if node in (p.p, p.n) or (p.kind == "Q" and node == p.base)
+        ]
         neighbors = {pin for p in incident for pin in (p.p, p.n)} - {node}
         if (
             len(incident) < 2

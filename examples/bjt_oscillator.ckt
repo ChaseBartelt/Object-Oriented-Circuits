@@ -1,0 +1,12 @@
+# Two-transistor astable multivibrator.
+# In Results, select c1, set Initial capacitor to C1 and Initial voltage to 1 V,
+# then click Run. The initial voltage breaks the startup symmetry.
+VCC(5) between(vcc, 0);
+RC1(4.7k) between(vcc, c1);
+RC2(5.6k) between(vcc, c2);
+RB1(47k) between(vcc, b1);
+RB2(56k) between(vcc, b2);
+C1(10n) between(c1, b2);
+C2(10n) between(c2, b1);
+transQ1(b1, c1, 0, npn);
+transQ2(b2, c2, 0, npn);

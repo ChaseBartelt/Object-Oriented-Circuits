@@ -1,20 +1,28 @@
 """Exercise the normal editor, solve, render, and file workflows through Qt."""
 
 import os
+import shutil
 import unittest
+from dataclasses import replace
+from math import dist
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from time import monotonic
 from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QEvent, Qt
-from PySide6.QtGui import QHelpEvent, QTextCursor
+from PySide6.QtCore import QEvent, QPoint, Qt
+from PySide6.QtGui import QContextMenuEvent, QHelpEvent, QTextCursor
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QPushButton, QToolTip
 
 from circuitlab.gui import MainWindow
-from circuitlab.schematic import point
+from circuitlab.layout_checks import preserves_nets
+from circuitlab.placement import placement_path
+from circuitlab.routing import _mark_crossings, move_ground, move_symbol
+from circuitlab.schematic import SCALE, point
+from circuitlab.spice import export_spice
 
 EXAMPLES = Path(__file__).resolve().parents[1] / "examples"
 
@@ -25,15 +33,38 @@ class ApplicationTest(unittest.TestCase):
         cls.app = QApplication.instance() or QApplication([])
 
     def setUp(self):
+        self.examples_dir = TemporaryDirectory()
+        self.addCleanup(self.examples_dir.cleanup)
+        examples = Path(self.examples_dir.name)
+        shutil.copytree(EXAMPLES, examples, dirs_exist_ok=True,
+                        ignore=shutil.ignore_patterns("*.layout.json"))
         self.window = MainWindow()
+        open_path = self.window.open_path
+
+        def open_example(path, **kwargs):
+            path = Path(path)
+            if path.is_relative_to(EXAMPLES):
+                path = examples / path.relative_to(EXAMPLES)
+            return open_path(path, **kwargs)
+
+        self.window.open_path = open_example
         self.window.show()
         self.app.processEvents()
 
     def tearDown(self):
-        self.window.editor.document().setModified(False)
+        self.window.placement_dirty = False
+        for editor, state in self.window.documents.items():
+            state.placement_dirty = False
+            editor.document().setModified(False)
         self.window.close()
         self.window.deleteLater()
         self.app.processEvents()
+
+    def wait_for_drag_preview(self, schematic, end):
+        deadline = monotonic() + 1
+        while schematic.drag.last_position != end and monotonic() < deadline:
+            QTest.qWait(10)
+        self.assertEqual(schematic.drag.last_position, end)
 
     def test_solve_search_and_probe(self):
         win = self.window
@@ -55,6 +86,626 @@ class ApplicationTest(unittest.TestCase):
             pos=win.schematic.mapFromScene(label.sceneBoundingRect().center()),
         )
         self.assertIn("V(out) relative to 0 = 4 V", win.status.text())
+
+    def test_preview_toggle_gives_the_editor_full_width(self):
+        win = self.window
+        win.open_path(EXAMPLES / "voltage_divider.ckt")
+        win.split.setSizes([530, 750])
+        self.app.processEvents()
+        width = win.editor.width()
+        drawing = win.schematic.layout
+        win.views.setCurrentWidget(win.results)
+        win.preview_button.click()
+        self.app.processEvents()
+        self.assertTrue(win.views.isHidden())
+        self.assertGreater(win.editor.width(), width)
+        self.assertEqual(win.preview_button.text(), "Show preview")
+        self.assertIs(win.schematic.layout, drawing)
+        win.preview_button.click()
+        self.app.processEvents()
+        self.assertTrue(win.views.isVisible())
+        self.assertEqual(win.editor.width(), width)
+        self.assertIs(win.views.currentWidget(), win.results)
+        self.assertIs(win.schematic.layout, drawing)
+
+    def test_drag_moves_package_and_resistor_without_editing_the_circuit(self):
+        win = self.window
+        win.open_path(EXAMPLES / "timer555.ckt")
+        schematic = win.schematic
+        source = win.editor.toPlainText()
+        netlist = export_spice(source)
+        original = schematic.layout
+
+        def drag(name, start, dx, dy):
+            before = schematic.layout.positions[name]
+            end = start + QPoint(round(dx * schematic.transform().m11() * SCALE),
+                                 round(dy * schematic.transform().m11() * SCALE))
+            QTest.mousePress(schematic.viewport(), Qt.MouseButton.LeftButton, pos=start)
+            QTest.mouseMove(schematic.viewport(), end)
+            self.wait_for_drag_preview(schematic, end)
+            preview = schematic.layout
+            self.assertNotEqual(preview.positions[name], before)
+            QTest.mouseRelease(schematic.viewport(), Qt.MouseButton.LeftButton, pos=end)
+            self.assertIs(schematic.layout, preview)
+            self.assertTrue(preserves_nets(schematic.levels[None, "auto"], schematic.layout))
+
+        chip = next(item for item in schematic.scene().items()
+                    if item.data(0) == "hood" and item.toolTip() == "Open timer555"
+                    and not hasattr(item, "text"))
+        drag("@method:0", schematic.mapFromScene(chip.sceneBoundingRect().center()), 3, 0)
+        self.assertFalse(schematic.expanded)
+        _, a, b, _ = next(symbol for symbol in schematic.layout.symbols if symbol[0].name == "RA")
+        center = point(((a[0] + b[0]) / 2, (a[1] + b[1]) / 2))
+        drag("RA", schematic.mapFromScene(center), 0, -3)
+        self.assertEqual(win.editor.toPlainText(), source)
+        self.assertEqual(export_spice(win.editor.toPlainText()), netlist)
+        self.assertFalse(win.editor.document().isModified())
+        schematic.reset_placement()
+        self.assertIs(schematic.layout, original)
+
+    def test_clicking_the_same_wire_again_clears_its_highlight(self):
+        win = self.window
+        win.open_path(EXAMPLES / "timer555.ckt")
+        schematic = win.schematic
+        path = schematic.paths["supply"]
+        normal_pen = path.pen()
+        a, b = max(schematic.layout.visible_segments("supply"), key=lambda edge: dist(*edge))
+        midpoint = point(((a[0] + b[0]) / 2, (a[1] + b[1]) / 2))
+        pos = schematic.mapFromScene(midpoint)
+
+        QTest.mouseClick(schematic.viewport(), Qt.MouseButton.LeftButton, pos=pos)
+        self.assertEqual(schematic.highlight, "supply")
+        self.assertNotEqual(path.pen(), normal_pen)
+        QTest.mouseClick(schematic.viewport(), Qt.MouseButton.LeftButton, pos=pos)
+        self.assertIsNone(schematic.highlight)
+        self.assertEqual(path.pen(), normal_pen)
+
+    def test_ground_drag_previews_a_connected_move(self):
+        win = self.window
+        for example in ("timer555.ckt", "voltage_divider.ckt"):
+            with self.subTest(example=example):
+                win.open_path(EXAMPLES / example)
+                schematic = win.schematic
+                source = win.editor.toPlainText()
+                original = schematic.layout
+                ground = original.grounds[0]
+                start = schematic.mapFromScene(point((ground[0], ground[1] - 0.42)))
+                scale = round(schematic.transform().m11() * SCALE)
+                end = start + QPoint(-scale, scale)
+
+                QTest.mousePress(schematic.viewport(), Qt.MouseButton.LeftButton, pos=start)
+                self.assertEqual(schematic.drag.kind, "ground")
+                QTest.mouseMove(schematic.viewport(), end)
+                self.wait_for_drag_preview(schematic, end)
+                preview = schematic.layout
+                moved = preview.grounds[0]
+                self.assertNotEqual(moved, ground)
+                self.assertEqual(preview.grounds[1:], original.grounds[1:])
+                self.assertTrue(any(moved in edge for edge in preview.wires["0"]))
+                self.assertTrue(preserves_nets(schematic.levels[None, "auto"], preview))
+
+                QTest.mouseRelease(schematic.viewport(), Qt.MouseButton.LeftButton, pos=end)
+                self.assertIs(schematic.layout, preview)
+                self.assertEqual(preview.positions, original.positions)
+                self.assertEqual(win.editor.toPlainText(), source)
+                self.assertFalse(win.editor.document().isModified())
+
+    def test_ground_drag_snaps_directly_below_its_source_pin(self):
+        win = self.window
+        win.open_path(EXAMPLES / "timer555.ckt")
+        schematic = win.schematic
+        key = None, "auto"
+        original, circuit = schematic.layout, schematic.levels[key]
+        ground = original.grounds[1]
+        pin = next(b for part, _, b, _ in original.symbols if part.name == "VReset")
+        schematic.manual_layouts[key] = move_ground(circuit, original, ground, (0.5, -0.28))
+        schematic.redraw(schematic.saved_pins)
+        x, y = schematic.layout.grounds[1]
+        start = schematic.mapFromScene(point((x, y - 0.42)))
+        end = start + QPoint(-6, 12)
+
+        QTest.mousePress(schematic.viewport(), Qt.MouseButton.LeftButton, pos=start)
+        QTest.mouseMove(schematic.viewport(), end)
+        self.wait_for_drag_preview(schematic, end)
+        preview = schematic.layout
+        moved = preview.grounds[1]
+        self.assertEqual(moved[0], pin[0])
+        self.assertIn(tuple(sorted((moved, pin))), preview.wires["0"])
+        QTest.mouseRelease(schematic.viewport(), Qt.MouseButton.LeftButton, pos=end)
+        self.assertIs(schematic.layout, preview)
+        self.assertTrue(preserves_nets(circuit, preview))
+        self.assertFalse(win.editor.document().isModified())
+
+    def test_split_move_and_join_connectors_then_undo(self):
+        win = self.window
+        win.open_path(EXAMPLES / "timer555.ckt")
+        schematic = win.schematic
+        original = schematic.layout
+        a, b = max(original.wires["supply"], key=lambda edge: abs(edge[1][0] - edge[0][0]))
+        middle = schematic.mapFromScene(point(((a[0] + b[0]) / 2, a[1])))
+        event = QContextMenuEvent(
+            QContextMenuEvent.Reason.Mouse, middle, schematic.viewport().mapToGlobal(middle)
+        )
+        with patch("circuitlab.schematic.QMenu") as menu:
+            schematic.contextMenuEvent(event)
+            dict(call.args for call in menu.return_value.addAction.call_args_list)["Split"]()
+        split = schematic.layout
+        i, j = len(split.connectors) - 2, len(split.connectors) - 1
+        net, left, name, *_ = split.connectors[i]
+        self.assertEqual((net, name), ("supply", split.connectors[j][2]))
+        circuit = schematic.levels[None, "auto"]
+        self.assertTrue(preserves_nets(circuit, split))
+
+        def drag(start, end):
+            start, end = (schematic.mapFromScene(point(p)) for p in (start, end))
+            QTest.mousePress(schematic.viewport(), Qt.MouseButton.LeftButton, pos=start)
+            self.assertEqual(schematic.drag.kind, "connector")
+            QTest.mouseMove(schematic.viewport(), end)
+            self.wait_for_drag_preview(schematic, end)
+            preview = schematic.layout
+            QTest.mouseRelease(schematic.viewport(), Qt.MouseButton.LeftButton, pos=end)
+            self.assertIs(schematic.layout, preview)
+            self.assertTrue(preserves_nets(circuit, preview))
+            return preview
+
+        moved = drag(left, (left[0] - 2, left[1] + 1.5))
+        self.assertNotEqual(moved.connectors[i][1], left)
+        self.assertEqual(moved.connectors[j], split.connectors[j])
+        joined = drag(moved.connectors[i][1], moved.connectors[j][1])
+        self.assertEqual(joined.connectors, original.connectors)
+        schematic.undo_placement()
+        self.assertIs(schematic.layout, moved)
+
+    def test_rotated_ground_snaps_to_the_package_pin(self):
+        win = self.window
+        win.open_path(EXAMPLES / "timer555.ckt")
+        schematic = win.schematic
+        original = schematic.layout
+        x, y = original.grounds[-1]
+        cursor = schematic.mapFromScene(point((x, y - 0.42)))
+        event = QContextMenuEvent(
+            QContextMenuEvent.Reason.Mouse, cursor, schematic.viewport().mapToGlobal(cursor)
+        )
+        with patch("circuitlab.schematic.QMenu") as menu:
+            schematic.contextMenuEvent(event)
+            dict(call.args for call in menu.return_value.addAction.call_args_list)["Rotate clockwise"]()
+        self.assertEqual(schematic.layout.ground_rotations[(x, y)], 1)
+        a, b = original.wires["0"][-1]
+        pin = a if b == (x, y) else b
+        start = schematic.mapFromScene(point((x - 0.42, y)))
+        end = start + schematic.mapFromScene(point(pin)) - schematic.mapFromScene(point((x, y)))
+        QTest.mousePress(schematic.viewport(), Qt.MouseButton.LeftButton, pos=start)
+        self.assertEqual(schematic.drag.kind, "ground")
+        QTest.mouseRelease(schematic.viewport(), Qt.MouseButton.LeftButton, pos=end)
+        layout = schematic.layout
+        self.assertAlmostEqual(layout.grounds[-1][0], pin[0])
+        self.assertAlmostEqual(layout.grounds[-1][1], pin[1])
+        self.assertEqual(layout.ground_rotations[layout.grounds[-1]], 1)
+        self.assertEqual(len(layout.wires["0"]), len(original.wires["0"]) - 1)
+        self.assertTrue(preserves_nets(schematic.levels[None, "auto"], layout))
+
+    def test_saved_layout_reopens_in_a_new_window_without_changing_source(self):
+        win = self.window
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "timer555.ckt"
+            source = (EXAMPLES / "timer555.ckt").read_bytes()
+            path.write_bytes(source)
+            win.open_path(path)
+            win.wire_style.setCurrentIndex(win.wire_style.findData("routed"))
+            schematic = win.schematic
+            original = schematic.layout
+            a, b = max(original.wires["supply"], key=lambda edge: abs(edge[1][0] - edge[0][0]))
+            start = schematic.mapFromScene(point(((a[0] + b[0]) / 2, a[1])))
+            end = start - QPoint(0, round(schematic.transform().m11() * SCALE))
+            QTest.mousePress(schematic.viewport(), Qt.MouseButton.LeftButton, pos=start)
+            QTest.mouseRelease(schematic.viewport(), Qt.MouseButton.LeftButton, pos=end)
+            self.assertNotEqual(schematic.layout.wires, original.wires)
+            schematic.rotate_ground((None, "routed"), schematic.layout.grounds[-1])
+            saved = schematic.layout
+            self.assertTrue(win.isWindowModified())
+            self.assertTrue(win.save())
+            self.assertFalse(win.isWindowModified())
+            self.assertEqual(path.read_bytes(), source)
+            self.assertTrue(placement_path(path).is_file())
+
+            reopened = MainWindow()
+            try:
+                reopened.open_path(path, reload=True)
+                self.assertEqual(reopened.wire_style.currentData(), "routed")
+                self.assertEqual(reopened.schematic.layout, saved)
+                reopened.render_source()
+                self.assertEqual(reopened.schematic.layout, saved)
+                reopened.schematic.reset_placement()
+                self.assertTrue(reopened.save())
+                reopened.open_path(path, reload=True)
+                self.assertEqual(reopened.schematic.layout, original)
+            finally:
+                reopened.placement_dirty = False
+                reopened.close()
+                reopened.deleteLater()
+
+    def test_hovering_a_wire_in_the_editor_previews_only_its_path(self):
+        win = self.window
+        source = (
+            "VCC(5) between(start, 0);\n"
+            "R1(1k) between(start, middle);\n"
+            "R2(1k) between(middle, 0);\n"
+            "R3(1k) between(middle, split);\n"
+            "R4(1k) between(split, 0);"
+        )
+        win.editor.setPlainText(source)
+        win.render_source()
+        schematic = win.schematic
+        scene, layout = schematic.scene(), schematic.layout
+        cursor = win.editor.textCursor()
+        cursor.setPosition(source.index("middle", source.index("R3")) + 2)
+        pos = win.editor.cursorRect(cursor).center()
+        QApplication.sendEvent(win.editor.viewport(), QHelpEvent(
+            QEvent.Type.ToolTip, pos, win.editor.viewport().mapToGlobal(pos),
+        ))
+        self.app.processEvents()
+        preview = win.trace_view
+        self.assertTrue(win.trace_popup.isVisible())
+        self.assertEqual({part.name for part, *_ in preview.layout.symbols}, {"R1", "R3", "R4"})
+        self.assertEqual(preview.trace_nets, {"middle"})
+        self.assertEqual(preview.paths["middle"].pen().color().name(), "#006dab")
+        self.assertIs(schematic.scene(), scene)
+        QApplication.sendEvent(win.editor.viewport(), QEvent(QEvent.Type.Leave))
+        self.assertFalse(win.trace_popup.isVisible())
+        self.assertIs(schematic.scene(), scene)
+        self.assertIs(schematic.layout, layout)
+
+    def test_hover_on_builtin_gate_and_chip_shows_reference_pinout(self):
+        win = self.window
+        source = "chip timer555(gnd, trig, out, reset, ctrl, thres, disch, vcc) {\n    not(vcc, trig, out);\n}"
+        win.editor.setPlainText(source)
+        for name, expected in (
+            ("timer555", ("chip", "timer555", ("gnd", "trig", "out", "reset", "ctrl", "thres", "disch", "vcc"))),
+            ("not", ("builtin", "NOT", 1)),
+        ):
+            cursor = win.editor.textCursor()
+            cursor.setPosition(source.index(name) + 1)
+            pos = win.editor.cursorRect(cursor).center()
+            QApplication.sendEvent(win.editor.viewport(), QHelpEvent(
+                QEvent.Type.ToolTip, pos, win.editor.viewport().mapToGlobal(pos),
+            ))
+            self.assertTrue(win.device_popup.isVisible())
+            self.assertEqual(win.device_reference.reference, expected)
+            QApplication.sendEvent(win.editor.viewport(), QEvent(QEvent.Type.Leave))
+            self.assertFalse(win.device_popup.isVisible())
+
+    def test_folder_and_tabs_compile_unsaved_connector_file(self):
+        win = self.window
+        with TemporaryDirectory() as directory:
+            folder = Path(directory)
+            root = folder / "main.ckt"
+            load = folder / "load.ckt"
+            root.write_text('include("load.ckt");\nconnector(signal, 0);\n'
+                            'V1(8) between(vcc, 0);\nR1(1k) between(vcc, signal);\n')
+            load.write_text("connector(signal, 0);\nR1(1k) between(signal, 0);\n")
+            with patch("circuitlab.gui.QFileDialog.getExistingDirectory", return_value=str(folder)):
+                win.pick_folder()
+            self.assertEqual(Path(win.file_model.rootPath()), folder)
+            self.assertTrue(win.explorer.isVisible())
+            win.open_path(root)
+            win.open_path(load)
+            edit = win.editor
+            self.assertEqual(win.editor_tabs.count(), 2)
+            win.editor.setPlainText(edit.toPlainText().replace("1k", "3k"))
+            win.editor.document().setModified(True)
+            win.open_path(root)
+            signal = win.solution.network.nodes.index("signal")
+            self.assertAlmostEqual(win.solution.network.voltage[signal], 6)
+            win.open_path(load)
+            self.assertIs(win.editor, edit)
+            self.assertIn("3k", edit.toPlainText())
+            self.assertIn("1k", load.read_text())
+            self.assertEqual(win.editor_tabs.count(), 2)
+
+    def test_files_panel_navigates_folder_history(self):
+        win = self.window
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            first = root / "first"
+            second = root / "second"
+            first.mkdir()
+            second.mkdir()
+            with patch("circuitlab.gui.QFileDialog.getExistingDirectory", return_value=str(root)):
+                win.pick_folder()
+            win.open_tree_file(win.file_model.index(str(first)))
+            self.assertEqual(Path(win.file_model.rootPath()), first)
+            self.assertFalse(win.folder_forward.isEnabled())
+            win.folder_back.click()
+            self.assertEqual(Path(win.file_model.rootPath()), root)
+            self.assertTrue(win.folder_forward.isEnabled())
+            win.folder_forward.click()
+            self.assertEqual(Path(win.file_model.rootPath()), first)
+            win.folder_up.click()
+            self.assertEqual(Path(win.file_model.rootPath()), root)
+            win.open_tree_file(win.file_model.index(str(second)))
+            self.assertEqual(Path(win.file_model.rootPath()), second)
+            self.assertEqual(win.editor_tabs.count(), 1)
+
+    def test_bjt_oscillator_runs_and_pauses_in_results(self):
+        win = self.window
+        win.open_path(EXAMPLES / "bjt_oscillator.ckt")
+        win.views.setCurrentWidget(win.results)
+        scope = win.scope
+        scope.node.setCurrentText("c1")
+        scope.initial.setCurrentText("C1")
+        scope.voltage.setValue(1)
+        scope.run.click()
+        self.assertEqual(scope.run.text(), "Pause")
+        for _ in range(35):
+            scope.pending[1].result(timeout=5)
+            scope.advance()
+        scope.run.click()
+        points = tuple(scope.waveform.samples)
+        self.assertEqual(scope.run.text(), "Resume")
+        self.assertFalse(scope.timer.isActive())
+        self.assertGreater(sum((x > 2) != (y > 2) for (_, x), (_, y) in zip(points, points[1:])), 5)
+        scope.run.click()
+        scope.pending[1].result(timeout=5)
+        scope.advance()
+        scope.pending[1].result(timeout=5)
+        scope.advance()
+        self.assertGreater(scope.waveform.samples[-1][0], points[-1][0])
+        scope.run.click()
+
+    def test_ctrl_z_undoes_wire_moves_only_when_schematic_has_focus(self):
+        win = self.window
+        win.open_path(EXAMPLES / "timer555.ckt")
+        schematic = win.schematic
+        win.activateWindow()
+        self.app.processEvents()
+        original = schematic.layout
+        source = win.editor.toPlainText()
+        layouts = [original]
+        for _ in range(2):
+            a, b = max(
+                ((a, b) for a, b in schematic.layout.wires["supply"] if a[1] == b[1]),
+                key=lambda edge: dist(*edge),
+            )
+            start = schematic.mapFromScene(point(((a[0] + b[0]) / 2, a[1])))
+            end = start + QPoint(0, -round(schematic.transform().m11() * SCALE))
+            QTest.mousePress(schematic.viewport(), Qt.MouseButton.LeftButton, pos=start)
+            QTest.mouseRelease(schematic.viewport(), Qt.MouseButton.LeftButton, pos=end)
+            self.assertIsNot(schematic.layout, layouts[-1])
+            layouts.append(schematic.layout)
+
+        undo = Qt.KeyboardModifier.ControlModifier
+        QTest.keyClick(schematic.viewport(), Qt.Key.Key_Z, undo)
+        self.assertIs(schematic.layout, layouts[1])
+
+        win.results.search.setFocus()
+        QTest.keyClick(win.results.search, Qt.Key.Key_Z, undo)
+        self.assertIs(schematic.layout, layouts[1])
+
+        schematic.setFocus()
+        QTest.keyClick(schematic.viewport(), Qt.Key.Key_Z, undo)
+        self.assertIs(schematic.layout, original)
+        self.assertFalse(win.editor.document().isModified())
+
+        win.editor.setFocus()
+        win.editor.insertPlainText("# edit\n")
+        QTest.keyClick(win.editor, Qt.Key.Key_Z, undo)
+        self.assertEqual(win.editor.toPlainText(), source)
+
+    def test_wire_drag_snaps_and_holds_a_jog_flat_in_the_preview(self):
+        win = self.window
+        win.open_path(EXAMPLES / "timer555.ckt")
+        schematic = win.schematic
+        original = schematic.layout
+        source_pin = original.positions["VCC"]
+        a, b = next(
+            (a, b) for a, b in original.wires["supply"] if a == source_pin and a[1] == b[1]
+        )
+        x, y = (a[0] + b[0]) / 2, a[1]
+        start = schematic.mapFromScene(point((x, y)))
+        bumped = schematic.mapFromScene(point((x, y - 1)))
+        QTest.mousePress(schematic.viewport(), Qt.MouseButton.LeftButton, pos=start)
+        QTest.mouseRelease(schematic.viewport(), Qt.MouseButton.LeftButton, pos=bumped)
+        jog = next(
+            (p, q) for p, q in schematic.layout.wires["supply"]
+            if p[1] == q[1] and p[0] < x < q[0]
+        )
+        self.assertNotEqual(jog[0][1], y)
+        start = schematic.mapFromScene(point((x, jog[0][1])))
+        level = schematic.mapFromScene(point((x, y)))
+        near_level = level + QPoint(0, 23)
+
+        QTest.mousePress(schematic.viewport(), Qt.MouseButton.LeftButton, pos=start)
+        QTest.mouseMove(schematic.viewport(), near_level)
+        self.wait_for_drag_preview(schematic, near_level)
+        preview = schematic.layout
+        self.assertTrue(any(
+            p[1] == q[1] == y and p[0] < x < q[0] for p, q in preview.wires["supply"]
+        ))
+
+        still_snapped = level - QPoint(0, 37)
+        QTest.mouseMove(schematic.viewport(), still_snapped)
+        self.wait_for_drag_preview(schematic, still_snapped)
+        self.assertIs(schematic.layout, preview)
+
+        beyond_snap = level - QPoint(0, 50)
+        QTest.mouseMove(schematic.viewport(), beyond_snap)
+        self.wait_for_drag_preview(schematic, beyond_snap)
+        self.assertIsNone(schematic.drag.snapped_offset)
+        self.assertIsNot(schematic.layout, preview)
+
+        QTest.mouseMove(schematic.viewport(), near_level)
+        self.wait_for_drag_preview(schematic, near_level)
+        preview = schematic.layout
+        self.assertTrue(any(
+            p[1] == q[1] == y and p[0] < x < q[0] for p, q in preview.wires["supply"]
+        ))
+        QTest.mouseRelease(schematic.viewport(), Qt.MouseButton.LeftButton, pos=still_snapped)
+        self.assertIs(schematic.layout, preview)
+        self.assertTrue(preserves_nets(schematic.levels[None, "auto"], preview))
+        self.assertFalse(win.editor.document().isModified())
+
+    def test_resistor_drag_snaps_its_pin_level_with_a_branched_wire(self):
+        win = self.window
+        win.open_path(EXAMPLES / "timer555.ckt")
+        schematic = win.schematic
+        key = None, "auto"
+        circuit, original = schematic.levels[key], schematic.layout
+        left, right, discharge = (pin for net, pin in original.pins() if net == "discharge")
+        tee = ((left[0] + right[0]) / 2, left[1])
+        bend = tee[0], discharge[1]
+        straight = replace(
+            original,
+            wires={**original.wires, "discharge": [
+                (left, tee), (tee, right), (tee, bend), (bend, discharge),
+            ]},
+            junctions={**original.junctions, "discharge": [tee]},
+            labels=dict(original.labels),
+            crossings={},
+        )
+        _mark_crossings(straight)
+        self.assertTrue(preserves_nets(circuit, straight))
+
+        for shift in (0.38, -0.38):
+            with self.subTest(shift=shift):
+                schematic.manual_layouts[key] = move_symbol(circuit, straight, "RB", (0, shift))
+                schematic.redraw(schematic.saved_pins)
+                _, a, b, _ = next(
+                    symbol for symbol in schematic.layout.symbols if symbol[0].name == "RB"
+                )
+                start = schematic.mapFromScene(point(((a[0] + b[0]) / 2, a[1])))
+                direction = 1 if shift > 0 else -1
+                end = start + QPoint(0, 6 * direction)
+
+                QTest.mousePress(schematic.viewport(), Qt.MouseButton.LeftButton, pos=start)
+                QTest.mouseMove(schematic.viewport(), end)
+                self.wait_for_drag_preview(schematic, end)
+                preview = schematic.layout
+                self.assertEqual(preview.positions["RA"], original.positions["RA"])
+                self.assertEqual(preview.positions["RB"][1], left[1])
+                self.assertIn((left, tee), preview.wires["discharge"])
+                self.assertIn((tee, (round(right[0], 8), right[1])), preview.wires["discharge"])
+                self.assertIn(tee, preview.junctions["discharge"])
+                QTest.mouseRelease(schematic.viewport(), Qt.MouseButton.LeftButton, pos=end)
+                self.assertIs(schematic.layout, preview)
+                self.assertTrue(preserves_nets(circuit, preview))
+                self.assertFalse(win.editor.document().isModified())
+
+    def test_wire_drag_previews_a_perpendicular_slide_without_editing_source(self):
+        win = self.window
+        win.open_path(EXAMPLES / "timer555.ckt")
+        schematic = win.schematic
+        source = win.editor.toPlainText()
+        original = schematic.layout
+
+        for vertical in (False, True):
+            with self.subTest(vertical=vertical):
+                schematic.reset_placement()
+                a, b = max(
+                    ((a, b) for a, b in original.wires["supply"]
+                     if (a[0] == b[0]) == vertical),
+                    key=lambda edge: abs(edge[1][int(vertical)] - edge[0][int(vertical)]),
+                )
+                middle = ((a[0] + b[0]) / 2, (a[1] + b[1]) / 2)
+                start = schematic.mapFromScene(point(middle))
+                scale = round(schematic.transform().m11() * SCALE)
+                end = start + QPoint(scale if vertical else 0, 0 if vertical else -scale)
+                QTest.mousePress(schematic.viewport(), Qt.MouseButton.LeftButton, pos=start)
+                self.assertEqual(schematic.drag.kind, "wire")
+                QTest.mouseMove(schematic.viewport(), end)
+                self.wait_for_drag_preview(schematic, end)
+                preview = schematic.layout
+                self.assertIsNot(preview, original)
+                self.assertEqual(preview.positions, original.positions)
+                self.assertNotEqual(preview.wires["supply"], original.wires["supply"])
+                axis = 0 if vertical else 1
+                self.assertTrue(any(
+                    p[axis] == q[axis] and 0.8 < p[axis] - a[axis] < 1.2
+                    for p, q in preview.wires["supply"]
+                ))
+                QTest.mouseRelease(schematic.viewport(), Qt.MouseButton.LeftButton, pos=end)
+                self.assertIs(schematic.layout, preview)
+                self.assertTrue(preserves_nets(schematic.levels[None, "auto"], preview))
+        self.assertEqual(win.editor.toPlainText(), source)
+        self.assertFalse(win.editor.document().isModified())
+
+    def test_shift_drag_can_use_shorter_diagonal_leads(self):
+        win = self.window
+        win.open_path(EXAMPLES / "timer555.ckt")
+        schematic = win.schematic
+        original = schematic.layout
+        _, a, b, _ = next(symbol for symbol in original.symbols if symbol[0].name == "RA")
+        middle = point(((a[0] + b[0]) / 2, (a[1] + b[1]) / 2))
+        start = schematic.mapFromScene(middle)
+        scale = round(schematic.transform().m11() * SCALE)
+        end = start + QPoint(2 * scale, -scale)
+        shift = Qt.KeyboardModifier.ShiftModifier
+        QTest.mousePress(schematic.viewport(), Qt.MouseButton.LeftButton, shift, start)
+        QTest.mouseRelease(schematic.viewport(), Qt.MouseButton.LeftButton, shift, end)
+        moved = schematic.layout
+        self.assertTrue(any(
+            p[0] != q[0] and p[1] != q[1]
+            for net in ("supply", "discharge") for p, q in moved.wires[net]
+        ))
+        self.assertTrue(preserves_nets(schematic.levels[None, "auto"], moved))
+        self.assertFalse(win.editor.document().isModified())
+
+    def test_move_toward_a_wire_bend_shortens_the_route(self):
+        win = self.window
+        win.open_path(EXAMPLES / "timer555.ckt")
+        schematic = win.schematic
+        original = schematic.layout
+        _, a, b, _ = next(symbol for symbol in original.symbols if symbol[0].name == "RA")
+        middle = point(((a[0] + b[0]) / 2, (a[1] + b[1]) / 2))
+        start = schematic.mapFromScene(middle)
+        scale = round(schematic.transform().m11() * SCALE)
+        end = start + QPoint(0, 3 * scale)
+        QTest.mousePress(schematic.viewport(), Qt.MouseButton.LeftButton, pos=start)
+        QTest.mouseRelease(schematic.viewport(), Qt.MouseButton.LeftButton, pos=end)
+        self.assertLess(
+            sum(dist(*segment) for wires in schematic.layout.wires.values() for segment in wires),
+            sum(dist(*segment) for wires in original.wires.values() for segment in wires),
+        )
+
+    def test_right_click_rotates_part_and_keeps_its_pin_connections(self):
+        win = self.window
+        win.open_path(EXAMPLES / "timer555.ckt")
+        schematic = win.schematic
+        source = win.editor.toPlainText()
+        original = schematic.layout
+        _, a, b, _ = next(symbol for symbol in original.symbols if symbol[0].name == "RA")
+        pos = schematic.mapFromScene(point(((a[0] + b[0]) / 2, (a[1] + b[1]) / 2)))
+        menu_event = QContextMenuEvent(
+            QContextMenuEvent.Reason.Mouse, pos, schematic.viewport().mapToGlobal(pos)
+        )
+        with patch("circuitlab.schematic.QMenu") as menu:
+            schematic.contextMenuEvent(menu_event)
+            label, action = menu.return_value.addAction.call_args.args
+            self.assertEqual(label, "Rotate clockwise")
+            action()
+        self.assertEqual(schematic.layout.rotations["RA"], 1)
+        self.assertTrue(preserves_nets(schematic.levels[None, "auto"], schematic.layout))
+        self.assertEqual(win.editor.toPlainText(), source)
+        self.assertFalse(win.editor.document().isModified())
+        schematic.reset_placement()
+        self.assertIs(schematic.layout, original)
+
+    def test_builtin_calls_are_purple_and_show_pin_order(self):
+        editor = self.window.editor
+        editor.setPlainText("transQP(plus, mirror, tail, npn);\nnor(vcc, 0, trg, idle);")
+        editor.highlighter.rehighlight()
+        for index, name, signature in (
+            (0, "transQP", "transQP(base, collector, emitter"),
+            (1, "nor", "nor(vcc, gnd, a"),
+        ):
+            block = editor.document().findBlockByNumber(index)
+            cursor = QTextCursor(block)
+            cursor.setPosition(block.position() + 1)
+            self.assertIn(signature, editor.hover_help(cursor))
+            self.assertTrue(any(
+                item.start == 0 and item.length == len(name)
+                and item.format.foreground().color().name() == "#e3b5f5"
+                for item in block.layout().formats()
+            ))
 
     def test_spice_button_exports_unsaved_editor_text_without_changing_source_file(
         self,
@@ -93,6 +744,96 @@ class ApplicationTest(unittest.TestCase):
         self.assertIn("Line 2", win.issues.item(0).text())
         save_dialog.assert_not_called()
 
+    def test_verilog_menu_exports_current_chip_source(self):
+        win = self.window
+        with TemporaryDirectory() as directory:
+            source_path = Path(directory) / "chip.ckt"
+            source = "chip Inverter(a, y) { a = input; y = output; y = a; }"
+            source_path.write_text(source, encoding="ascii")
+            win.open_path(source_path)
+            self.assertEqual(win.status.text(), "Schematic rendered.")
+            self.assertEqual(win.issues.item(0).text(), "No compiler diagnostics.")
+            self.assertEqual([part.label for part, *_ in win.schematic.layout.symbols], ["Inverter"])
+
+            win.editor.setPlainText(source.replace("y = a;", "y = !a;"))
+            win.editor.document().setModified(True)
+            export = next(
+                action
+                for menu in win.menuBar().actions()
+                if menu.menu() is not None
+                for action in menu.menu().actions()
+                if "Export Verilog" in action.text().replace("&", "")
+            )
+            with (
+                patch(
+                    "circuitlab.gui.QFileDialog.getSaveFileName",
+                    return_value=(str(source_path.with_suffix("")), "Verilog (*.v)"),
+                ) as save_dialog,
+                patch("circuitlab.gui.QMessageBox.warning") as warning,
+            ):
+                export.trigger()
+            save_dialog.assert_called_once()
+            warning.assert_not_called()
+            self.assertIn("assign y = !a;", source_path.with_suffix(".v").read_text())
+            self.assertEqual(source_path.read_text(), source)
+            self.assertTrue(win.editor.document().isModified())
+
+    def test_invalid_chip_reports_source_line_in_editor_and_export(self):
+        win = self.window
+        win.editor.setPlainText(
+            "chip Inverter(a, y) {\n"
+            "    a = input; y = output;\n"
+            "    y = !missing;\n"
+            "}"
+        )
+        win.compile_source()
+        self.assertIn("Line 3", win.issues.item(0).text())
+        win.select_diagnostic(win.issues.item(0))
+        self.assertEqual(win.editor.textCursor().blockNumber(), 2)
+        with (
+            patch("circuitlab.gui.QMessageBox.warning") as warning,
+            patch("circuitlab.gui.QFileDialog.getSaveFileName") as save_dialog,
+        ):
+            self.assertFalse(win.export_verilog())
+        self.assertIn("Line 3", warning.call_args.args[2])
+        save_dialog.assert_not_called()
+
+    def test_packages_expand_and_collapse_on_the_same_schematic(self):
+        win = self.window
+        win.open_path(EXAMPLES / "timer555.ckt")
+        schematic = win.schematic
+
+        def click_package(label, action="Open", name=None):
+            package = next(
+                item for item in schematic.scene().items()
+                if item.data(0) == "hood" and item.toolTip() == f"{action} {label}"
+                and not hasattr(item, "text")
+                and (name is None or item.data(1) == name)
+            )
+            pos = schematic.mapFromScene(package.sceneBoundingRect().center())
+            QTest.mouseClick(schematic.viewport(), Qt.MouseButton.LeftButton, pos=pos)
+
+        self.assertEqual(len(schematic.layout.symbols), 6)
+        self.assertIn("control", schematic.anchors)
+        outer_layout = schematic.layout
+        self.assertFalse({"supply", "reset_n", "discharge", "timing"} & {
+            net for net, *_ in outer_layout.connectors
+        })
+        click_package("timer555")
+        click_package("srLatch")
+        self.assertIs(schematic.layout, outer_layout)
+        latch = next(key for key, (part, _) in schematic.packages.items() if part.label == "srLatch")
+        latch_layout = schematic.level_layouts[latch, "auto"]
+        self.assertEqual([part.label for part, *_ in latch_layout.symbols], ["nor", "nor"])
+        gate = latch_layout.symbols[0][0]
+        click_package(gate.label, name=gate.name)
+        self.assertTrue(any(key == gate.name for key, _ in schematic.level_layouts))
+        click_package("timer555", "Close")
+        self.assertEqual(len(schematic.packages), 1)
+        self.assertIs(schematic.layout, outer_layout)
+        click_package("timer555")
+        self.assertIs(schematic.level_layouts[latch, "auto"], latch_layout)
+
     def test_ltspice_button_exports_the_current_render(self):
         win = self.window
         win.editor.setPlainText("V1 = 12 : wire = in;\nR1 in out 2k\nR2 out 0 1k")
@@ -113,6 +854,24 @@ class ApplicationTest(unittest.TestCase):
             self.assertIn("SYMBOL res ", path.read_text(encoding="ascii"))
             self.assertIs(win.schematic.layout, drawing)
             self.assertIsNone(win.path)
+
+    def test_ltspice_export_saves_the_555_block_files_beside_the_main_sheet(self):
+        win = self.window
+        win.open_path(EXAMPLES / "timer555.ckt")
+        drawing = win.schematic.layout
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "timer555.asc"
+            with patch(
+                "circuitlab.gui.QFileDialog.getSaveFileName",
+                return_value=(str(path), "LTspice schematics (*.asc)"),
+            ):
+                self.assertTrue(win.export_ltspice())
+                self.assertTrue(win.export_ltspice())
+            content = path.read_text(encoding="ascii")
+            name = next(row.split()[1] for row in content.splitlines() if row.startswith("SYMBOL ec_timer555_"))
+            self.assertTrue(path.with_name(name + ".asc").is_file())
+            self.assertTrue(path.with_name(name + ".asy").is_file())
+            self.assertIs(win.schematic.layout, drawing)
 
     def test_editor_completes_unsaved_method_and_preserves_existing_arguments(self):
         editor = self.window.editor

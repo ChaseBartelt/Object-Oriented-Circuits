@@ -6,15 +6,18 @@ Scalar = float | complex
 
 
 class CircuitError(ValueError):
-    def __init__(self, message: str, line: int | None = None, code: str = ""):
+    def __init__(self, message: str, line: int | None = None, code: str = "", *, path=None):
+        self.message = message
         self.line = line
         self.code = code
-        super().__init__(f"Line {line}. {message}" if line else message)
+        self.path = path
+        location = f"Line {line}. " if line else ""
+        super().__init__(f"{path.name}: {location}{message}" if path else location + message)
 
 
 @dataclass(frozen=True)
 class Component:
-    """An oriented branch or an ideal op amp with separate sensing pins."""
+    """An oriented branch, an ideal op amp, or a bipolar transistor."""
 
     name: str
     kind: str
@@ -27,10 +30,24 @@ class Component:
     in_plus: str = ""
     in_minus: str = ""
     order: int = field(default=0, compare=False, repr=False)
+    base: str = ""
+    transistor_type: str = ""
+    model: str = ""
+    package_pins: tuple[tuple[str, str], ...] = ()
 
     @property
     def is_source(self):
         return self.kind in "VI" and self.equation != "V = I x 0 = 0"
+
+    @property
+    def terminal_nets(self):
+        if self.kind == "H":
+            return tuple(net for _, net in self.package_pins)
+        if self.kind == "Q":
+            return self.base, self.p, self.n
+        if self.kind == "O":
+            return self.in_plus, self.in_minus, self.p, self.n
+        return self.p, self.n
 
 
 @dataclass(frozen=True)
@@ -52,6 +69,20 @@ class WireTap:
     terminal: int
 
 
+@dataclass(frozen=True)
+class MethodInstance:
+    """An expanded method and its named connections to the caller."""
+
+    kind: str
+    name: str
+    parent: int | None
+    pins: tuple[tuple[str, str], ...]
+    body: tuple[str, ...] = ()
+    line: int | None = None
+    arguments: tuple[tuple[str, str], ...] = ()
+    path: object = None
+
+
 @dataclass
 class Circuit:
     """The compiled graph shared by the solver, schematic, and exporters."""
@@ -71,6 +102,11 @@ class Circuit:
     legacy_measure: str = ""
     grounds: set[str] = field(default_factory=lambda: {"0"})
     wire_taps: list[WireTap] = field(default_factory=list)
+    instances: list[MethodInstance] = field(default_factory=list)
+    owners: dict[str, int] = field(default_factory=dict)
+    component_lines: dict[str, int] = field(default_factory=dict)
+    component_files: dict = field(default_factory=dict)
+    connector_pins: tuple[str, ...] = ()
 
     def resolve_wire(self, name: str) -> str:
         return next((tap.net for tap in self.wire_taps if tap.name == name), name)
@@ -81,10 +117,12 @@ class Circuit:
             dict.fromkeys(
                 [
                     "0",
-                    *(e.p for e in self.components),
-                    *(e.n for e in self.components),
+                    *(e.p for e in self.components if e.kind != "H"),
+                    *(e.n for e in self.components if e.kind != "H"),
                     *(e.in_plus for e in self.components if e.kind == "O"),
                     *(e.in_minus for e in self.components if e.kind == "O"),
+                    *(e.base for e in self.components if e.kind == "Q"),
+                    *(net for e in self.components if e.kind == "H" for net in e.terminal_nets),
                 ]
             )
         )

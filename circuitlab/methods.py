@@ -3,7 +3,8 @@
 import re
 from dataclasses import dataclass
 
-from .graph import CircuitError
+from .gates import GATE_HELP, gate_accepts, gate_body, gate_call_help, gate_signature
+from .graph import CircuitError, MethodInstance
 from .numbers import scalar
 from .syntax import (
     ASSIGNMENT,
@@ -12,11 +13,15 @@ from .syntax import (
     DEFAULT_TERMINALS,
     INLINE,
     MAIN,
+    NET_METHODS,
     OP,
+    OVERRIDE,
     PARAMETER_TARGET,
     PART_ARGUMENT,
     PART_PLACEMENT,
     SECTION,
+    TRANSISTOR,
+    TRANS_CALL,
     UNITS,
     Binding,
     SourceRow,
@@ -33,6 +38,23 @@ class Method:
     parameters: tuple[str, ...]
     body: list[SourceRow]
     targets: dict[str, str]
+
+
+def _bind_gate_call(name, raw, parent):
+    """Resolve the gate's full pin list, preserving existing positional calls."""
+    grouped = re.fullmatch(r"([^(),]+),\s*\(([^()]*)\)\s*,\s*([^(),]+)", raw)
+    try:
+        arguments = parse_wires(",".join(grouped.groups()) if grouped else raw)
+    except CircuitError:
+        raise CircuitError(gate_call_help(name)) from None
+    actual = tuple(map(parent.wire, arguments))
+    passed = tuple(zip(arguments, actual))
+    if not grouped and gate_accepts(name, len(actual) - 3):
+        return actual, passed
+    if gate_accepts(name, len(actual) - 2):
+        ground = parent.mapping.get("gnd", "0")
+        return (actual[0], ground, *actual[1:]), passed
+    raise CircuitError(gate_call_help(name))
 
 
 def _bind_arguments(method, raw, parent):
@@ -75,27 +97,25 @@ def _bind_arguments(method, raw, parent):
     return actual, mapping, parts
 
 
-def expand_main(rows: list[SourceRow]) -> list[SourceRow]:
+def expand_main(rows: list[SourceRow], instances: list[MethodInstance]) -> list[SourceRow]:
     """Replace method calls with bound statements in execution order."""
     starts = [i for i, (text, _, _) in enumerate(rows) if MAIN.fullmatch(text)]
-    if not starts:
-        for text, line, _ in rows:
-            match = SECTION.fullmatch(text)
-            if match and (match[1].lower() == "circuit" or match[3] is None):
-                raise CircuitError(f'Call "{match[2]}" from a main block.', line)
-        return rows
-    if len(starts) != 1:
+    if len(starts) > 1:
         raise CircuitError("Use one main block.", rows[starts[1]][1])
 
     def end(start, name):
         openings = [start]
         for i in range(start + 1, len(rows)):
             text, line, _ = rows[i]
+            if OVERRIDE.fullmatch(text):
+                raise CircuitError("Put @Override above a top-level gate definition.", line)
             if text == "}":
                 openings.pop()
                 if not openings:
                     return i
-            elif INLINE.fullmatch(text) or BATTERY_BRACE.fullmatch(text):
+            elif any(
+                header.fullmatch(text) for header in (INLINE, BATTERY_BRACE, TRANSISTOR)
+            ):
                 openings.append(i)
             elif text.endswith("{"):
                 raise CircuitError(
@@ -104,29 +124,46 @@ def expand_main(rows: list[SourceRow]) -> list[SourceRow]:
                 )
         opener = rows[openings[-1]]
         inline = INLINE.fullmatch(opener[0])
-        battery = BATTERY_BRACE.fullmatch(opener[0])
-        label = inline[1] if inline else battery[1] if battery else name
+        device = BATTERY_BRACE.fullmatch(opener[0]) or TRANSISTOR.fullmatch(opener[0])
+        block = inline or device
+        label = block[1] if block else name
         raise CircuitError(f'Close "{label}" with }}.', opener[1])
 
     # Collect definitions before expanding any call so forward references work.
-    start = starts[0]
-    stop = end(start, "main")
-    definitions, counts, before, after = {}, {}, [], []
+    start = starts[0] if starts else len(rows)
+    stop = end(start, "main") if starts else start
+    definitions, overrides, counts = {}, {}, {}
+    before, after = [], []
     i = 0
     while i < len(rows):
         if i == start:
             i = stop + 1
             continue
         text, line, _ = rows[i]
+        annotation = None
+        if OVERRIDE.fullmatch(text):
+            annotation = line
+            i += 1
+            if i < len(rows):
+                text, line, _ = rows[i]
+            else:
+                text = ""
         match = SECTION.fullmatch(text)
-        if not match:
+        if annotation and (not match or match[1].lower() != "gate"):
+            raise CircuitError("Put @Override directly above a gate definition.", annotation)
+        if match and not starts and not annotation and (
+            match[1].lower() in NET_METHODS or match[3] is None
+        ):
+            raise CircuitError(f'Call "{match[2]}" from a main block.', line)
+        if not match or (not starts and not annotation):
             (before if i < start else after).append(rows[i])
             i += 1
             continue
         kind, name, raw = match.groups()
         kind = kind.lower()
+        net_method = kind in NET_METHODS
         key = name.casefold()
-        if key in definitions or OP.fullmatch(name):
+        if OP.fullmatch(name) or (not annotation and key in definitions):
             raise CircuitError(
                 f'Section name "{name}" is reserved or already defined.', line
             )
@@ -134,10 +171,21 @@ def expand_main(rows: list[SourceRow]) -> list[SourceRow]:
             pins = DEFAULT_TERMINALS
         else:
             pins = tuple(part.strip() for part in raw.split(",")) if raw.strip() else ()
+        if annotation:
+            if key not in GATE_HELP:
+                raise CircuitError(f'No built-in gate named "{name}" to override.', line)
+            if not gate_accepts(key, len(pins) - 3):
+                raise CircuitError(f"Use gate {key}({gate_signature(key)}).", line)
+            if (key, len(pins)) in overrides:
+                raise CircuitError(f'Gate "{name}" already has an override for these pins.', line)
+            if key in definitions:
+                raise CircuitError(f'Gate "{name}" already has an unannotated definition.', line)
+        elif any(gate == key for gate, _ in overrides):
+            raise CircuitError(f'Gate "{name}" already has an @Override definition.', line)
         j = end(i, name)
         child = rows[i + 1 : j]
         targets = {}
-        if kind == "circuit":
+        if net_method:
             targets = {
                 placement[1]: "part"
                 for statement, _, _ in child
@@ -161,33 +209,68 @@ def expand_main(rows: list[SourceRow]) -> list[SourceRow]:
         if (
             len(set(pins)) != len(pins)
             or not all(re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", p) for p in pins)
-            or (kind != "circuit" and not targets and len(pins) != 2)
+            or (not net_method and not targets and len(pins) != 2)
         ):
-            requirement = "distinct" if kind == "circuit" or targets else "two distinct"
+            requirement = "distinct" if net_method or targets else "two distinct"
             raise CircuitError(
                 f'Use {requirement} parameter names in the header of "{name}".', line
             )
-        if kind != "circuit" and targets and targets.keys() != set(pins):
+        if not net_method and targets and targets.keys() != set(pins):
             missing = ", ".join(p for p in pins if p not in targets)
             raise CircuitError(f'Bind these parameters in "{name}": {missing}.', line)
-        if kind == "circuit" and j == i + 1:
-            raise CircuitError(f'Circuit method "{name}" needs a body.', line)
-        definitions[key] = Method(kind, name, pins, child, targets)
+        if net_method and j == i + 1:
+            raise CircuitError(f'{kind.capitalize()} method "{name}" needs a body.', line)
+        if annotation and targets:
+            raise CircuitError("Use wire pins in a gate override.", line)
+        method = Method(kind, name, pins, child, targets)
+        if annotation:
+            overrides[key, len(pins)] = method
+        else:
+            definitions[key] = method
         i = j + 1
 
-    def expand(body, parent, active):
+    def expand(body, parent, active, *, top_level=False):
+        transistor = False
         for text, line, _ in body:
-            call = CALL.fullmatch(text)
+            if transistor:
+                yield text, line, parent
+                transistor = text != "}"
+                continue
+            if TRANSISTOR.fullmatch(text):
+                transistor = True
+                yield text, line, parent
+                continue
+            call = CALL.fullmatch(text.removesuffix(";").rstrip())
             if not call or OP.fullmatch(call[1]):
                 yield text, line, parent
                 continue
             key = call[1].casefold()
-            if key not in definitions:
+            method_key = key, None
+            gate_wires = None
+            passed = ()
+            if key in GATE_HELP and key not in definitions:
+                try:
+                    gate_wires, passed = _bind_gate_call(key, call[2], parent)
+                except CircuitError as error:
+                    raise CircuitError(str(error), line) from None
+                arity = len(gate_wires)
+                method_key = key, arity
+                method = overrides.get(method_key)
+                if method is None:
+                    pins, statements = gate_body(key, arity - 3)
+                    child = [(statement, line, parent) for statement in statements]
+                    method = Method("gate", key, pins, child, {})
+            elif top_level or key not in definitions:
+                if top_level or TRANS_CALL.fullmatch(call[1]):
+                    yield text, line, parent
+                    continue
                 raise CircuitError(f'Unknown section "{call[1]}".', line)
-            method = definitions[key]
+            else:
+                method = definitions[key]
             kind, name = method.kind, method.name
+            net_method = kind in NET_METHODS
             formal, child, targets = method.parameters, method.body, method.targets
-            if key in active:
+            if method_key in active:
                 raise CircuitError(
                     f'Circuit method "{name}" calls itself recursively.', line
                 )
@@ -196,14 +279,19 @@ def expand_main(rows: list[SourceRow]) -> list[SourceRow]:
                 if targets:
                     actual, mapping, parts = _bind_arguments(method, call[2], parent)
                 else:
-                    actual = tuple(map(parent.wire, parse_wires(call[2], len(formal))))
+                    if gate_wires is None:
+                        raw_wires = parse_wires(call[2], len(formal))
+                        actual = tuple(map(parent.wire, raw_wires))
+                        passed = tuple(zip(raw_wires, actual))
+                    else:
+                        actual = gate_wires
                     mapping = dict(zip(formal, actual))
             except CircuitError as error:
                 if targets:
                     raise CircuitError(str(error), line) from None
                 message = (
                     f"{name} expects {len(formal)} wire arguments."
-                    if kind == "circuit"
+                    if net_method
                     else f"Use {name}(inputWire, outputWire); with two wire names."
                 )
                 raise CircuitError(message, line) from None
@@ -212,19 +300,25 @@ def expand_main(rows: list[SourceRow]) -> list[SourceRow]:
             counts[instance] = counts.get(instance, 0) + 1
             scope = parent.part(f"{name}_{counts[instance]}")
             values = {p: v for p, v in zip(formal, actual) if p not in mapping}
+            index = len(instances)
+            instances.append(
+                MethodInstance(kind, name, parent.instance, tuple(mapping.items()),
+                               line=line, arguments=passed)
+            )
             binding = Binding(
-                scope, mapping, in_main=bool(targets and parent.in_main), values=values
+                scope, mapping, in_main=bool(targets and parent.in_main),
+                values=values, instance=index
             )
             if targets:
                 expanded_child = []
                 for statement, body_line, original in child:
                     assignment = ASSIGNMENT.fullmatch(statement)
                     placement = PART_PLACEMENT.fullmatch(statement)
-                    if kind == "circuit" and placement and placement[1] in parts:
+                    if net_method and placement and placement[1] in parts:
                         part, value = parts[placement[1]]
                         statement = f"{part}({value}) between({placement[2]})"
                     elif (
-                        kind != "circuit"
+                        not net_method
                         and assignment
                         and targets.get(assignment[1]) == assignment[2]
                     ):
@@ -238,8 +332,8 @@ def expand_main(rows: list[SourceRow]) -> list[SourceRow]:
                             statement = f"{part} = {value}"
                     expanded_child.append((statement, body_line, original))
                 child = expanded_child
-            if kind == "circuit":
-                yield from expand(child, binding, (*active, key))
+            if net_method:
+                yield from expand(child, binding, (*active, method_key))
             else:
                 header = (
                     f"{kind} {{"
@@ -247,8 +341,11 @@ def expand_main(rows: list[SourceRow]) -> list[SourceRow]:
                     else f"{kind} {scope}({', '.join(actual)}) {{"
                 )
                 yield header, line, binding
-                yield from expand(child, binding, (*active, key))
+                yield from expand(child, binding, (*active, method_key))
                 yield "}", line, binding
 
-    expanded = list(expand(rows[start + 1 : stop], Binding(in_main=True), ()))
-    return before + expanded + after
+    return [
+        *expand(before, Binding(), (), top_level=True),
+        *expand(rows[start + 1 : stop], Binding(in_main=True), ()),
+        *expand(after, Binding(), (), top_level=True),
+    ]

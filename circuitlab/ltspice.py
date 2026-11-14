@@ -1,11 +1,17 @@
 """Write native LTspice symbols, wires, and flags from a schematic layout."""
 
 from collections import defaultdict
+from dataclasses import dataclass, replace
+from hashlib import sha256
 from itertools import combinations
 
 from .graph import CircuitError
+from .hood import METHOD_PREFIX, hood_levels
+from .layout import BJT_PIN_OFFSET, package_pins, wire_axis
 from .layout_checks import segments_intersect
-from .spice import opamp_subcircuit, spice_circuit
+from .report import component_labels
+from .routing import fast_layout
+from .spice import SpiceNames, opamp_subcircuit, spice_circuit
 
 # Pin locations relative to the anchors in LTspice's built-in symbol library.
 SYMBOLS = {
@@ -17,18 +23,119 @@ SYMBOLS = {
 }
 
 
+@dataclass(frozen=True)
+class Block:
+    name: str
+    instance: str
+    pins: tuple[tuple[str, str, int, int], ...]
+
+
+def export_hierarchy(circuit, layout, details=None):
+    """Export the top sheet and native LTspice block files for the packages it uses."""
+    spice = spice_circuit(circuit)
+    parts = {part.name: part for part in circuit.components}
+    details = details or {}
+    expanded = {f"{METHOD_PREFIX}{index}" for index in range(len(circuit.instances))}
+    levels = {name: (view, boundary) for name, view, _, boundary in hood_levels(circuit, expanded)}
+    packages = {
+        part.name: part for view, _ in levels.values() for part in view.components
+        if part.name.startswith(METHOD_PREFIX)
+    }
+    blocks, files = {}, {}
+    instances = SpiceNames(*(part.name for part in spice.parts.values()))
+
+    def native_symbols(drawing):
+        # Transistors use native LTspice symbols even when shown as packages in the editor.
+        return replace(drawing, symbols=[
+            (parts.get(part.name, part), a, b, top) for part, a, b, top in drawing.symbols
+        ])
+
+    for name in reversed(levels):
+        if name is None:
+            continue
+        view, boundary = levels[name]
+        if not view.components:
+            continue
+        package = packages[name]
+        drawing = details.get(name)
+        if drawing is None or {part.name for part, *_ in drawing.symbols} != {
+            part.name for part in view.components
+        }:
+            drawing = fast_layout(view, component_labels(view), boundary=boundary)
+        drawing = native_symbols(drawing)
+        names = SpiceNames(*spice.nodes.values())
+        # Port names belong to this sheet. Reuse a readable pin name when available.
+        used_ports = SpiceNames("0", "gnd")
+        ports = {}
+        aliases = []
+        pins = []
+        for label, net, left, offset in package_pins(package):
+            port = used_ports.claim("ground" if label.casefold() in ("gnd", "0") else label)
+            if net in ports:
+                aliases.append((ports[net], port))
+            else:
+                ports[net] = port
+            pins.append((net, port, 0 if left else 320, round(-4 * offset) * 16))
+        nodes = {
+            net: (names.claim(mapped) if mapped.casefold() in used_ports.used else mapped)
+            for net, mapped in spice.nodes.items()
+        }
+        nodes.update(ports)
+        local = replace(spice, nodes=nodes)
+        sheet, _ = _export_drawing(
+            drawing, local, blocks=blocks, ports=ports, aliases=aliases, commands=False
+        )
+        symbol = _block_symbol(package.label, pins)
+        digest = sha256((sheet + symbol).encode("ascii")).hexdigest()[:12]
+        label = SpiceNames().claim(package.label)[:32]
+        # Keep file references lowercase for cross-platform LTspice projects.
+        stem = f"ec_{label.lower()}_{digest}"
+        blocks[name] = Block(stem, instances.claim(package.label, "X"), tuple(pins))
+        files[f"{stem}.asc"] = sheet
+        files[f"{stem}.asy"] = symbol
+
+    sheet, used_labels = _export_drawing(native_symbols(layout), spice, blocks=blocks)
+    return sheet, files, used_labels
+
+
+def _block_symbol(label, pins):
+    top = min(y for _, _, _, y in pins) - 40
+    bottom = max(y for _, _, _, y in pins) + 40
+    lines = ["Version 4", "SymbolType BLOCK", f"RECTANGLE Normal 16 {top} 304 {bottom}",
+             f"TEXT 160 {top - 16} Center 2 {label.encode('ascii', 'replace').decode('ascii')}"]
+    for index, (_, port, x, y) in enumerate(pins, 1):
+        side = "LEFT" if x == 0 else "RIGHT"
+        inside = 16 if x == 0 else 304
+        lines.extend((f"LINE Normal {x} {y} {inside} {y}", f"PIN {x} {y} {side} 24",
+                      f"PINATTR PinName {port}", f"PINATTR SpiceOrder {index}"))
+    return "\n".join([*lines, ""])
+
+
 def export_schematic(circuit, layout):
     """Serialize the rendered circuit with the same electrical nets as SPICE."""
-    spice = spice_circuit(circuit)
-    for scale in (48, 64, 96, 128):
+    return _export_drawing(layout, spice_circuit(circuit))
+
+
+def _export_drawing(layout, spice, *, blocks=None, ports=None, aliases=(), commands=True):
+    options = dict(blocks=blocks or {}, ports=ports or {}, aliases=aliases, commands=commands)
+    # Snapping a diagonal and its junctions independently can disconnect them.
+    if layout.rotations or any(
+        wire_axis(edge) is None for edges in layout.wires.values() for edge in edges
+    ):
+        return _export_with_pin_labels(layout, spice, options)
+    for scale in ((64, 96, 128) if blocks else (48, 64, 96, 128)):
         try:
-            return _schematic(layout, spice, scale), False
+            return _schematic(layout, spice, scale, **options), False
         except GridConflict:
             continue
     # Preserve symbol placement if the native pins and the existing tracks
     # cannot coexist on the grid. Flags on the actual pins carry every net.
+    return _export_with_pin_labels(layout, spice, options)
+
+
+def _export_with_pin_labels(layout, spice, options):
     try:
-        return _schematic(layout, spice, 64, pin_flags=True), True
+        return _schematic(layout, spice, 96 if options["blocks"] else 64, pin_flags=True, **options), True
     except GridConflict:
         raise CircuitError(
             "The rendered symbols are too close for the LTspice grid. "
@@ -40,7 +147,7 @@ class GridConflict(Exception):
     """The drawing needs more grid space to keep connections distinct."""
 
 
-def _schematic(layout, spice, scale, *, pin_flags=False):
+def _schematic(layout, spice, scale, *, pin_flags=False, blocks, ports, aliases, commands):
     """Snap the drawing, attach native symbol pins, and serialize the sheet."""
 
     def snap(value):
@@ -60,11 +167,6 @@ def _schematic(layout, spice, scale, *, pin_flags=False):
         if a != b:
             wires[net].add(tuple(sorted((a, b))))
 
-    def pin(net, at):
-        points[net].add(at)
-        if pin_flags:
-            flags[net].add(at)
-
     if not pin_flags:
         for net in layout.wires:
             for a, b in layout.visible_segments(net):
@@ -75,9 +177,30 @@ def _schematic(layout, spice, scale, *, pin_flags=False):
             flags[layout.ground_names.get(p, "0")].add(point(p))
 
     for part, start, end, top in layout.symbols:
-        model = spice.parts[part.name]
+        symbol_terminals = []
+
+        def pin(net, at):
+            symbol_terminals.append((net, at))
+
+        block = blocks.get(part.name)
+        model = spice.parts.get(part.name)
         a, b = point(start), point(end)
-        if model.kind == "X":
+        if block:
+            x = snap((start[0] + end[0]) / 2) - 160
+            if x < a[0] or x + 320 > b[0]:
+                raise GridConflict
+            origin = x, a[1]
+            symbol, rotation = block.name, "R0"
+            for (_, net, left, offset), (_, _, pin_x, pin_y) in zip(package_pins(part), block.pins):
+                at = point(((start if left else end)[0], start[1] + offset))
+                terminal = x + pin_x, a[1] + pin_y
+                bend = (terminal[0], at[1])
+                wire(net, at, bend)
+                wire(net, bend, terminal)
+                pin(net, terminal)
+        elif model is None:
+            raise CircuitError(f"Cannot export the empty block {part.label}.")
+        elif model.kind == "X":
             x, y = a
             if b[0] < x + 112:
                 raise GridConflict
@@ -98,9 +221,23 @@ def _schematic(layout, spice, scale, *, pin_flags=False):
             for pin_y in (y - 32, y + 32):
                 supply = (x + 64, pin_y)
                 pin(part.n, supply)
-                flags[part.n].add(supply)
-            name = model.name
-            value = model.value
+                if not pin_flags:
+                    flags[part.n].add(supply)
+        elif model.kind == "Q":
+            x, y = a
+            if b[0] < x + 64:
+                raise GridConflict
+            symbol, rotation = part.transistor_type, "R0"
+            origin = (x, y - 48)
+            pin(part.base, a)
+            # Both native BJT symbols place C and E 64 units right of B.
+            for net, direction in ((part.p, 1), (part.n, -1)):
+                at = point((end[0], end[1] + direction * BJT_PIN_OFFSET))
+                terminal = (x + 64, y - direction * 48)
+                bend = (terminal[0], at[1])
+                wire(net, at, bend)
+                wire(net, bend, terminal)
+                pin(net, terminal)
         else:
             symbol, pin_x, p_y, n_y = SYMBOLS[model.kind]
             dx, dy = b[0] - a[0], b[1] - a[1]
@@ -121,18 +258,46 @@ def _schematic(layout, spice, scale, *, pin_flags=False):
             wire(part.n, b, n)
             pin(part.p, p)
             pin(part.n, n)
-            name = model.name
-            value = model.value
+        turns = layout.rotations.get(part.name, 0)
+        if turns:
+            x, y = point(((start[0] + end[0]) / 2, (start[1] + end[1]) / 2))
+
+            def turn(at):
+                dx, dy = at[0] - x, at[1] - y
+                dx, dy = ((dx, dy), (-dy, dx), (-dx, -dy), (dy, -dx))[turns]
+                return x + dx, y + dy
+
+            symbol_terminals = [(net, turn(at)) for net, at in symbol_terminals]
+            origin = turn(origin)
+            angle = int(rotation[1:])
+            angle = angle + (90 if rotation[0] == "R" else -90) * turns
+            rotation = f"{rotation[0]}{angle % 360}"
+        for net, at in symbol_terminals:
+            points[net].add(at)
+            if pin_flags:
+                flags[net].add(at)
         lines = [
             f"SYMBOL {symbol} {origin[0]} {origin[1]} {rotation}",
-            f"SYMATTR InstName {name}",
-            f"SYMATTR Value {value}",
+            f"SYMATTR InstName {block.instance if block else model.name}",
         ]
-        if model.kind == "L":
-            lines.append(f"SYMATTR SpiceLine {model.extra.strip()}")
-        elif model.kind in "VI" and model.extra:
-            lines.append(f"SYMATTR Value2 {model.extra.strip()}")
+        if not block:
+            lines.append(f"SYMATTR Value {model.value}")
+            if model.kind == "L":
+                lines.append(f"SYMATTR SpiceLine {model.extra.strip()}")
+            elif model.kind in "VI" and model.extra:
+                lines.append(f"SYMATTR Value2 {model.extra.strip()}")
         symbols.extend(lines)
+
+    io = {}
+    for net, port in ports.items():
+        if net not in points:
+            continue
+        locations = points[net] | flags[net]
+        boundary = point(layout.boundary[net]) if net in layout.boundary and not pin_flags else None
+        at = boundary if boundary is not None else min(locations)
+        points[net].add(at)
+        flags[net].add(at)
+        io[net] = at
 
     # LTspice wires carry no net ID. Reject any contact between distinct
     # nets after snapping, including pins and flags that sit on a wire.
@@ -166,22 +331,46 @@ def _schematic(layout, spice, scale, *, pin_flags=False):
         for island in _islands(vertices, edges):
             if not island & flags[net]:
                 flags[net].add(preferred if preferred in island else min(island))
-        lines.extend(f"FLAG {x} {y} {spice.nodes[net]}" for x, y in sorted(flags[net]))
+        for x, y in sorted(flags[net]):
+            lines.append(f"FLAG {x} {y} {spice.nodes[net]}")
+            if io.get(net) == (x, y):
+                lines.append(f"IOPIN {x} {y} BiDir")
 
     all_points = [p for vertices in points.values() for p in vertices]
     left = min(x for x, _ in all_points)
     right = max(x for x, _ in all_points)
     bottom = max(y for _, y in all_points)
+    # Separate pins can share a net (such as 555 TRIG and THRES). A native
+    # jumper makes the two port names aliases without adding a SPICE element.
+    port_links = [*aliases, *((port, None) for net, port in ports.items() if net not in points)]
+    placed_ports = {ports[net] for net in ports if net in points}
+    for i, (port, alias) in enumerate(port_links, 1):
+        y = bottom + 96 * i
+        if alias is None and port in placed_ports:
+            continue
+        lines.append(f"FLAG {left} {y} {port}")
+        if port not in placed_ports:
+            lines.append(f"IOPIN {left} {y} BiDir")
+            placed_ports.add(port)
+        if alias is not None:
+            lines.extend((f"FLAG {left + 64} {y} {alias}", f"IOPIN {left + 64} {y} BiDir"))
+            symbols.extend((f"SYMBOL Misc\\jumper {left + 32} {y - 64} R0",
+                            f"SYMATTR InstName J_EC_port{i}"))
+    bottom += 96 * len(port_links)
     lines.extend(symbols)
     if pin_flags:
         lines.append(f"TEXT {left} {bottom + 64} Left 2 ;Matching net labels connect.")
-    commands = [spice.directive]
-    commands.extend(f"{name} {node} 0 DC 0" for name, node in spice.references)
-    if any(part.kind == "X" for part in spice.parts.values()):
+    directives = [spice.directive] if commands else []
+    if commands:
+        directives.extend(f"{name} {node} 0 DC 0" for name, node in spice.references)
+    if commands and any(part.kind == "X" for part in spice.parts.values()):
         # opamp2's pin order is plus, minus, V+, V-, out. The unused V+
         # pin and the return pin both connect to the circuit's return net.
-        commands.extend(opamp_subcircuit("plus minus unused return out"))
-    lines.append(f"TEXT {left} {bottom + 96} Left 2 !" + r"\n".join(commands))
+        directives.extend(opamp_subcircuit("plus minus unused return out"))
+    if commands:
+        directives.extend(spice.models)
+    if directives:
+        lines.append(f"TEXT {left} {bottom + 96} Left 2 !" + r"\n".join(directives))
     return "\n".join(
         [
             "Version 4",

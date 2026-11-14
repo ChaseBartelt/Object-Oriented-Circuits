@@ -1,6 +1,6 @@
 # Three-way active audio crossover
 # Change f to sweep the signal through the three bands.
-V1 source 0 1 Vrms
+V1(1 Vrms) between(source, 0);
 f = 1k
 
 circuit inputBuffer(input, output, ground) {
