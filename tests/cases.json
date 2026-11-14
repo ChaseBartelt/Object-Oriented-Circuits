@@ -1,0 +1,458 @@
+[
+  {
+    "id": "rc_lowpass",
+    "mode": "auto",
+    "source": "## RC low-pass filter with a cutoff near 1.6 kHz.\nV1 vin 0 1 Vrms\nf = 1k\n\nseries lowpass(input, output) {\n    R1 = 1k;\n}\n\nparallel shunt(input, ground) {\n    C1 = 100n;\n}\n\nmain {\n    lowpass(vin, out);\n    shunt(out, 0);\n}\n",
+    "render": true
+  },
+  {
+    "id": "three_band_mixer",
+    "mode": "auto",
+    "source": "# THREE-BAND ACTIVE MIXER WITH A BRIDGED RLC OUTPUT\n# 63 components, 9 ideal op amps, 3 phased signals, and a DC reference.\n# Select DC + AC, or leave Circuit Preview on Auto.\n\nV1 inA 0 0.45 V | 1.20 Vpk\nV2 inB 0 0.25 V | 0.60<65 Vpk\nV3 pilot 0 0 V | 0.20<-110 Vpk\nV4 ref 0 2.5 V | 0 Vpk\nf = 10k\n\nseries inputFeed(a, b) {\n    R1 = 1k;\n    wire = junction;\n    R2 = 330;\n}\n\nparallel inputShunt(a, b) {\n    R1 = 100k;\n    C1 = 150p;\n}\n\nparallel mixFeedback(a, b) {\n    R1 = 4.7k;\n    C1 = 820p;\n}\n\nseries lowFeed(a, b) {\n    R1 = 680;\n    L1 = 2.2m;\n}\n\nparallel lowShunt(a, b) {\n    C1 = 100n;\n    R1 = 22k;\n}\n\nseries midFeed(a, b) {\n    C1 = 100n;\n    L1 = 2.2m;\n    R1 = 100;\n}\n\nparallel midShunt(a, b) {\n    R1 = 390;\n    C1 = 1n;\n}\n\nseries highFeed(a, b) {\n    C1 = 6.8n;\n    R1 = 330;\n}\n\nparallel highShunt(a, b) {\n    R1 = 2.2k;\n    C1 = 150p;\n}\n\nparallel toneFeedback(a, b) {\n    R1 = 10k;\n    C1 = 100p;\n    (series)\n        R2 = 4.7k;\n        C2 = 1n;\n    (end series)\n}\n\nseries outputFeed(a, b) {\n    R1 = 2.2;\n    wire = sense;\n    L1 = 10u;\n}\n\nparallel speaker(a, b) {\n    # Voice-coil branch\n    (series)\n        R1 = 6.8;\n        L1 = 330u;\n    (end series)\n\n    # Resonance branch\n    (series)\n        R2 = 18;\n        L2 = 470u;\n        C1 = 560n;\n    (end series)\n\n    # High-frequency damping branch\n    (series)\n        R3 = 10;\n        (parallel)\n            C2 = 100n;\n            R4 = 2.2k;\n        (end parallel)\n    (end series)\n\n    R5 = 100k;\n}\n\nmain {\n    # Buffer both inputs.\n    inputFeed(inA, preA);\n    inputFeed(inB, preB);\n    inputShunt(preA, ref);\n    inputShunt(preB, ref);\n    op1(preA, bufA, bufA);\n    op2(preB, bufB, bufB);\n\n    # Mix both channels and inject the phase-shifted pilot.\n    RmixA bufA sum 15k;\n    RmixB bufB sum 22k;\n    Rpilot pilot sum 47k;\n    mixFeedback(sum, mixed);\n    op3(ref, sum, mixed);\n\n    # Split the mix into three frequency paths and buffer each one.\n    lowFeed(mixed, low);\n    lowShunt(low, ref);\n    op4(low, lowBuf, lowBuf);\n\n    midFeed(mixed, mid);\n    midShunt(mid, ref);\n    op5(mid, midBuf, midBuf);\n\n    highFeed(mixed, high);\n    highShunt(high, ref);\n    op6(high, highBuf, highBuf);\n\n    # Recombine the bands with independent weights.\n    Rlow lowBuf toneSum 18k;\n    Rmid midBuf toneSum 8.2k;\n    Rhigh highBuf toneSum 27k;\n    toneFeedback(toneSum, master);\n    op7(ref, toneSum, master);\n\n    # Drive the load from both ends with opposite-phase signals.\n    op8(master, driveP, driveP);\n    Rinv master bridgeSum 10k;\n    Rfb driveN bridgeSum 10k;\n    op9(ref, bridgeSum, driveN);\n\n    outputFeed(driveP, outP);\n    outputFeed(driveN, outN);\n    speaker(outP, outN);\n    RbleedP outP ref 100k;\n    RbleedN outN ref 100k;\n\n    # Expect about -0.888 V DC and 0.372 V RMS at -23.1 degrees across the load.\n    measure = V mixed ref;\n    measure = V lowBuf ref;\n    measure = V midBuf ref;\n    measure = V highBuf ref;\n    measure = V outP outN;\n    measure = I R1_speaker_1;\n    measure = P R1_speaker_1;\n}",
+    "render": true
+  },
+  {
+    "id": "voltage_divider",
+    "mode": "auto",
+    "source": "# Voltage divider. Probe out for 4 V in DC steady state.\nV1 in 0 12\n\nseries top(a, b) {\n    R1 = 2k;\n}\n\nseries bottom(a, b) {\n    R2 = 1k;\n}\n\nmain {\n    top(in, out);\n    bottom(out, 0);\n}\n",
+    "render": true
+  },
+  {
+    "id": "named_feedback",
+    "mode": "dc",
+    "source": "V1 in 0 .5\nseries input(a,b) { R1=1k; }\nparallel fb(a,b) { R2=20k; R3=20k; }\nmain { input(in,sum); fb(sum,out); op1(0,sum,out); op2(out,buf,buf); measure = V buf 0; }",
+    "render": true
+  },
+  {
+    "id": "bridge",
+    "mode": "dc",
+    "source": "V1 in 0 5\nR1 in a 1k\nR2 a 0 2k\nR3 in b 3k\nR4 b 0 4k\nR5 a b 5k\nport = a b\nmeasure = R a b",
+    "render": true
+  },
+  {
+    "id": "passive_group",
+    "mode": "dc",
+    "source": "V = 12\n(series)\nR1 = 400\n(parallel)\nR2 = 800\nR3 = 800\n(end parallel)\n(end series)",
+    "render": true
+  },
+  {
+    "id": "tap_and_return",
+    "mode": "dc",
+    "source": "V1 in 0 12\nseries feed(in) { R1=2k; wire = tap; R2=2k; return out; }\nparallel load(out,0) { R3=4k; }\nmeasure = V tap 0",
+    "render": true
+  },
+  {
+    "id": "ac_battery_offset",
+    "mode": "ac",
+    "source": "(battery V1)\nVpk = 3\nVdc = 4\nf = 955\nphaseV = 0\nwire = w1\n(end battery)\nseries r(w1,w2) { R1=1k; }\nparallel p(w2,0) { C1=1u; R2=10k; }\nmeasure = V w2 0",
+    "render": true
+  },
+  {
+    "id": "current_probe",
+    "mode": "dc",
+    "source": "V = 12\n(parallel)\nmeasure = Ix\nR1 = 6k\nR2 = 3k\n(end parallel)\nmeasure = I Ix",
+    "render": true
+  },
+  {
+    "id": "mixed_current",
+    "mode": "mixed",
+    "source": "f = 60\n(battery I1)\nApk = 2\nphaseI = 30\nwire = in\n(end battery)\nparallel load(in,0) { R1=10; L1=100m; }",
+    "render": true
+  },
+  {
+    "id": "phasor",
+    "mode": "ac",
+    "source": "V = 30<20 V\nI = 2<-30 A\nf = 60",
+    "render": false
+  },
+  {
+    "id": "motor",
+    "mode": "ac",
+    "source": "v(t) = 100cos(377t + 30) V\ni(t) = 10cos(377t - 30) A\neta = 80%\nspeedRatio = 0.9",
+    "render": false
+  },
+  {
+    "id": "rc_forward",
+    "mode": "transient",
+    "source": "model = rc\nR = 1k\nC = 1u\nVsrc = 10\nV0 = 0\nt = 1m",
+    "render": false
+  },
+  {
+    "id": "rc_inverse",
+    "mode": "transient",
+    "source": "model = rc\nR = 1k\nC = 1u\nVsrc = 10\nV0 = 0\nVc = 5",
+    "render": false
+  },
+  {
+    "id": "rl_forward",
+    "mode": "transient",
+    "source": "model = rl\nR = 10\nL = 100m\nVsrc = 5\nI0 = 0\nt = 10m",
+    "render": false
+  },
+  {
+    "id": "ramp",
+    "mode": "transient",
+    "source": "C = 100u\nV0 = 1\nIc = 10m\nt = 5m",
+    "render": false
+  },
+  {
+    "id": "signed_power",
+    "mode": "dc",
+    "source": "V = -12\nI = 30m\nt = 2",
+    "render": false
+  },
+  {
+    "id": "open_dc",
+    "mode": "dc",
+    "source": "V = 12\n(series)\nC1 = 1u\nR1 = 1k\n(end series)",
+    "render": true
+  },
+  {
+    "id": "legacy_measure",
+    "mode": "ac",
+    "source": "Vpk = 10\nphaseV = 0\nf = 1k\n(series)\nR1 = 1k\nC1 = 1u\n(end series)\nmeasure = C1",
+    "render": true
+  },
+  {
+    "id": "port_short",
+    "mode": "dc",
+    "source": "V1 in 0 5\nR1 in 0 1k\nport = in 0",
+    "render": true
+  },
+  {
+    "id": "underdetermined",
+    "mode": "dc",
+    "source": "V1 in 0 5\nR1 in 0 1k\nR2 a b 2k",
+    "render": false
+  },
+  {
+    "id": "inconsistent",
+    "mode": "dc",
+    "source": "V1 in 0 5\nV2 in 0 7",
+    "render": false
+  },
+  {
+    "id": "invalid_wire",
+    "mode": "dc",
+    "source": "series group(in,out) { R1=1k; wire = second; }\nV1 in 0 2",
+    "render": true
+  },
+  {
+    "id": "invalid_call",
+    "mode": "dc",
+    "source": "series divider(a,b) { R1=1k; }\nmain { divider(in); }",
+    "render": false
+  },
+  {
+    "id": "frequency_conflict",
+    "mode": "ac",
+    "source": "V1 in 0 2 Vrms\nR1 in 0 10\nf=100\nT=2m",
+    "render": false
+  },
+  {
+    "id": "unknown_quantity",
+    "mode": "dc",
+    "source": "nonsense = 5",
+    "render": false
+  },
+  {
+    "id": "SchematicCompilesCircuitWithoutSolving-1",
+    "mode": "ac",
+    "source": "(parallel)\nR1 = 1k\nC1 = 1u\n(end parallel)",
+    "render": false
+  },
+  {
+    "id": "SchematicCompilesCircuitWithoutSolving-2",
+    "mode": "dc",
+    "source": "R = 1k",
+    "render": false
+  },
+  {
+    "id": "OhmAndPowerReuse-1",
+    "mode": "dc",
+    "source": "V = 12\nR = 800",
+    "render": false
+  },
+  {
+    "id": "AlternatePowerInputs-1",
+    "mode": "dc",
+    "source": "I = -2\nP = 36",
+    "render": false
+  },
+  {
+    "id": "PowerAndResistanceLeaveSignsUnknown-1",
+    "mode": "dc",
+    "source": "R = 8\nP = 32",
+    "render": false
+  },
+  {
+    "id": "MissingInputsAndTermination-1",
+    "mode": "dc",
+    "source": "R = 800",
+    "render": false
+  },
+  {
+    "id": "ZeroAndAmbiguousDivision-1",
+    "mode": "dc",
+    "source": "V = 0\nI = 0",
+    "render": false
+  },
+  {
+    "id": "ZeroAndAmbiguousDivision-2",
+    "mode": "dc",
+    "source": "V = 0\nR = 800",
+    "render": false
+  },
+  {
+    "id": "OpenCircuitDoesNotInferFiniteResistance-1",
+    "mode": "dc",
+    "source": "V = 12\nI = 0",
+    "render": false
+  },
+  {
+    "id": "ConflictingValues-1",
+    "mode": "dc",
+    "source": "V = 12\nR = 800\nI = 0.03",
+    "render": false
+  },
+  {
+    "id": "SourcePowerDoesNotInventNegativePassiveResistance-1",
+    "mode": "dc",
+    "source": "V = 5\nI = -2",
+    "render": false
+  },
+  {
+    "id": "KnownValidation-1",
+    "mode": "dc",
+    "source": "R = -1",
+    "render": false
+  },
+  {
+    "id": "KnownValidation-2",
+    "mode": "dc",
+    "source": "MadeUp = 1",
+    "render": false
+  },
+  {
+    "id": "DCEnergyAndCharge-1",
+    "mode": "dc",
+    "source": "V = 12\nR = 800\nt = 10",
+    "render": false
+  },
+  {
+    "id": "CapacitorAndInductorStorage-1",
+    "mode": "dc",
+    "source": "C = 100e-6\nV = -12",
+    "render": false
+  },
+  {
+    "id": "CapacitorAndInductorStorage-2",
+    "mode": "dc",
+    "source": "L = 120e-6\nI = -1",
+    "render": false
+  },
+  {
+    "id": "ComponentPairsDoNotInventACircuit-1",
+    "mode": "transient",
+    "source": "R = 800\nC = 100e-6",
+    "render": false
+  },
+  {
+    "id": "ComponentPairsDoNotInventACircuit-2",
+    "mode": "dc",
+    "source": "R = 800\nC = 100e-6",
+    "render": false
+  },
+  {
+    "id": "ComponentPairsDoNotInventACircuit-3",
+    "mode": "transient",
+    "source": "R = 80\nL = 0.2",
+    "render": false
+  },
+  {
+    "id": "ConstantCurrentAndVoltageRamps-1",
+    "mode": "transient",
+    "source": "C = 500e-6\nV0 = -2\nIc = 0.003\nt = 0.5",
+    "render": false
+  },
+  {
+    "id": "ConstantCurrentAndVoltageRamps-2",
+    "mode": "transient",
+    "source": "L = 120e-6\nI0 = 1\nVl = 12\nt = 4.142135623730951e-6",
+    "render": false
+  },
+  {
+    "id": "FirstOrderRCStep-1",
+    "mode": "transient",
+    "source": "model = rc\nR = 800\nC = 100e-6\nVsrc = 12\nV0 = 0\nt = 0.08",
+    "render": false
+  },
+  {
+    "id": "FirstOrderRCStep-2",
+    "mode": "transient",
+    "source": "model = rc\ntauRC = 0",
+    "render": false
+  },
+  {
+    "id": "FirstOrderRLStep-1",
+    "mode": "transient",
+    "source": "model = rl\nR = 80\nL = 0.2\nVsrc = 12\nI0 = 0\nt = 0.0025",
+    "render": false
+  },
+  {
+    "id": "RecursiveReactanceAndPeriod-1",
+    "mode": "ac",
+    "source": "T = 0.001\nC = 1e-6",
+    "render": false
+  },
+  {
+    "id": "ACPhasorPower-1",
+    "mode": "ac",
+    "source": "V = 100\nI = 25 + 43.30127018922193i\nf = 1000",
+    "render": false
+  },
+  {
+    "id": "ACSignedDelayFromSpecifiedPhaseDifference-1",
+    "mode": "ac",
+    "source": "dphi = -60\nf = 1000",
+    "render": false
+  },
+  {
+    "id": "PeakToRMSAtNegativePhase-1",
+    "mode": "ac",
+    "source": "Ipk = 0.00528\nphaseI = -37.35",
+    "render": false
+  },
+  {
+    "id": "MotorPeakCurrentFeedsACRealPower-1",
+    "mode": "ac",
+    "source": "Ipk = 58\nphaseI = -30\nZ = 6.6 + 3.3i",
+    "render": false
+  },
+  {
+    "id": "BareEngineeringPrefixes-1",
+    "mode": "ac",
+    "source": "Vpk = 150\nf = 80k\nC = 1n",
+    "render": false
+  },
+  {
+    "id": "InkjetCircuitWithBarePrefixes-1",
+    "mode": "ac",
+    "source": "f = 80k\nV1 in 0 150 Vpk\nC1 in 0 1n",
+    "render": false
+  },
+  {
+    "id": "EquationColumnUsesSolvedRelationship-1",
+    "mode": "transient",
+    "source": "Vl = 12\nL = 120u\nI0 = 1\nt = 0",
+    "render": false
+  },
+  {
+    "id": "EquationColumnUsesSolvedRelationship-2",
+    "mode": "transient",
+    "source": "Vl = 12\nL = 120u\nI0 = 1\nIl = 1.414213562",
+    "render": false
+  },
+  {
+    "id": "EquationColumnUsesSolvedRelationship-3",
+    "mode": "dc",
+    "source": "V = 12\nI = 0.015",
+    "render": false
+  },
+  {
+    "id": "NetworkEquationColumn-1",
+    "mode": "ac",
+    "source": "f = 1k\nV1 in 0 1 Vpk\nR1 in out 1k\nC1 out 0 1n",
+    "render": false
+  },
+  {
+    "id": "ParallelToasterResistorGroup-1",
+    "mode": "ac",
+    "source": "V = 208\nf = 60\n(parallel)\nR1 = 32\nR2 = 32 ohm\n(end parallel)",
+    "render": false
+  },
+  {
+    "id": "DcGroupWithStorageElements-1",
+    "mode": "dc",
+    "source": "V = 1k\n(series)\nC = 1\n(end series)",
+    "render": false
+  },
+  {
+    "id": "GroupedSourceShorthandWithExternalSupply-1",
+    "mode": "dc",
+    "source": "(parallel)\nV1 = 12\nV2 = 7\n(end parallel)",
+    "render": false
+  },
+  {
+    "id": "GroupedSourceShorthandWithExternalSupply-2",
+    "mode": "ac",
+    "source": "f = 1k\n(parallel)\nV1 = 10 Vpk\nR1 = 1k\n(end parallel)",
+    "render": false
+  },
+  {
+    "id": "VoltageCosineWithUnitAndNoPhase-1",
+    "mode": "ac",
+    "source": "v(t) = 2*cos(100*t) [mV]\nw = 100 rad/s",
+    "render": false
+  },
+  {
+    "id": "WaveformInputRejectsConflictsAndUnsupportedForms-1",
+    "mode": "ac",
+    "source": "w=100\ni(t)=2cos(200t)",
+    "render": false
+  },
+  {
+    "id": "WaveformInputRejectsConflictsAndUnsupportedForms-2",
+    "mode": "dc",
+    "source": "i(t)=2cos(200t)",
+    "render": false
+  },
+  {
+    "id": "WaveformInputRejectsConflictsAndUnsupportedForms-3",
+    "mode": "ac",
+    "source": "i(t)=1+2cos(200t)",
+    "render": false
+  },
+  {
+    "id": "WaveformInputRejectsConflictsAndUnsupportedForms-4",
+    "mode": "ac",
+    "source": "i(t)=2cos(200t) V",
+    "render": false
+  },
+  {
+    "id": "SteadyStateMeasurements-1",
+    "mode": "dc",
+    "source": "(parallel)\nR1 = 1k\nmeasure = Ix\n(end parallel)",
+    "render": false
+  },
+  {
+    "id": "PowerMeasurementOfGroupedVoltageSource-1",
+    "mode": "ac",
+    "source": "V1 in 0 10 Vrms\nR1 in 0 50\nmeasure = P R1",
+    "render": false
+  },
+  {
+    "id": "legacy-unphased",
+    "mode": "ac",
+    "source": "Vpk = 150\nf = 80k\n(series)\nC = 1n\n(end series)",
+    "render": false
+  },
+  {
+    "id": "legacy-phased",
+    "mode": "ac",
+    "source": "Vpk = 150\nf = 80k\n(series)\nC = 1n\n(end series)\nphaseV = 0",
+    "render": false
+  },
+  {
+    "id": "active-branch-ix",
+    "mode": "dc",
+    "source": "V1 in 0 10\nparallel load(in, 0) {\nmeasure = Ix;\nR1 = 1k;\nR2 = 2k;\n}",
+    "render": true
+  },
+  {
+    "id": "ground-at-opamp",
+    "mode": "dc",
+    "source": "V1 in 0 1\nR1 in out 2k\n(opamp U1)\nin+ = in\nin- = out\nout = out\n(end opamp)",
+    "render": true
+  }
+]

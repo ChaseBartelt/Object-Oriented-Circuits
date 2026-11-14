@@ -1,0 +1,15 @@
+# Voltage divider. Probe out for 4 V in DC steady state.
+V1 = 12 : wire = Vin;
+
+series top {
+    R1 = 2k;
+}
+
+series bottom {
+    R2 = 1k;
+}
+
+main {
+    top(Vin, out);
+    bottom(out, 0);
+}

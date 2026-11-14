@@ -1,0 +1,71 @@
+# Three-way active audio crossover
+# Change f to sweep the signal through the three bands.
+V1 source 0 1 Vrms
+f = 1k
+
+circuit inputBuffer(input, output, ground) {
+    R1(100) between(input, sense);
+    R2(100k) between(sense, ground);
+    op1(sense, output, output);
+}
+
+circuit lowPass400(input, output, ground) {
+    R1(4.02k) between(input, tap);
+    C1(100n) between(tap, ground);
+    op1(tap, output, output);
+}
+
+circuit highPass400(input, output, ground) {
+    C1(100n) between(input, tap);
+    R1(4.02k) between(tap, ground);
+    op1(tap, output, output);
+}
+
+circuit lowPass4k(input, output, ground) {
+    R1(3.9k) between(input, tap);
+    C1(10n) between(tap, ground);
+    op1(tap, output, output);
+}
+
+circuit highPass4k(input, output, ground) {
+    C1(10n) between(input, tap);
+    R1(3.9k) between(tap, ground);
+    op1(tap, output, output);
+}
+
+circuit wooferFilter(input, output, ground) {
+    lowPass400(input, stage1, ground);
+    lowPass400(stage1, output, ground);
+}
+
+circuit midFilter(input, output, ground) {
+    highPass400(input, stage1, ground);
+    lowPass4k(stage1, output, ground);
+}
+
+circuit tweeterFilter(input, output, ground) {
+    highPass4k(input, stage1, ground);
+    highPass4k(stage1, output, ground);
+}
+
+circuit speakerLoad(input, output, ground) {
+    R1(1) between(input, output);
+    R2(8) between(output, ground);
+    measure = I R2;
+}
+
+main {
+    inputBuffer(source, bus, 0);
+
+    wooferFilter(bus, bassDrive, 0);
+    midFilter(bus, midDrive, 0);
+    tweeterFilter(bus, trebleDrive, 0);
+
+    speakerLoad(bassDrive, bassOut, 0);
+    speakerLoad(midDrive, midOut, 0);
+    speakerLoad(trebleDrive, trebleOut, 0);
+
+    measure = V bassOut 0;
+    measure = V midOut 0;
+    measure = V trebleOut 0;
+}
