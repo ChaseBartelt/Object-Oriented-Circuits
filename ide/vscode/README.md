@@ -2,6 +2,10 @@
 
 Install the OOC `.vsix` in VS Code using **Extensions → … → Install from VSIX**. Open a `.ckt` file directly in the editor. The language mode in the status bar will read **Object-Oriented Circuits**.
 
+The Windows OOC installer installs this extension and a private compiler/viewer runtime together. It automatically finds the installed chip library and keeps one viewer connection across files in the same VS Code workspace. You do not need a checkout or a separate Python installation. For a custom installer directory, set **OOC: Installation Path**. Development checkouts and explicit Python settings still take precedence.
+
+Installed applications check published GitHub releases at most every six hours; **OOC: Check for Updates** checks immediately and offers **Install update** for the complete compiler/viewer/library/extension set. Close an older viewer after updating. The first release must be published before public updates are available. The following local update behavior applies to development checkouts.
+
 ## Automatic local updates
 
 OOC checks your trusted local checkout every 30 seconds for a newer completed extension package. The source is **OOC: Project Root**, the checkout containing the active file, or an OOC workspace folder. After a new release is built, it installs automatically. You no longer need to browse for a VSIX after the initial installation of 0.5.0.
@@ -26,7 +30,7 @@ Save included files before running. The play button reuses the window for that O
 
 **Save layout** (or **Ctrl+S** in the viewer) writes `<circuit>.ckt.layout.json` and leaves the `.ckt` source untouched, even if VS Code has newer edits. Keep that sidecar with the source when moving a project. Existing saved placements and shared gate-layout settings retain their formats and namespace. New viewer probe names, renames and removals are saved as sidecar overrides; existing `# @pin` comments still work. Double-click a viewer diagnostic to open its file and line in VS Code.
 
-The connection lasts for the VS Code session; after reloading VS Code, close the old OOC window before running again. This extension requires the matching updated OOC checkout with `--editor` support. The original editor remains available by launching `python -m circuitlab` without `--editor`. After updating Python implementation files, close the old viewer and Run again to load the new code.
+The connection lasts for the VS Code session; after reloading VS Code, close the old OOC window before running again. This extension requires an installed OOC runtime or matching development checkout with `--editor` support. The original editor remains available by launching `python -m circuitlab` without `--editor`. After updating Python implementation files, close the old viewer and Run again to load the new code.
 
 ### Refresh on save
 

@@ -4,6 +4,8 @@ A `.ckt` circuit programming language with an interactive schematic and simulati
 
 ## Quick start
 
+Windows users can use the standalone installer when provided with a release. It includes Python, the compiler/viewer, dependencies and chip library, and installs the extension into an existing VS Code installation. No repository checkout is needed. See the [installer guide](installer/windows/README.md) for installation, updates and release packaging. The source-development setup follows below.
+
 Install Python 3.10 or newer. Extract the ZIP and open PowerShell in the directory containing `pyproject.toml`.
 
 ~~~powershell

@@ -1,0 +1,81 @@
+name: Windows installer
+
+on:
+  workflow_dispatch:
+    inputs:
+      draft_release:
+        description: Create a draft GitHub release after validation
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Install build and test dependencies
+        run: |
+          python -m pip install --upgrade pip setuptools
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python -m pip install -e .
+      - name: Run Python and extension tests
+        shell: pwsh
+        run: |
+          $env:QT_QPA_PLATFORM = 'offscreen'
+          python -m unittest discover -s tests -v
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $env:OOC_PYTHON = (Get-Command python).Source
+          node --test ide/vscode/test/*.test.js
+          exit $LASTEXITCODE
+      - name: Prepare verified Inno Setup compiler
+        shell: pwsh
+        run: |
+          $file = Join-Path $env:RUNNER_TEMP 'innosetup.exe'
+          Invoke-WebRequest 'https://github.com/jrsoftware/issrc/releases/download/is-7_1_1/innosetup-7.1.1-x64.exe' -OutFile $file
+          if ((Get-FileHash $file -Algorithm SHA256).Hash -ne '8a5a6711c3766a6e5fb74f280ba0e3551e719ce94538d901fdbd1f8f9920b3f0') { throw 'Compiler checksum mismatch' }
+          $tool = Join-Path $env:RUNNER_TEMP 'inno'
+          $process = Start-Process $file -ArgumentList @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/PORTABLE=1','/CURRENTUSER','/NOICONS',('/DIR="'+$tool+'"')) -WindowStyle Hidden -PassThru -Wait
+          if ($process.ExitCode -ne 0) { throw 'Compiler installation failed' }
+      - name: Build complete installer
+        shell: pwsh
+        run: python installer/windows/build_installer.py --iscc "$env:RUNNER_TEMP/inno/ISCC.exe" --output dist/windows
+      - name: Verify installed runtime, repair, update and uninstall
+        shell: pwsh
+        run: |
+          $setup = (Get-Item dist/windows/OOC-Setup-*.exe).FullName
+          python installer/windows/verify_installer.py --setup $setup --work-dir "$env:RUNNER_TEMP/ooc-verification" --full-tests
+      - uses: actions/upload-artifact@v4
+        with:
+          name: OOC-Windows-installer
+          path: |
+            dist/windows/OOC-Setup-*.exe
+            dist/windows/ooc-release.json
+            dist/windows/ooc-language-*.vsix
+            dist/windows/build-manifest.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: OOC-installed-validation
+          path: |
+            ${{ runner.temp }}/ooc-verification/**/validation.json
+            ${{ runner.temp }}/ooc-verification/**/installed-tests.json
+            ${{ runner.temp }}/ooc-verification/**/*.log
+      - name: Create reviewable draft release
+        if: inputs.draft_release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $release = Get-Content dist/windows/ooc-release.json -Raw | ConvertFrom-Json
+          $tag = 'ooc-v' + $release.version
+          $setup = 'dist/windows/OOC-Setup-' + $release.version + '-windows-x64.exe'
+          gh release create $tag $setup dist/windows/ooc-release.json (Get-Item dist/windows/ooc-language-*.vsix).FullName --draft --target $env:GITHUB_SHA --title ('OOC ' + $release.version) --notes-file installer/windows/release-notes.md

@@ -2,7 +2,7 @@
   "name": "ooc-language",
   "displayName": "Object-Oriented Circuits",
   "description": "Edit, navigate, and check Object-Oriented Circuits (.ckt) files.",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "publisher": "echoingfarts",
   "license": "MIT",
   "engines": { "vscode": "^1.90.0" },
@@ -42,7 +42,7 @@
       { "language": "ooc", "path": "./snippets/ooc.code-snippets" }
     ],
     "commands": [
-      { "command": "ooc.checkForUpdates", "category": "OOC", "title": "Check for Local Updates" },
+      { "command": "ooc.checkForUpdates", "category": "OOC", "title": "Check for Updates" },
       { "command": "ooc.check", "category": "OOC", "title": "Check Circuit" },
       { "command": "ooc.solve", "category": "OOC", "title": "Solve Circuit" },
       { "command": "ooc.openSchematic", "category": "OOC", "title": "Run Circuit / Open Schematic", "icon": "$(play)" }
@@ -57,7 +57,7 @@
       "properties": {
         "ooc.autoUpdate": {
           "type": "boolean", "default": true, "scope": "window",
-          "description": "Automatically install newer packaged OOC extension releases from your trusted local OOC checkout. Reload when ready to activate them."
+          "description": "Check for installed OOC application updates, or apply local extension releases when using a development checkout."
         },
         "ooc.refreshOnSave": {
           "type": "boolean", "default": true,
@@ -72,6 +72,10 @@
           "default": "",
           "scope": "resource",
           "description": "Path to the OOC checkout when editing circuits in a separate folder."
+        },
+        "ooc.installationPath": {
+          "type": "string", "default": "", "scope": "machine",
+          "description": "Optional custom OOC installer location. The standard per-user installation is detected automatically."
         },
         "ooc.pythonPath": {
           "type": "string",

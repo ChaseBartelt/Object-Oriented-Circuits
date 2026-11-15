@@ -45,7 +45,7 @@ async function candidate(root, installed) {
     return { file, version: release.version, bundle };
 }
 
-function startLocalUpdates(vscode, context, getRoot, output, applyRuntime) {
+function startLocalUpdates(vscode, context, getRoot, output, applyRuntime, checkInstalled) {
     let installed = context.extension.packageJSON.version;
     let busy = false, disposed = false, lastError;
     async function check(manual = false) {
@@ -53,6 +53,7 @@ function startLocalUpdates(vscode, context, getRoot, output, applyRuntime) {
         if (!manual && !vscode.workspace.getConfiguration("ooc").get("autoUpdate", true)) return;
         const root = getRoot();
         if (!root) {
+            if (checkInstalled) return checkInstalled(manual);
             if (manual) vscode.window.showInformationMessage("Open your OOC project or set OOC: Project Root to check for local updates.");
             return;
         }

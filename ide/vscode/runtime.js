@@ -1,5 +1,5 @@
 const { execFile, spawn } = require("node:child_process");
-const { existsSync } = require("node:fs");
+const { existsSync, readFileSync, realpathSync } = require("node:fs");
 const path = require("node:path");
 const vscode = require("vscode");
 const { analyzeSource } = require("./structure");
@@ -67,6 +67,30 @@ function checkoutRoot(document) {
     }
 }
 
+function installedRuntime() {
+    if (process.platform !== "win32") return;
+    const configured = vscode.workspace.getConfiguration("ooc").get("installationPath", "").trim();
+    const root = configured || process.env.OOC_INSTALL_ROOT
+        || (process.env.LOCALAPPDATA && path.join(process.env.LOCALAPPDATA, "Programs", "OOC"));
+    if (!root) return;
+    try {
+        const base = realpathSync(root);
+        const record = JSON.parse(readFileSync(path.join(base, "install.json"), "utf8").replace(/^\uFEFF/, ""));
+        if (record.schema !== 1 || record.product !== "object-oriented-circuits") return;
+        const child = (relative) => {
+            if (typeof relative !== "string" || path.isAbsolute(relative)) throw new Error("Invalid OOC path");
+            const file = realpathSync(path.resolve(base, relative));
+            const rel = path.relative(base, file);
+            if (!rel || path.isAbsolute(rel) || rel === ".." || rel.startsWith(".." + path.sep)) throw new Error("Invalid OOC path");
+            return file;
+        };
+        return { root: base, version: record.version, python: child(record.python), library: child(record.library),
+            extension: child(record.extension), bundle: child(record.runtime_bundle),
+            extensionVersion: record.extension_version, extensionSha256: record.extension_sha256,
+            bundleSha256: record.runtime_sha256 };
+    } catch { return undefined; }
+}
+
 function includeTarget(document, filename) {
     if (document.uri.scheme !== "file" || path.isAbsolute(filename) || /^[A-Za-z]:/.test(filename)
         || ![".ckt", ".txt"].includes(path.extname(filename).toLowerCase())) {
@@ -74,10 +98,10 @@ function includeTarget(document, filename) {
     }
     if (filename.startsWith("@chips/") || filename.startsWith("@chips\\")) {
         const root = checkoutRoot(document);
-        if (!root) {
+        const library = root ? path.join(root, "circuitlab", "libraries", "chips") : installedRuntime()?.library;
+        if (!library) {
             return undefined;
         }
-        const library = path.join(root, "circuitlab", "libraries", "chips");
         const target = path.resolve(library, filename.slice("@chips/".length));
         const relative = path.relative(library, target);
         return relative === ".." || relative.startsWith(".." + path.sep) ? undefined : target;
@@ -120,9 +144,11 @@ function runtime(document) {
     const config = vscode.workspace.getConfiguration("ooc", document.uri);
     const windows = process.platform === "win32";
     const interpreter = root && path.join(root, ".venv", windows ? "Scripts/python.exe" : "bin/python");
+    const installed = !root && installedRuntime();
     const python = config.get("pythonPath", "").trim()
-        || (interpreter && existsSync(interpreter) ? interpreter : windows ? "python" : "python3");
-    return { python, cwd: root || path.dirname(document.uri.fsPath) };
+        || (interpreter && existsSync(interpreter) ? interpreter : installed?.python || (windows ? "python" : "python3"));
+    const folder = vscode.workspace.getWorkspaceFolder(document.uri)?.uri.fsPath;
+    return { python, cwd: root || folder || path.dirname(document.uri.fsPath) };
 }
 
 function openSchematic(python, cwd, file, output, windows, automatic = false) {
@@ -346,4 +372,4 @@ function activate(context, shared = {}) {
     );
 }
 
-module.exports = { activate, checkoutRoot };
+module.exports = { activate, checkoutRoot, installedRuntime, includeTarget, runtime };

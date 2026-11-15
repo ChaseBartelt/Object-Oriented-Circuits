@@ -96,6 +96,7 @@ def build(output):
         "live-runtime.js": EXTENSION / "live-runtime.js",
         "hover-client.js": EXTENSION / "hover-client.js",
         "local-updates.js": EXTENSION / "local-updates.js",
+        "installed-updates.js": EXTENSION / "installed-updates.js",
         "structure.js": EXTENSION / "structure.js",
         "language-configuration.json": EXTENSION / "language-configuration.json",
         "syntaxes/OOC.json": REPO / "ide/visual-studio/Syntaxes/OOC.json",
