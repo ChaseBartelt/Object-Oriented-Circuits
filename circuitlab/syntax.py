@@ -27,6 +27,9 @@ CHIP = re.compile(r"chip\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(([^()]*)\)\s*\{", re.I)
 CHIP_START = re.compile(
     r"chip[ \t]+(?:[^ \t({]+[ \t]*(?=[({])|[A-Za-z_][A-Za-z0-9_]*$)", re.I
 )
+CONTROL_START = re.compile(r"(?:for|while|do|if|else)\b.*\{", re.I)
+BLOCK_TOKEN = re.compile(r'\$\{[^}]*(?:\}|$)|"[^"]*"|[{}();]')
+WHILE_TAIL = re.compile(r"while\s*\(.*\)", re.I)
 BJT_PINS = ("base", "collector", "emitter")
 BJT_TYPES = {"npn", "pnp"}
 BJT_MODEL_NAME = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]*")
@@ -91,7 +94,7 @@ def analysis_mode(source):
     # Transistor fields name nets and models, even if they end in Vpk or Arms.
     source = re.sub(TRANSISTOR.pattern + r"[^}]*}", "", source, flags=re.I)
     rows = re.split(r"[;{}\r\n]+", source)
-    if any("|" in row for row in rows):
+    if any(re.search(r"(?<!\|)\|(?!\|)", row) for row in rows):
         return "mixed"
     for row in rows:
         if (
@@ -114,17 +117,45 @@ def analysis_mode(source):
 
 def has_chip(source):
     """Recognize chip files with input/output declarations for Verilog export."""
-    in_chip = False
+    depth = 0
     for row, _, _ in source_rows(source):
-        if CHIP.fullmatch(row):
-            in_chip = True
-        elif row == "}":
-            in_chip = False
-        elif in_chip and PIN_DIRECTION.fullmatch(row):
-            return True
-        elif not in_chip and CHIP_START.match(row) and not SECTION.fullmatch(row):
+        if depth:
+            if row == "}":
+                depth -= 1
+            elif row.endswith("{"):
+                depth += 1
+            elif depth == 1 and PIN_DIRECTION.fullmatch(row):
+                return True
+        elif CHIP.fullmatch(row):
+            depth = 1
+        elif CHIP_START.match(row) and not SECTION.fullmatch(row):
             return True
     return False
+
+
+def _block_rows(line, depth):
+    """Recognize delimiters outside calls, interpolation, and quoted paths."""
+    rows = []
+    start = parentheses = 0
+    for match in BLOCK_TOKEN.finditer(line):
+        token = match[0]
+        if token == "(":
+            parentheses += 1
+        elif token == ")":
+            parentheses = max(parentheses - 1, 0)
+        elif not parentheses and token in {";", "{", "}"}:
+            fragment = line[start:match.start()]
+            if token == "{":
+                rows.append(fragment + token)
+                depth += 1
+            elif token == "}":
+                rows.extend((fragment, token))
+                depth = max(depth - 1, 0)
+            else:
+                rows.append(fragment + ";" if WHILE_TAIL.fullmatch(fragment.strip()) else fragment)
+            start = match.end()
+    rows.append(line[start:])
+    return "\n".join(rows), depth
 
 
 def source_rows(source, *, legacy_markers=True):
@@ -134,10 +165,9 @@ def source_rows(source, *, legacy_markers=True):
         line = raw.split("#", 1)[0].strip()
         if depth or any(
             header.match(line)
-            for header in (SECTION, MAIN, INLINE, BATTERY_BRACE, TRANSISTOR, CHIP)
+            for header in (SECTION, MAIN, INLINE, BATTERY_BRACE, TRANSISTOR, CHIP, CONTROL_START)
         ):
-            depth = max(0, depth + line.count("{") - line.count("}"))
-            line = line.replace(";", "\n").replace("{", "{\n").replace("}", "\n}\n")
+            line, depth = _block_rows(line, depth)
         # Legacy parenthesized blocks allow several assignments on the same line.
         if legacy_markers and MARKER.search(line):
             line = MARKER.sub(r"\n\1\n", line)

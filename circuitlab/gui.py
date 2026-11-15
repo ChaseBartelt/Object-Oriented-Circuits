@@ -632,7 +632,11 @@ class MainWindow(QMainWindow):
 
     def effective_mode(self):
         mode = self.mode.currentData()
-        return analysis_mode(self.editor.toPlainText()) if mode == "auto" else mode
+        if mode != "auto":
+            return mode
+        if self.solution is not None:
+            return self.solution.circuit.mode
+        return analysis_mode(self.editor.toPlainText())
 
     def read_linked_source(self, path):
         for editor, state in self.documents.items():
@@ -766,9 +770,9 @@ class MainWindow(QMainWindow):
             return
         self.circuit_text = code
         self.scope.set_circuit(None)
+        self.set_solution(None)
         if self.effective_mode() != self.picker_mode:
             self.refresh_picker()
-        self.set_solution(None)
         self.schematic.clear(preserve_placement=True)
         self.pin_button.setChecked(False)
         self.schematic.set_pin_tool(False)
@@ -805,6 +809,8 @@ class MainWindow(QMainWindow):
             try:
                 result = analyze(self.build_circuit(source, mode))
                 self.set_solution(result)
+                if self.effective_mode() != self.picker_mode:
+                    self.refresh_picker()
                 issues = diagnostics(source, result)
             except CircuitError as error:
                 issues = [self.issue(error)]

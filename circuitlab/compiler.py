@@ -4,7 +4,8 @@ import re
 from dataclasses import dataclass, field, replace
 from math import sqrt
 
-from .graph import Circuit, CircuitError, Component, Probe, Pulse, WireTap, ground_references
+from .control_flow import is_control_statement
+from .graph import Circuit, CircuitError, Component, MethodInstance, Probe, Pulse, WireTap, ground_references
 from .math_engine import solve_known
 from .methods import expand_main
 from .numbers import real, scalar
@@ -35,6 +36,7 @@ from .syntax import (
     TRANS_POSITIONAL,
     UNITS,
     WAVE,
+    SourceRow,
     analysis_mode,
     has_chip,
     parse_wires,
@@ -143,15 +145,24 @@ def compile_circuit(source, mode="auto", *, render_only=False, path=None, read_s
 
 def compile_document(source, mode, *, render_only=False, path=None, definitions=None):
     """Elaborate one document after its includes have been read."""
+    program = elaborate_document(source, path=path, definitions=definitions)
+    return compile_program(program, mode, render_only=render_only)
+
+
+@dataclass
+class CircuitProgram:
+    rows: list[SourceRow]
+    connectors: dict[str, int]
+    instances: list[MethodInstance]
+    mode_source: str
+
+
+def elaborate_document(source, *, path=None, definitions=None):
+    """Expand the executable statements before automatic mode selection."""
     if has_chip(source):
         raise CircuitError(
             "Use File > Export Verilog for this chip."
         )
-    mode = mode.lower()
-    if mode == "auto":
-        mode = analysis_mode(source)
-    if mode not in {"dc", "ac", "mixed", "transient"}:
-        raise CircuitError(f"Unknown analysis mode {mode!r}.")
     rows = []
     connectors = {}
     depth = 0
@@ -173,19 +184,34 @@ def compile_document(source, mode, *, render_only=False, path=None, definitions=
         else:
             rows.append((text, line, replace(binding, path=path) if path else binding))
             depth += text.count("{") - text.count("}")
-    compiler = Compiler(mode)
-    compiler.circuit.named_wires.update(connectors)
-    compiler.circuit.connector_pins = tuple(connectors)
-    owners, lines = {}, {}
-    paths = {}
     imports = [
         (text, line, replace(binding, path=filename))
         for filename, content in (definitions or {}).items()
         for text, line, binding in source_rows(content)
     ]
-    for order, (text, line, binding) in enumerate(
-        expand_main(rows, compiler.circuit.instances, imports=imports), 1
-    ):
+    instances = []
+    expanded = expand_main(rows, instances, imports=imports)
+    mode_source = source
+    if any(is_control_statement(text) for section in (rows, imports) for text, _, _ in section):
+        mode_source = "\n".join(text for text, _, _ in expanded)
+    return CircuitProgram(expanded, connectors, instances, mode_source)
+
+
+def compile_program(program, mode, *, render_only=False):
+    """Read elaborated statements and resolve their electrical graph."""
+    mode = mode.lower()
+    if mode == "auto":
+        mode = analysis_mode(program.mode_source)
+    if mode not in {"dc", "ac", "mixed", "transient"}:
+        raise CircuitError(f"Unknown analysis mode {mode!r}.")
+    compiler = Compiler(mode)
+    connectors = program.connectors
+    compiler.circuit.named_wires.update(connectors)
+    compiler.circuit.connector_pins = tuple(connectors)
+    compiler.circuit.instances = list(program.instances)
+    owners, lines = {}, {}
+    paths = {}
+    for order, (text, line, binding) in enumerate(program.rows, 1):
         compiler.order = order
         lines[order] = line
         if binding.path is not None:

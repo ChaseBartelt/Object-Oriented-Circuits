@@ -3,6 +3,7 @@
 import re
 from graphlib import CycleError, TopologicalSorter
 
+from .control_flow import is_control_statement
 from .graph import CircuitError
 from .syntax import CHIP, source_rows
 
@@ -148,6 +149,12 @@ def compile_chips(source: str):
         for statement, body_line, _ in rows:
             if statement == "}":
                 break
+            if is_control_statement(statement):
+                raise CircuitError(
+                    "Verilog chip bodies use pin declarations and combinational assignments. "
+                    "Compile-time control flow is available in electrical circuits.",
+                    body_line,
+                )
             body.append((statement, body_line))
         else:
             raise CircuitError(f'Close chip "{name}" with }}.', line)

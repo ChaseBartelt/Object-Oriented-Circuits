@@ -3,7 +3,7 @@
 from dataclasses import replace
 from pathlib import Path
 
-from .compiler import Compiler, compile_document
+from .compiler import Compiler, compile_document, compile_program, elaborate_document
 from .graph import CircuitError
 from .numbers import set_known
 from .syntax import INCLUDE, NET_METHODS, OVERRIDE, SECTION, analysis_mode, has_chip, source_rows
@@ -94,23 +94,32 @@ def compile_linked(source, path, mode, *, render_only=False, read_source=None):
     files, imports = read_includes(source, path, read_source)
     entry = next(iter(files))
     if len(files) == 1:
-        return compile_document(source, mode, render_only=render_only)
+        return compile_document(source, mode, render_only=render_only, path=entry)
     executable = {
         path: text for path, text in files.items() if path == entry or not definition_file(text)
     }
-    mode = analysis_mode("\n".join(executable.values())) if mode.lower() == "auto" else mode.lower()
+    programs = {}
+    for path, text in executable.items():
+        try:
+            if has_chip(text):
+                raise CircuitError("File connectors link electrical circuits. Export digital chips to Verilog.")
+            programs[path] = elaborate_document(
+                text, path=path, definitions=imported_definitions(path, files, imports)
+            )
+        except CircuitError as error:
+            raise CircuitError(error.message, error.line, error.code, path=error.path or path) from None
+    mode = mode.lower()
+    if mode == "auto":
+        mode = analysis_mode("\n".join(program.mode_source for program in programs.values()))
     if mode == "transient":
         raise CircuitError("Linked files use a steady-state analysis mode.")
 
     circuits = []
-    for path, text in executable.items():
-        definitions = imported_definitions(path, files, imports)
+    for path, program in programs.items():
         try:
-            if has_chip(text):
-                raise CircuitError("File connectors link electrical circuits. Export digital chips to Verilog.")
-            circuit = compile_document(text, mode, path=path, definitions=definitions)
-            if circuit.reduce_groups and (render_only or len(executable) > 1):
-                circuit = compile_document(text, mode, render_only=True, path=path, definitions=definitions)
+            circuit = compile_program(program, mode)
+            if circuit.reduce_groups and (render_only or len(programs) > 1):
+                circuit = compile_program(program, mode, render_only=True)
         except CircuitError as error:
             raise CircuitError(error.message, error.line, error.code, path=error.path or path) from None
         circuits.append((path, circuit))

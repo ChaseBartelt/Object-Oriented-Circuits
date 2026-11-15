@@ -2,7 +2,15 @@
 
 import re
 from dataclasses import dataclass, replace
+from itertools import chain
 
+from .control_flow import (
+    MAX_EXPANDED_ROWS,
+    ExpansionBudget,
+    expand_control_flow,
+    is_control_block,
+    is_control_statement,
+)
 from .gates import GATE_HELP, gate_accepts, gate_body, gate_call_help, gate_signature
 from .graph import CircuitError, MethodInstance
 from .numbers import scalar
@@ -40,6 +48,9 @@ class Method:
     parameters: tuple[str, ...]
     body: list[SourceRow]
     targets: dict[str, str]
+
+
+_INTERPOLATION_PLACEHOLDER = re.compile(r"\$\{[^}]*\}")
 
 
 def _bind_gate_call(name, raw, parent):
@@ -103,6 +114,7 @@ def expand_main(rows: list[SourceRow], instances: list[MethodInstance], *, impor
     """Replace method calls with bound statements in execution order."""
     import_count = len(imports)
     rows = [*imports, *rows]
+    uses_control_flow = any(is_control_statement(text) for text, _, _ in rows)
     starts = [i for i, (text, _, _) in enumerate(rows) if MAIN.fullmatch(text)]
     if len(starts) > 1:
         raise CircuitError("Use one main block.", rows[starts[1]][1])
@@ -117,11 +129,13 @@ def expand_main(rows: list[SourceRow], instances: list[MethodInstance], *, impor
                 openings.pop()
                 if not openings:
                     return i
-            elif any(
-                header.fullmatch(text) for header in (INLINE, BATTERY_BRACE, TRANSISTOR)
-            ):
-                openings.append(i)
             elif text.endswith("{"):
+                shape = _INTERPOLATION_PLACEHOLDER.sub("_", text)
+                if is_control_block(text) or any(
+                    header.fullmatch(shape) for header in (INLINE, BATTERY_BRACE, TRANSISTOR)
+                ):
+                    openings.append(i)
+                    continue
                 raise CircuitError(
                     "Define named sections at the top level. Call them from inside main or a circuit method.",
                     line,
@@ -193,7 +207,7 @@ def expand_main(rows: list[SourceRow], instances: list[MethodInstance], *, impor
             targets = {
                 placement[1]: "part"
                 for statement, _, _ in child
-                if (placement := PART_PLACEMENT.fullmatch(statement))
+                if (placement := PART_PLACEMENT.fullmatch(_INTERPOLATION_PLACEHOLDER.sub("_", statement)))
                 and placement[1] in pins
             }
         elif raw is not None:
@@ -233,11 +247,19 @@ def expand_main(rows: list[SourceRow], instances: list[MethodInstance], *, impor
             definitions[key] = method
         i = j + 1
 
+    budget = ExpansionBudget()
+
     def expand(body, parent, active, *, top_level=False):
         transistor = False
         for text, line, origin in body:
             if parent.path != origin.path:
                 parent = replace(parent, path=origin.path)
+            if top_level and is_control_statement(text):
+                raise CircuitError(
+                    "Put compile-time control flow inside main or a circuit method.",
+                    line,
+                    path=origin.path,
+                )
             if transistor:
                 yield text, line, parent
                 transistor = text != "}"
@@ -324,6 +346,7 @@ def expand_main(rows: list[SourceRow], instances: list[MethodInstance], *, impor
                 scope, mapping, in_main=bool(targets and parent.in_main),
                 values=values, instance=index
             )
+            child = expand_control_flow(child, budget=budget)
             if targets:
                 expanded_child = []
                 for statement, body_line, original in child:
@@ -359,8 +382,22 @@ def expand_main(rows: list[SourceRow], instances: list[MethodInstance], *, impor
                 yield from expand(child, binding, (*active, method_key))
                 yield "}", line, binding
 
-    return [
-        *expand(before, Binding(), (), top_level=True),
-        *expand(rows[start + 1 : stop], Binding(in_main=True), ()),
-        *expand(after, Binding(), (), top_level=True),
-    ]
+    expanded = chain(
+        expand(before, Binding(), (), top_level=True),
+        expand(expand_control_flow(rows[start + 1 : stop], budget=budget), Binding(in_main=True), ()),
+        expand(after, Binding(), (), top_level=True),
+    )
+    if not uses_control_flow:
+        return list(expanded)
+
+    result = []
+    for row in expanded:
+        if len(result) >= MAX_EXPANDED_ROWS:
+            _, line, origin = row
+            raise CircuitError(
+                f"Compile-time control flow exceeded {MAX_EXPANDED_ROWS:,} expanded electrical statements.",
+                line,
+                path=origin.path,
+            )
+        result.append(row)
+    return result

@@ -13,6 +13,7 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import QCompleter, QPlainTextEdit, QTextEdit, QToolTip, QWidget
 
+from .control_flow import is_control_block
 from .device_reference import gate_inputs
 from .gates import GATE_HELP, gate_call_help
 from .numbers import NUMBER
@@ -58,7 +59,7 @@ def _accepts_calls(source):
                     or (
                         blocks
                         and blocks[-1]
-                        and re.match(r"(?:series|parallel)\b", text, re.I)
+                        and (re.match(r"(?:series|parallel)\b", text, re.I) or is_control_block(text))
                     )
                 )
             )
@@ -81,7 +82,8 @@ class CircuitHighlighter(QSyntaxHighlighter):
         (
             re.compile(
                 r"\b(?:series|parallel|circuit|chip|gate|between|battery|opamp|transistor|"
-                r"end|main|return|measure|wire|ground|model|port|input|output|connector|include)\b",
+                r"end|main|return|measure|wire|ground|model|port|input|output|connector|include|"
+                r"for|while|do|if|else|let|int|bool|true|false|break|continue)\b",
                 re.I,
             ),
             "#92bfff",

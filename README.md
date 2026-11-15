@@ -224,6 +224,36 @@ main {
 
 The example gives **3.75 V** at `out`. Open `examples/circuit_method.ckt` for the same divider powered by a battery block.
 
+### Compile-time control flow
+
+Use `for`, `while`, `do while` and `if / else if / else` in `main` and in electrical method bodies. The compiler evaluates these statements while building the circuit. Simulation voltages, currents and time are outside their scope.
+
+~~~text
+V1(12) between(n0, 0);
+
+main {
+    for (int i = 1; i <= 3; i++) {
+        R${i}(1k) between(n${i - 1}, n${i});
+    }
+    RLoad(1k) between(n3, 0);
+}
+
+measure = V n3 0
+~~~
+
+This creates three 1 kΩ series resistors and one 1 kΩ load. Node `n3` is **3 V**. Use `${expression}` to insert a compile-time value into a name, net or component value.
+
+~~~text
+let count = 0;
+while (count < 2) { count++; }
+do { count++; } while (count < 3);
+if (count == 3) { RLoad(3k) between(out, 0); }
+else if (count == 2) { RLoad(2k) between(out, 0); }
+else { RLoad(1k) between(out, 0); }
+~~~
+
+Put the fragment above inside an electrical body. Start each brace on the same line as its branch or loop header. Declare local integer or boolean values with `let`, `int` or `bool`. Use `break;` to exit the innermost loop and `continue;` to advance to its next iteration. Compilation reports an error beyond 10,000 entered loop iterations. Verilog export uses the separate digital-chip grammar below.
+
 ### Digital chips and Verilog
 
 Open `examples/digital/nand.ckt` and choose **File → Export Verilog** to save a `.v` file. Select `NandGate` as the top-level entity when using this example as a standalone Quartus design.
@@ -250,6 +280,7 @@ The editable install in Quick start picks up changes to `circuitlab/`. Restart t
 | --- | --- |
 | Source syntax or editor recognition | `syntax.py` for shared grammar, source lines, and mode detection. `editor.py` for completion and syntax highlighting. |
 | Reusable circuit methods | `methods.py` for declaration validation, argument binding, and per-call names. |
+| Compile-time control flow | `control_flow.py` expands loops and branches into electrical statements. |
 | Wiring and compiler diagnostics | `compiler.py` builds the graph in `graph.py` from expanded statements. |
 | Equations, units, or calculated quantities | `quantities.py` defines available inputs. `numbers.py` parses SI values. `math_engine.py` applies equation rules and uses SymPy for RC and RL step responses. |
 | Circuit simulation or probes | `analysis.py` coordinates the solve and evaluates probes. `simulation.py` solves the nodal equations with NumPy and SciPy. `report.py` formats the results. |
