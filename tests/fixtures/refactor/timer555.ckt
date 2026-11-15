@@ -1,0 +1,62 @@
+# Discrete 555-style oscillator.
+# The 555 block uses the eight pin positions of the package.
+# Compile / Solve with RESET low for the DC operating point.
+# For oscillation, change VReset(0) to VReset(5), render the schematic,
+# then select out in Results and click Run with the default 10 µs step.
+
+circuit srLatch(vcc, gnd, set, clear, q, qbar) {
+    nor(vcc, gnd, clear, qbar, q);
+    nor(vcc, gnd, set, q, qbar);
+}
+
+# Buffered differential pair with a current-mirror load and hysteresis.
+circuit compare(vcc, gnd, pos, neg, y) {
+    RTail(4.7k) between(tail, gnd);
+    RLoad(47k) between(vcc, sense);
+    RPull(10k) between(shifted, gnd);
+    CNode(10p) between(sense, gnd);
+    op1(pos, pos_buf, pos_buf);
+    op2(neg, neg_buf, neg_buf);
+    RIn(470) between(pos_buf, plus);
+    RHyst(22k) between(y, plus);
+    transQP(plus, mirror, tail, npn);
+    transQN(neg_buf, sense, tail, npn);
+    transQRef(mirror, mirror, vcc, pnp);
+    transQMirror(mirror, sense, vcc, pnp);
+    transQClamp(sense, sense, vcc, pnp);
+    transQShift(sense, shifted, vcc, pnp);
+    not(vcc, gnd, shifted, y);
+}
+
+chip timer555(gnd, trig, out, reset_n, ctrl, thres, disch, vcc) {
+    RTop(5k) between(vcc, ctrl);
+    RMid(5k) between(ctrl, lower_ref);
+    RBot(5k) between(lower_ref, gnd);
+
+    compare(vcc, gnd, lower_ref, trig, trigger_hit);
+    compare(vcc, gnd, thres, ctrl, threshold_hit);
+
+    # Reset overrides trigger. Trigger overrides threshold.
+    not(vcc, gnd, reset_n, reset_active);
+    nor(vcc, gnd, trigger_hit, trigger_idle);
+    nor(vcc, gnd, reset_active, trigger_idle, set_req);
+    not(vcc, gnd, threshold_hit, threshold_idle);
+    nor(vcc, gnd, threshold_idle, trigger_hit, threshold_clear);
+    nor(vcc, gnd, reset_active, threshold_clear, clear_idle);
+    not(vcc, gnd, clear_idle, clear_req);
+    srLatch(vcc, gnd, set_req, clear_req, q, qbar);
+
+    not(vcc, gnd, qbar, out);
+    RBase(22k) between(qbar, discharge_base);
+    transQDischarge(discharge_base, disch, gnd, npn);
+}
+
+VCC(5) between(supply, 0);
+VReset(0) between(reset_n, 0);
+RA(10k) between(supply, discharge);
+RB(10k) between(discharge, timing);
+CT(100n) between(timing, 0);
+
+main {
+    timer555(0, timing, out, reset_n, control, timing, discharge, supply);
+}

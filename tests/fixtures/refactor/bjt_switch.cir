@@ -1,0 +1,11 @@
+* Electric Circuits SPICE export
+VCC supply 0 DC 5
+Vdrive drive 0 DC 3.3
+RC supply out 1000
+RB drive b 10000
+Q1 out b 0 EC_BJT_NPN
+
+.model EC_BJT_NPN NPN
+
+.op
+.end

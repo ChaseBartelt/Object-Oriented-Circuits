@@ -1,0 +1,7 @@
+* Electric Circuits SPICE export
+V1 Vin 0 DC 12
+R1_top_1 Vin out 2000
+R2_bottom_1 out 0 10000
+
+.op
+.end

@@ -28,12 +28,34 @@ def read_placement(path):
     return "auto", {}
 
 
-def write_placement(mode, records):
-    return json.dumps({
+def read_pin_overrides(path):
+    """Read optional viewer probe captions without changing circuit source.
+
+    A null label hides a source-defined probe. Absent entries continue to use
+    existing # @pin comments; old version-1 sidecars remain valid.
+    """
+    try:
+        data = json.loads(placement_path(path).read_bytes())
+        if data.get("version") == 1 and isinstance(data.get("pin_overrides"), dict):
+            return {
+                net: label for net, label in data["pin_overrides"].items()
+                if isinstance(net, str) and net
+                and (label is None or isinstance(label, str) and label.strip())
+            }
+    except (OSError, ValueError, TypeError, AttributeError):
+        pass
+    return {}
+
+
+def write_placement(mode, records, *, pin_overrides=None):
+    data = {
         "version": 1,
         "mode": mode,
         "layouts": [[level, style, layout] for (level, style), layout in records.items()],
-    }, ensure_ascii=False, allow_nan=False, indent=2).encode("utf-8")
+    }
+    if pin_overrides:
+        data["pin_overrides"] = dict(pin_overrides)
+    return json.dumps(data, ensure_ascii=False, allow_nan=False, indent=2).encode("utf-8")
 
 
 def pack_layout(layout):

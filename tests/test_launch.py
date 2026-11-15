@@ -15,11 +15,11 @@ import os
 os.environ['QT_QPA_PLATFORM'] = 'offscreen'
 from PySide6.QtCore import QTimer
 from circuitlab import gui
-original = gui.MainWindow.show
+original = gui.ViewerWindow.show
 def show(window):
     original(window)
     QTimer.singleShot(250, window.close)
-gui.MainWindow.show = show
+gui.ViewerWindow.show = show
 raise SystemExit(gui.main())
 """
         process = subprocess.Popen(

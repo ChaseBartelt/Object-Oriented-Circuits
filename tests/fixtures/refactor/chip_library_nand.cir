@@ -1,0 +1,45 @@
+* Electric Circuits SPICE export
+* Node 'nand_1_SN74HC00_1.stack1_1' = nand_1_SN74HC00_1_stack1_1
+* Node 'nand_2_SN74HC00_1.stack1_1' = nand_2_SN74HC00_1_stack1_1
+* Node 'nand_3_SN74HC00_1.stack1_1' = nand_3_SN74HC00_1_stack1_1
+* Node 'nand_4_SN74HC00_1.stack1_1' = nand_4_SN74HC00_1_stack1_1
+* Node 'nand_1_SN74HC00_1.base1_1' = nand_1_SN74HC00_1_base1_1
+* Node 'nand_1_SN74HC00_1.base1_2' = nand_1_SN74HC00_1_base1_2
+* Node 'nand_2_SN74HC00_1.base1_1' = nand_2_SN74HC00_1_base1_1
+* Node 'nand_2_SN74HC00_1.base1_2' = nand_2_SN74HC00_1_base1_2
+* Node 'nand_3_SN74HC00_1.base1_1' = nand_3_SN74HC00_1_base1_1
+* Node 'nand_3_SN74HC00_1.base1_2' = nand_3_SN74HC00_1_base1_2
+* Node 'nand_4_SN74HC00_1.base1_1' = nand_4_SN74HC00_1_base1_1
+* Node 'nand_4_SN74HC00_1.base1_2' = nand_4_SN74HC00_1_base1_2
+VCC supply 0 DC 5
+VA a 0 DC 5
+VB b 0 DC 5
+RC1_nand_1_SN74HC00_1 supply y 2200
+CNode1_nand_1_SN74HC00_1 y 0 1e-11
+RB1_1_nand_1_SN74HC00_1 a nand_1_SN74HC00_1_base1_1 47000
+RB1_2_nand_1_SN74HC00_1 b nand_1_SN74HC00_1_base1_2 47000
+RC1_nand_2_SN74HC00_1 supply y2 2200
+CNode1_nand_2_SN74HC00_1 y2 0 1e-11
+RB1_1_nand_2_SN74HC00_1 0 nand_2_SN74HC00_1_base1_1 47000
+RB1_2_nand_2_SN74HC00_1 0 nand_2_SN74HC00_1_base1_2 47000
+RC1_nand_3_SN74HC00_1 supply y3 2200
+CNode1_nand_3_SN74HC00_1 y3 0 1e-11
+RB1_1_nand_3_SN74HC00_1 0 nand_3_SN74HC00_1_base1_1 47000
+RB1_2_nand_3_SN74HC00_1 0 nand_3_SN74HC00_1_base1_2 47000
+RC1_nand_4_SN74HC00_1 supply y4 2200
+CNode1_nand_4_SN74HC00_1 y4 0 1e-11
+RB1_1_nand_4_SN74HC00_1 0 nand_4_SN74HC00_1_base1_1 47000
+RB1_2_nand_4_SN74HC00_1 0 nand_4_SN74HC00_1_base1_2 47000
+Q1_1_nand_1_SN74HC00_1 y nand_1_SN74HC00_1_base1_1 nand_1_SN74HC00_1_stack1_1 EC_BJT_NPN
+Q1_2_nand_1_SN74HC00_1 nand_1_SN74HC00_1_stack1_1 nand_1_SN74HC00_1_base1_2 0 EC_BJT_NPN
+Q1_1_nand_2_SN74HC00_1 y2 nand_2_SN74HC00_1_base1_1 nand_2_SN74HC00_1_stack1_1 EC_BJT_NPN
+Q1_2_nand_2_SN74HC00_1 nand_2_SN74HC00_1_stack1_1 nand_2_SN74HC00_1_base1_2 0 EC_BJT_NPN
+Q1_1_nand_3_SN74HC00_1 y3 nand_3_SN74HC00_1_base1_1 nand_3_SN74HC00_1_stack1_1 EC_BJT_NPN
+Q1_2_nand_3_SN74HC00_1 nand_3_SN74HC00_1_stack1_1 nand_3_SN74HC00_1_base1_2 0 EC_BJT_NPN
+Q1_1_nand_4_SN74HC00_1 y4 nand_4_SN74HC00_1_base1_1 nand_4_SN74HC00_1_stack1_1 EC_BJT_NPN
+Q1_2_nand_4_SN74HC00_1 nand_4_SN74HC00_1_stack1_1 nand_4_SN74HC00_1_base1_2 0 EC_BJT_NPN
+
+.model EC_BJT_NPN NPN
+
+.op
+.end

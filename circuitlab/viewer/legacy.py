@@ -48,8 +48,8 @@ from circuitlab.model.graph import Circuit, CircuitError, MethodInstance
 from circuitlab.language.linked import CHIP_LIBRARY, imported_definitions, read_includes
 from circuitlab.exporters.ltspice import export_hierarchy, export_schematic
 from circuitlab.math.numbers import format_value
-from circuitlab.tooling.pins import circuit_text, pin_comment, pin_entries, read_pins
-from circuitlab.layout.persistence import placement_path, read_placement, write_placement
+from circuitlab.tooling.pins import apply_pin_overrides, circuit_text, pin_comment, pin_entries, read_pins
+from circuitlab.layout.persistence import placement_path, read_pin_overrides, read_placement, write_placement
 from circuitlab.math.quantities import QUANTITIES
 from circuitlab.math.report import component_labels, pin_rows, result_rows
 from circuitlab.layout.routing import fast_layout
@@ -59,14 +59,9 @@ from circuitlab.exporters.spice import export_spice
 from circuitlab.language.syntax import INCLUDE, MAIN, has_chip, source_rows
 from circuitlab.tooling.trace import wire_trace
 from circuitlab.exporters.verilog import compile_chips, export_verilog
+from circuitlab.viewer.widgets import MODES, STYLESHEET, button, search_text, GateLayoutDialog, Results, write_bytes
+from circuitlab.viewer.exports import export_file, hierarchy_layouts, write_companions
 
-MODES = {
-    "auto": "Auto",
-    "dc": "DC steady state",
-    "ac": "AC steady state",
-    "mixed": "DC + AC",
-    "transient": "Transient",
-}
 MIXED_TEMPLATES = {
     "V": ("Voltage source (DC | AC)", "(0 V | 0 Vpk) between(in, 0);"),
     "I": ("Current source (DC | AC)", "(0 A | 0 Apk) between(0, out);"),
@@ -75,187 +70,14 @@ MIXED_TEMPLATES = {
     "L": ("Inductor", "(1m) between(out, 0);"),
     "port": ("Equivalent at two nodes", "port = out 0"),
 }
-STYLESHEET = """
-QMainWindow, QDialog, QWidget { background: #282828; color: #f2f2f2; }
-QPlainTextEdit, QLineEdit, QListWidget { background: #191919; }
-QPushButton, QComboBox { background: #393939; border: 1px solid #666; border-radius: 4px;
-                        padding: 6px 12px; }
-QPushButton:hover, QComboBox:hover { background: #4b4b4b; }
-QPushButton#compile { background: #a92537; font-weight: bold; }
-QPushButton#compile:hover { background: #c33449; }
-QTabBar::tab { background: #343434; padding: 7px 16px; border: 1px solid #555; }
-QTabBar::tab:selected { background: #191919; }
-QHeaderView::section { background: #363636; color: #fff; border: 1px solid #565656; padding: 5px; }
-QTableWidget { gridline-color: #6b6b6b; selection-background-color: #365777; }
-QTableWidget::item:selected { color: white; }
-QSplitter::handle { background: #5b5b5b; }
-QMenu::item:selected, QMenuBar::item:selected { background: #505050; }
-"""
 
 
-def button(label, callback, layout):
-    control = QPushButton(label)
-    control.clicked.connect(callback)
-    layout.addWidget(control)
-    return control
 
 
-def search_text(value):
-    return " ".join(value.casefold().replace("_", " ").split())
 
 
-class GateLayoutDialog(QDialog):
-    """Edit the schematic used by every instance of a built-in gate."""
-
-    def __init__(self, parent, layouts, initial=None):
-        super().__init__(parent)
-        self.setWindowTitle("Gate Layouts")
-        self.setWindowFlag(Qt.WindowType.WindowMaximizeButtonHint)
-        self.setSizeGripEnabled(True)
-        available = parent.screen().availableGeometry()
-        self.resize(min(900, available.width() - 48), min(620, available.height() - 64))
-        self.layouts = layouts
-        self.drafts = {}
-        self.key = None
-        self.max_inputs = max(32, initial[1] if initial else 0)
-        panel = QVBoxLayout(self)
-        controls = QHBoxLayout()
-        self.gate = QComboBox()
-        self.gate.setAccessibleName("Gate")
-        for name in GATE_HELP:
-            self.gate.addItem(name.upper(), name)
-        self.inputs = QSpinBox()
-        self.inputs.setAccessibleName("Input count")
-        controls.addWidget(QLabel("Gate"))
-        controls.addWidget(self.gate)
-        controls.addWidget(QLabel("Inputs"))
-        controls.addWidget(self.inputs)
-        controls.addStretch()
-        self.preview = SchematicView()
-        button("Fit", self.preview.fit, controls)
-        panel.addLayout(controls)
-        panel.addWidget(self.preview, 1)
-        actions = QHBoxLayout()
-        actions.addStretch()
-        button("Restore automatic", self.restore_automatic, actions)
-        button("Apply to all", self.apply_layout, actions)
-        button("Close", self.reject, actions)
-        panel.addLayout(actions)
-        footer = QHBoxLayout()
-        self.message = QLabel()
-        self.message.setWordWrap(True)
-        self.message.setContentsMargins(0, 0, 16, 0)
-        footer.addWidget(self.message, 1)
-        self.saved_button = button("Use saved layout", self.restore_saved, footer)
-        panel.addLayout(footer)
-        self.preview.placement_changed.connect(self.record_draft)
-        self.preview.move_refused.connect(
-            lambda: self.message.setText("Try an open spot where the existing nets can stay connected.")
-        )
-        if initial:
-            name, count = initial
-            self.gate.setCurrentIndex(self.gate.findData(name))
-            self.update_input_range()
-            self.inputs.setValue(count)
-        self.gate.currentIndexChanged.connect(self.change_gate)
-        self.inputs.valueChanged.connect(self.load_gate)
-        self.change_gate()
-
-    def update_input_range(self):
-        name = self.gate.currentData()
-        choices = [count for count in range(1, self.max_inputs + 1) if gate_accepts(name, count)]
-        with QSignalBlocker(self.inputs):
-            self.inputs.setRange(choices[0], choices[-1])
-            self.inputs.setEnabled(len(choices) > 1)
-
-    def change_gate(self):
-        self.update_input_range()
-        self.load_gate()
-
-    def load_gate(self):
-        self.key = self.gate.currentData(), self.inputs.value()
-        self.saved_button.setEnabled(self.layouts.has_saved(self.key))
-        self.message.setText("Drag parts, wires, and pin ends. Click Apply to all to save.")
-        record = self.drafts.get(self.key, self.layouts.get(self.key))
-        self.draw_gate(record)
-
-    def draw_gate(self, layout):
-        circuit, boundary = gate_preview(*self.key)
-        self.base_layout = layout
-        self.preview.clear()
-        self.preview.draw(circuit, boundary=boundary, layout=layout or default_gate_layout(*self.key))
-
-    def record_draft(self):
-        self.drafts[self.key] = self.preview.manual_layouts.get((None, "auto"), self.base_layout)
-        self.message.setText("Layout edited. Click Apply to all to save it.")
-
-    def restore_automatic(self):
-        self.drafts[self.key] = None
-        self.draw_gate(None)
-        name, inputs = self.key
-        self.message.setText(f"Apply the automatic layout for {inputs}-input {name.upper()} gates. Your saved layout is kept.")
-
-    def restore_saved(self):
-        layout = self.layouts.saved(self.key)
-        if layout is None:
-            self.message.setText("The saved layout could not be loaded.")
-            return
-        self.drafts[self.key] = layout
-        self.draw_gate(layout)
-        self.message.setText("Click Apply to all to use this saved layout again.")
-
-    def apply_layout(self):
-        if self.key not in self.drafts:
-            self.message.setText("There are no layout changes to apply for this gate.")
-            return
-        layout = self.drafts[self.key]
-        if self.layouts.set(self.key, layout):
-            del self.drafts[self.key]
-            self.saved_button.setEnabled(self.layouts.has_saved(self.key))
-            self.parent().schematic.refresh_gate_layouts()
-            name, inputs = self.key
-            self.message.setText(f"Saved the layout for {inputs}-input {name.upper()} gates.")
-        else:
-            self.message.setText("Could not save the gate layout to your app settings.")
 
 
-class Results(QWidget):
-    def __init__(self):
-        super().__init__()
-        self.rows = []
-        layout = QVBoxLayout(self)
-        self.search = QLineEdit()
-        self.search.setPlaceholderText("Search quantities")
-        self.search.textChanged.connect(self.filter)
-        layout.addWidget(self.search)
-        self.table = QTableWidget(0, 3)
-        self.table.setHorizontalHeaderLabels(["Quantity", "Equation", "Value"])
-        self.table.verticalHeader().hide()
-        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self.table.horizontalHeader().setSectionResizeMode(
-            QHeaderView.ResizeMode.Interactive
-        )
-        self.table.horizontalHeader().setStretchLastSection(True)
-        self.table.setColumnWidth(0, 220)
-        self.table.setColumnWidth(1, 240)
-        layout.addWidget(self.table)
-
-    def update_rows(self, rows):
-        self.rows = rows
-        self.filter()
-
-    def filter(self):
-        query = search_text(self.search.text())
-        visible = [row for row in self.rows if query in search_text(row[0])]
-        self.table.clearContents()
-        self.table.setRowCount(len(visible))
-        for i, row in enumerate(visible):
-            for j, value in enumerate(row):
-                item = QTableWidgetItem(value)
-                item.setToolTip(value)
-                item.setBackground(QColor("#363636" if i % 2 == 0 else "#d5d5d5"))
-                item.setForeground(QColor("#f2f2f2" if i % 2 == 0 else "#191919"))
-                self.table.setItem(i, j, item)
 
 
 @dataclass
@@ -267,6 +89,7 @@ class CircuitTab:
     placement_dirty: bool = False
     wiring: str = "auto"
     mode: int = 0
+    pin_overrides: dict | None = None
 
 
 class MainWindow(QMainWindow):
@@ -278,6 +101,7 @@ class MainWindow(QMainWindow):
         self.disk_bytes = None
         self.solution = None
         self.pins = {}
+        self.pin_overrides = {}
         self.placement_dirty = False
         self.circuit_text = ""
         self.documents = {}
@@ -528,6 +352,7 @@ class MainWindow(QMainWindow):
         state = CircuitTab(editor, path, data)
         if path is not None:
             state.wiring, state.placements = read_placement(path)
+            state.pin_overrides = read_pin_overrides(path)
         self.documents[editor] = state
         editor.textChanged.connect(lambda: self.source_changed() if editor is self.editor else None)
         editor.document().modificationChanged.connect(lambda: self.update_tab_title(editor))
@@ -544,6 +369,7 @@ class MainWindow(QMainWindow):
         state.placements = self.schematic.placements()
         state.wiring = self.schematic.layout_mode
         state.mode = self.mode.currentIndex()
+        state.pin_overrides = dict(self.pin_overrides)
 
     def switch_tab(self, index):
         editor = self.editor_tabs.widget(index)
@@ -555,8 +381,10 @@ class MainWindow(QMainWindow):
         self.editor = editor
         state = self.documents[editor]
         self.path, self.disk_bytes = state.path, state.disk_bytes
+        self.pin_overrides = dict(state.pin_overrides or {})
         source = editor.toPlainText()
-        self.pins, self.circuit_text = read_pins(source), circuit_text(source)
+        self.pins = apply_pin_overrides(read_pins(source), self.pin_overrides)
+        self.circuit_text = circuit_text(source)
         self.load_placement(state.wiring, dict(state.placements or {}))
         self.placement_dirty = state.placement_dirty
         with QSignalBlocker(self.mode):
@@ -643,23 +471,23 @@ class MainWindow(QMainWindow):
     def _create_menus(self):
         files = self.menuBar().addMenu("&File")
         files.addAction("&New", self.new_file, QKeySequence.StandardKey.New)
-        files.addAction("&Open…", self.pick_file, QKeySequence.StandardKey.Open)
-        files.addAction("Open &Folder…", self.pick_folder)
+        files.addAction("&Openâ€¦", self.pick_file, QKeySequence.StandardKey.Open)
+        files.addAction("Open &Folderâ€¦", self.pick_folder)
         files.addAction("Close &Tab", lambda: self.close_tab(self.editor_tabs.currentIndex()),
                         QKeySequence.StandardKey.Close)
         files.addAction("&Save", self.save, QKeySequence.StandardKey.Save)
-        files.addAction("Save &As…", self.save_as, QKeySequence.StandardKey.SaveAs)
+        files.addAction("Save &Asâ€¦", self.save_as, QKeySequence.StandardKey.SaveAs)
         files.addAction("&Reload from disk", self.reload_file)
         files.addSeparator()
         files.addAction("Export to &SPICE...", self.export_netlist)
         files.addAction("Export LTspice &Schematic...", self.export_ltspice)
-        files.addAction("Export &Verilog…", self.export_verilog)
+        files.addAction("Export &Verilogâ€¦", self.export_verilog)
         files.addSeparator()
         files.addAction("&Quit", self.close, QKeySequence.StandardKey.Quit)
         view = self.menuBar().addMenu("&View")
         view.addAction(self.explorer.toggleViewAction())
         view.addAction("Chip Library", self.show_chip_library)
-        view.addAction("Gate Layouts…", lambda: self.edit_gate_layouts())
+        view.addAction("Gate Layoutsâ€¦", lambda: self.edit_gate_layouts())
         compile_action = (
             self.menuBar()
             .addMenu("&Circuit")
@@ -732,12 +560,12 @@ class MainWindow(QMainWindow):
         info = QUANTITIES["ac" if mode == "mixed" else mode]
         for key, (label, _) in info.items():
             if mode != "mixed" or key in {"f", "T", "w"}:
-                self.picker.addItem(f"{key} · {label}", (key, False))
+                self.picker.addItem(f"{key} Â· {label}", (key, False))
         if mode in {"ac", "mixed"}:
-            self.picker.addItem("Vdc · DC offset in a battery", ("Vdc", False))
+            self.picker.addItem("Vdc Â· DC offset in a battery", ("Vdc", False))
         if mode == "mixed":
             for key, (label, _) in MIXED_TEMPLATES.items():
-                self.picker.addItem(f"{key} · {label}", (key, True))
+                self.picker.addItem(f"{key} Â· {label}", (key, True))
         self.picker_mode = mode
 
     def insert_quantity(self, index):
@@ -773,9 +601,9 @@ class MainWindow(QMainWindow):
             item.setFlags(Qt.ItemFlag.ItemIsEnabled)
             self.issues.addItem(item)
         for issue in issues:
-            location = f"{issue.path.name} · " if issue.path and issue.path != self.path else ""
+            location = f"{issue.path.name} Â· " if issue.path and issue.path != self.path else ""
             label = f"Line {issue.line}" if issue.line is not None else "Simulation"
-            item = QListWidgetItem(f"{location}{label} · {issue.severity} · {issue.message}")
+            item = QListWidgetItem(f"{location}{label} Â· {issue.severity} Â· {issue.message}")
             item.setForeground(
                 QColor("#f87171" if issue.severity == "error" else "#ffd18b")
             )
@@ -802,7 +630,8 @@ class MainWindow(QMainWindow):
         self.trace_popup.hide()
         self.device_popup.hide()
         source = self.editor.toPlainText()
-        previous_pins, self.pins = self.pins, read_pins(source)
+        previous_pins = self.pins
+        self.pins = apply_pin_overrides(read_pins(source), self.pin_overrides)
         code = circuit_text(source)
         # Pin metadata is a comment. Renaming a pin does not invalidate a solve.
         if self.pins != previous_pins and code == self.circuit_text:
@@ -863,7 +692,7 @@ class MainWindow(QMainWindow):
                 self.status.setText(issues[0].message)
             elif self.solution and self.solution.network:
                 self.status.setText(
-                    f"{MODES[self.solution.circuit.mode]} · Click a wire to trace it or add a named pin."
+                    f"{MODES[self.solution.circuit.mode]} Â· Click a wire to trace it or add a named pin."
                 )
             else:
                 self.status.setText("Results updated.")
@@ -1002,6 +831,10 @@ class MainWindow(QMainWindow):
 
     def write_pin(self, net, name):
         source = self.editor.toPlainText()
+        previous_name = self.pins.get(net, "")
+        if net in self.pin_overrides:
+            del self.pin_overrides[net]
+            self.placement_changed()
         entries = [line for line, node, _ in pin_entries(source) if node == net]
         document = self.editor.document()
         edit = QTextCursor(document)
@@ -1026,9 +859,14 @@ class MainWindow(QMainWindow):
                 + "\n"
             )
         edit.endEditBlock()
+        # Removing a viewer-only probe may leave the source unchanged, so no
+        # textChanged signal will refresh its displayed caption.
+        self.pins = apply_pin_overrides(read_pins(self.editor.toPlainText()), self.pin_overrides)
+        self.schematic.update_pins(self.pins)
+        self.set_solution(self.solution)
         if name is None:
             if search_text(self.results.search.text()) == search_text(
-                read_pins(source).get(net, "")
+                previous_name
             ):
                 self.results.search.clear()
             self.status.setText("Pin removed.")
@@ -1063,7 +901,7 @@ class MainWindow(QMainWindow):
         ):
             if not network:
                 continue
-            prefix = "AC RMS · " if ac else "DC · " if result.dc_network else ""
+            prefix = "AC RMS Â· " if ac else "DC Â· " if result.dc_network else ""
             if kind == "node" and name in network.nodes:
                 value = network.voltage[network.nodes.index(name)]
                 reference = network.references.get(name, "0")
@@ -1081,7 +919,7 @@ class MainWindow(QMainWindow):
 
     def update_title(self):
         name = self.path.name if self.path else "Untitled.ckt"
-        self.setWindowTitle(f"{name}[*] — Electric Circuits")
+        self.setWindowTitle(f"{name}[*] â€” Electric Circuits")
 
     def update_modified(self):
         self.update_tab_title(self.editor)
@@ -1144,6 +982,7 @@ class MainWindow(QMainWindow):
             and not self.editor.document().isModified() and not self.placement_dirty
         ):
             self.path, self.disk_bytes = path, data
+            self.pin_overrides = read_pin_overrides(path)
             self.editor.setPlainText(source)
             self.load_placement(*read_placement(path))
             self.editor.document().setModified(False)
@@ -1210,11 +1049,7 @@ class MainWindow(QMainWindow):
             if drawing is None:
                 raise CircuitError("Enter components before exporting an LTspice schematic.")
             if drawing.uses_packages:
-                mode = self.schematic.layout_mode
-                details = {
-                    name: layout for (name, style), layout in self.schematic.manual_layouts.items()
-                    if name is not None and style == mode
-                }
+                details = hierarchy_layouts(self.schematic)
                 text, block_files, used_labels = export_hierarchy(circuit, drawing, details)
             else:
                 text, used_labels = export_schematic(circuit, drawing)
@@ -1237,70 +1072,13 @@ class MainWindow(QMainWindow):
                 self.status.setText(" ".join((self.status.text(), *notes)))
         return exported
 
-    def _export_file(
-        self,
-        generate,
-        title,
-        suffix,
-        file_filter,
-        *,
-        next_step="Open it in LTspice and click Run.",
-        companions=None,
-    ):
-        try:
-            data = generate().encode("ascii")
-        except CircuitError as error:
-            self.status.setText(str(error))
-            if error.line is not None:
-                self.show_issues([self.issue(error)])
-            QMessageBox.warning(self, title, str(error))
-            return False
-        suggested = (self.path or Path("Untitled.ckt")).with_suffix(suffix)
-        name, _ = QFileDialog.getSaveFileName(self, title, str(suggested), file_filter)
-        if not name:
-            return False
-        path = Path(name)
-        if path.suffix.lower() != suffix:
-            path = path.with_name(path.name + suffix)
-            if (
-                path.exists()
-                and QMessageBox.question(
-                    self,
-                    title,
-                    f"Replace {path.name}?",
-                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
-                    QMessageBox.StandardButton.Cancel,
-                )
-                != QMessageBox.StandardButton.Yes
-            ):
-                return False
-        if companions is not None and not self.write_export_companions(path, companions(), title):
-            return False
-        if not write_bytes(self, path, data, title):
-            return False
-        self.status.setText(f"Exported {path.name}. {next_step}")
-        return True
+    def _export_file(self, generate, title, suffix, file_filter, *,
+                     next_step="Open it in LTspice and click Run.", companions=None):
+        return export_file(self, generate, title, suffix, file_filter,
+                           next_step=next_step, companions=companions)
 
     def write_export_companions(self, path, files, title):
-        pending = []
-        for name, text in files.items():
-            target = path.with_name(name)
-            data = text.encode("ascii")
-            try:
-                existing = target.read_bytes()
-            except FileNotFoundError:
-                pending.append((target, data))
-                continue
-            except OSError as error:
-                QMessageBox.warning(self, title, str(error))
-                return False
-            if existing != data:
-                QMessageBox.warning(self, title, f"An existing block file uses the name {name}. Choose another folder.")
-                return False
-        if any(target == path for target in (path.with_name(name) for name in files)):
-            QMessageBox.warning(self, title, "Choose a different name for the top-level schematic.")
-            return False
-        return all(write_bytes(self, target, data, title) for target, data in pending)
+        return write_companions(self, path, files, title)
 
     def save(self):
         if not self.path:
@@ -1345,8 +1123,10 @@ class MainWindow(QMainWindow):
         self.update_title()
         placements = self.schematic.placements()
         sidecar = placement_path(path)
-        if placements or sidecar.exists():
-            layout_data = write_placement(self.schematic.layout_mode, placements)
+        if placements or self.pin_overrides or sidecar.exists():
+            layout_data = write_placement(
+                self.schematic.layout_mode, placements, pin_overrides=self.pin_overrides,
+            )
             if not write_bytes(self, sidecar, layout_data, "Save schematic layout"):
                 return False
         self.placement_dirty = False
@@ -1382,40 +1162,11 @@ class MainWindow(QMainWindow):
         event.accept()
 
 
-def write_bytes(parent, path, data, title):
-    """Commit a complete file or leave the previous file intact."""
-    file = QSaveFile(str(path))
-    if (
-        not file.open(QIODevice.OpenModeFlag.WriteOnly)
-        or file.write(data) != len(data)
-        or not file.commit()
-    ):
-        file.cancelWriting()
-        QMessageBox.warning(parent, title, file.errorString())
-        return False
-    return True
 
 
-def main():
-    parser = argparse.ArgumentParser(
-        description="Edit, compile, and analyze an Electric Circuits file."
-    )
-    parser.add_argument("file", nargs="?", help="Circuit source file")
-    parser.add_argument("--editor", action="store_true",
-                        help="Show schematic/results and accept IDE reload requests on stdin")
-    args = parser.parse_args()
-    app = QApplication([sys.argv[0]])
-    window = MainWindow()
-    if args.editor:
-        from circuitlab.tooling.editor_bridge import EditorBridge
 
-        window.use_external_editor()
-        bridge = EditorBridge(window)
-        bridge.requested.connect(window.open_from_editor, Qt.ConnectionType.QueuedConnection)
-        bridge.refreshed.connect(window.refresh_from_editor, Qt.ConnectionType.QueuedConnection)
-    if args.file:
-        window.open_path(args.file)
-    window.show()
-    if args.editor:
-        bridge.start(sys.stdin)
-    return app.exec()
+
+def main(argv=None):
+    """Retain direct legacy entry calls through the application launcher."""
+    from circuitlab.gui import main as launch
+    return launch(argv)

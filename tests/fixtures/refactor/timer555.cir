@@ -1,0 +1,156 @@
+* Electric Circuits SPICE export
+* Node 'timer555_1.lower_ref' = timer555_1_lower_ref
+* Node 'compare_1_timer555_1.tail' = compare_1_timer555_1_tail
+* Node 'compare_1_timer555_1.shifted' = compare_1_timer555_1_shifted
+* Node 'compare_1_timer555_1.sense' = compare_1_timer555_1_sense
+* Node 'compare_1_timer555_1.pos_buf' = compare_1_timer555_1_pos_buf
+* Node 'timer555_1.trigger_hit' = timer555_1_trigger_hit
+* Node 'compare_2_timer555_1.tail' = compare_2_timer555_1_tail
+* Node 'compare_2_timer555_1.shifted' = compare_2_timer555_1_shifted
+* Node 'compare_2_timer555_1.sense' = compare_2_timer555_1_sense
+* Node 'compare_2_timer555_1.pos_buf' = compare_2_timer555_1_pos_buf
+* Node 'timer555_1.threshold_hit' = timer555_1_threshold_hit
+* Node 'timer555_1.reset_active' = timer555_1_reset_active
+* Node 'timer555_1.trigger_idle' = timer555_1_trigger_idle
+* Node 'timer555_1.set_req' = timer555_1_set_req
+* Node 'timer555_1.threshold_idle' = timer555_1_threshold_idle
+* Node 'timer555_1.threshold_clear' = timer555_1_threshold_clear
+* Node 'timer555_1.clear_idle' = timer555_1_clear_idle
+* Node 'timer555_1.clear_req' = timer555_1_clear_req
+* Node 'timer555_1.q' = timer555_1_q
+* Node 'timer555_1.qbar' = timer555_1_qbar
+* Node 'compare_1_timer555_1.neg_buf' = compare_1_timer555_1_neg_buf
+* Node 'compare_2_timer555_1.neg_buf' = compare_2_timer555_1_neg_buf
+* Node 'compare_1_timer555_1.mirror' = compare_1_timer555_1_mirror
+* Node 'compare_2_timer555_1.mirror' = compare_2_timer555_1_mirror
+* Node 'compare_1_timer555_1.plus' = compare_1_timer555_1_plus
+* Node 'not_1_compare_1_timer555_1.base1_1' = not_1_compare_1_timer555_1_base1_1
+* Node 'compare_2_timer555_1.plus' = compare_2_timer555_1_plus
+* Node 'not_1_compare_2_timer555_1.base1_1' = not_1_compare_2_timer555_1_base1_1
+* Node 'not_1_timer555_1.base1_1' = not_1_timer555_1_base1_1
+* Node 'nor_1_timer555_1.base1_1' = nor_1_timer555_1_base1_1
+* Node 'nor_2_timer555_1.base1_1' = nor_2_timer555_1_base1_1
+* Node 'nor_2_timer555_1.base1_2' = nor_2_timer555_1_base1_2
+* Node 'not_2_timer555_1.base1_1' = not_2_timer555_1_base1_1
+* Node 'nor_3_timer555_1.base1_1' = nor_3_timer555_1_base1_1
+* Node 'nor_3_timer555_1.base1_2' = nor_3_timer555_1_base1_2
+* Node 'nor_4_timer555_1.base1_1' = nor_4_timer555_1_base1_1
+* Node 'nor_4_timer555_1.base1_2' = nor_4_timer555_1_base1_2
+* Node 'not_3_timer555_1.base1_1' = not_3_timer555_1_base1_1
+* Node 'nor_1_srLatch_1_timer555_1.base1_1' = nor_1_srLatch_1_timer555_1_base1_1
+* Node 'nor_1_srLatch_1_timer555_1.base1_2' = nor_1_srLatch_1_timer555_1_base1_2
+* Node 'nor_2_srLatch_1_timer555_1.base1_1' = nor_2_srLatch_1_timer555_1_base1_1
+* Node 'nor_2_srLatch_1_timer555_1.base1_2' = nor_2_srLatch_1_timer555_1_base1_2
+* Node 'not_4_timer555_1.base1_1' = not_4_timer555_1_base1_1
+* Node 'timer555_1.discharge_base' = timer555_1_discharge_base
+* Component 'op1_compare_1_timer555_1' = X_op1_compare_1_timer555_1
+* Component 'op2_compare_1_timer555_1' = X_op2_compare_1_timer555_1
+* Component 'op1_compare_2_timer555_1' = X_op1_compare_2_timer555_1
+* Component 'op2_compare_2_timer555_1' = X_op2_compare_2_timer555_1
+VCC supply 0 DC 5
+VReset reset_n 0 DC 0
+RA supply discharge 10000
+RB discharge timing 10000
+CT timing 0 1.0000000000000001e-07
+RTop_timer555_1 supply control 5000
+RMid_timer555_1 control timer555_1_lower_ref 5000
+RBot_timer555_1 timer555_1_lower_ref 0 5000
+RTail_compare_1_timer555_1 compare_1_timer555_1_tail 0 4700
+RLoad_compare_1_timer555_1 supply compare_1_timer555_1_sense 47000
+RPull_compare_1_timer555_1 compare_1_timer555_1_shifted 0 10000
+CNode_compare_1_timer555_1 compare_1_timer555_1_sense 0 1e-11
+RIn_compare_1_timer555_1 compare_1_timer555_1_pos_buf compare_1_timer555_1_plus 470
+RHyst_compare_1_timer555_1 timer555_1_trigger_hit compare_1_timer555_1_plus 22000
+RC1_not_1_compare_1_timer555_1 supply timer555_1_trigger_hit 2200
+CNode1_not_1_compare_1_timer555_1 timer555_1_trigger_hit 0 1e-11
+RB1_1_not_1_compare_1_timer555_1 compare_1_timer555_1_shifted not_1_compare_1_timer555_1_base1_1 47000
+RTail_compare_2_timer555_1 compare_2_timer555_1_tail 0 4700
+RLoad_compare_2_timer555_1 supply compare_2_timer555_1_sense 47000
+RPull_compare_2_timer555_1 compare_2_timer555_1_shifted 0 10000
+CNode_compare_2_timer555_1 compare_2_timer555_1_sense 0 1e-11
+RIn_compare_2_timer555_1 compare_2_timer555_1_pos_buf compare_2_timer555_1_plus 470
+RHyst_compare_2_timer555_1 timer555_1_threshold_hit compare_2_timer555_1_plus 22000
+RC1_not_1_compare_2_timer555_1 supply timer555_1_threshold_hit 2200
+CNode1_not_1_compare_2_timer555_1 timer555_1_threshold_hit 0 1e-11
+RB1_1_not_1_compare_2_timer555_1 compare_2_timer555_1_shifted not_1_compare_2_timer555_1_base1_1 47000
+RC1_not_1_timer555_1 supply timer555_1_reset_active 2200
+CNode1_not_1_timer555_1 timer555_1_reset_active 0 1e-11
+RB1_1_not_1_timer555_1 reset_n not_1_timer555_1_base1_1 47000
+RC1_nor_1_timer555_1 supply timer555_1_trigger_idle 2200
+CNode1_nor_1_timer555_1 timer555_1_trigger_idle 0 1e-11
+RB1_1_nor_1_timer555_1 timer555_1_trigger_hit nor_1_timer555_1_base1_1 47000
+RC1_nor_2_timer555_1 supply timer555_1_set_req 2200
+CNode1_nor_2_timer555_1 timer555_1_set_req 0 1e-11
+RB1_1_nor_2_timer555_1 timer555_1_reset_active nor_2_timer555_1_base1_1 47000
+RB1_2_nor_2_timer555_1 timer555_1_trigger_idle nor_2_timer555_1_base1_2 47000
+RC1_not_2_timer555_1 supply timer555_1_threshold_idle 2200
+CNode1_not_2_timer555_1 timer555_1_threshold_idle 0 1e-11
+RB1_1_not_2_timer555_1 timer555_1_threshold_hit not_2_timer555_1_base1_1 47000
+RC1_nor_3_timer555_1 supply timer555_1_threshold_clear 2200
+CNode1_nor_3_timer555_1 timer555_1_threshold_clear 0 1e-11
+RB1_1_nor_3_timer555_1 timer555_1_threshold_idle nor_3_timer555_1_base1_1 47000
+RB1_2_nor_3_timer555_1 timer555_1_trigger_hit nor_3_timer555_1_base1_2 47000
+RC1_nor_4_timer555_1 supply timer555_1_clear_idle 2200
+CNode1_nor_4_timer555_1 timer555_1_clear_idle 0 1e-11
+RB1_1_nor_4_timer555_1 timer555_1_reset_active nor_4_timer555_1_base1_1 47000
+RB1_2_nor_4_timer555_1 timer555_1_threshold_clear nor_4_timer555_1_base1_2 47000
+RC1_not_3_timer555_1 supply timer555_1_clear_req 2200
+CNode1_not_3_timer555_1 timer555_1_clear_req 0 1e-11
+RB1_1_not_3_timer555_1 timer555_1_clear_idle not_3_timer555_1_base1_1 47000
+RC1_nor_1_srLatch_1_timer555_1 supply timer555_1_q 2200
+CNode1_nor_1_srLatch_1_timer555_1 timer555_1_q 0 1e-11
+RB1_1_nor_1_srLatch_1_timer555_1 timer555_1_clear_req nor_1_srLatch_1_timer555_1_base1_1 47000
+RB1_2_nor_1_srLatch_1_timer555_1 timer555_1_qbar nor_1_srLatch_1_timer555_1_base1_2 47000
+RC1_nor_2_srLatch_1_timer555_1 supply timer555_1_qbar 2200
+CNode1_nor_2_srLatch_1_timer555_1 timer555_1_qbar 0 1e-11
+RB1_1_nor_2_srLatch_1_timer555_1 timer555_1_set_req nor_2_srLatch_1_timer555_1_base1_1 47000
+RB1_2_nor_2_srLatch_1_timer555_1 timer555_1_q nor_2_srLatch_1_timer555_1_base1_2 47000
+RC1_not_4_timer555_1 supply out 2200
+CNode1_not_4_timer555_1 out 0 1e-11
+RB1_1_not_4_timer555_1 timer555_1_qbar not_4_timer555_1_base1_1 47000
+RBase_timer555_1 timer555_1_qbar timer555_1_discharge_base 22000
+X_op1_compare_1_timer555_1 compare_1_timer555_1_pos_buf 0 timer555_1_lower_ref compare_1_timer555_1_pos_buf EC_IdealOpAmp
+X_op2_compare_1_timer555_1 compare_1_timer555_1_neg_buf 0 timing compare_1_timer555_1_neg_buf EC_IdealOpAmp
+X_op1_compare_2_timer555_1 compare_2_timer555_1_pos_buf 0 timing compare_2_timer555_1_pos_buf EC_IdealOpAmp
+X_op2_compare_2_timer555_1 compare_2_timer555_1_neg_buf 0 control compare_2_timer555_1_neg_buf EC_IdealOpAmp
+QP_compare_1_timer555_1 compare_1_timer555_1_mirror compare_1_timer555_1_plus compare_1_timer555_1_tail EC_BJT_NPN
+QN_compare_1_timer555_1 compare_1_timer555_1_sense compare_1_timer555_1_neg_buf compare_1_timer555_1_tail EC_BJT_NPN
+QRef_compare_1_timer555_1 compare_1_timer555_1_mirror compare_1_timer555_1_mirror supply EC_BJT_PNP
+QMirror_compare_1_timer555_1 compare_1_timer555_1_sense compare_1_timer555_1_mirror supply EC_BJT_PNP
+QClamp_compare_1_timer555_1 compare_1_timer555_1_sense compare_1_timer555_1_sense supply EC_BJT_PNP
+QShift_compare_1_timer555_1 compare_1_timer555_1_shifted compare_1_timer555_1_sense supply EC_BJT_PNP
+Q1_1_not_1_compare_1_timer555_1 timer555_1_trigger_hit not_1_compare_1_timer555_1_base1_1 0 EC_BJT_NPN
+QP_compare_2_timer555_1 compare_2_timer555_1_mirror compare_2_timer555_1_plus compare_2_timer555_1_tail EC_BJT_NPN
+QN_compare_2_timer555_1 compare_2_timer555_1_sense compare_2_timer555_1_neg_buf compare_2_timer555_1_tail EC_BJT_NPN
+QRef_compare_2_timer555_1 compare_2_timer555_1_mirror compare_2_timer555_1_mirror supply EC_BJT_PNP
+QMirror_compare_2_timer555_1 compare_2_timer555_1_sense compare_2_timer555_1_mirror supply EC_BJT_PNP
+QClamp_compare_2_timer555_1 compare_2_timer555_1_sense compare_2_timer555_1_sense supply EC_BJT_PNP
+QShift_compare_2_timer555_1 compare_2_timer555_1_shifted compare_2_timer555_1_sense supply EC_BJT_PNP
+Q1_1_not_1_compare_2_timer555_1 timer555_1_threshold_hit not_1_compare_2_timer555_1_base1_1 0 EC_BJT_NPN
+Q1_1_not_1_timer555_1 timer555_1_reset_active not_1_timer555_1_base1_1 0 EC_BJT_NPN
+Q1_1_nor_1_timer555_1 timer555_1_trigger_idle nor_1_timer555_1_base1_1 0 EC_BJT_NPN
+Q1_1_nor_2_timer555_1 timer555_1_set_req nor_2_timer555_1_base1_1 0 EC_BJT_NPN
+Q1_2_nor_2_timer555_1 timer555_1_set_req nor_2_timer555_1_base1_2 0 EC_BJT_NPN
+Q1_1_not_2_timer555_1 timer555_1_threshold_idle not_2_timer555_1_base1_1 0 EC_BJT_NPN
+Q1_1_nor_3_timer555_1 timer555_1_threshold_clear nor_3_timer555_1_base1_1 0 EC_BJT_NPN
+Q1_2_nor_3_timer555_1 timer555_1_threshold_clear nor_3_timer555_1_base1_2 0 EC_BJT_NPN
+Q1_1_nor_4_timer555_1 timer555_1_clear_idle nor_4_timer555_1_base1_1 0 EC_BJT_NPN
+Q1_2_nor_4_timer555_1 timer555_1_clear_idle nor_4_timer555_1_base1_2 0 EC_BJT_NPN
+Q1_1_not_3_timer555_1 timer555_1_clear_req not_3_timer555_1_base1_1 0 EC_BJT_NPN
+Q1_1_nor_1_srLatch_1_timer555_1 timer555_1_q nor_1_srLatch_1_timer555_1_base1_1 0 EC_BJT_NPN
+Q1_2_nor_1_srLatch_1_timer555_1 timer555_1_q nor_1_srLatch_1_timer555_1_base1_2 0 EC_BJT_NPN
+Q1_1_nor_2_srLatch_1_timer555_1 timer555_1_qbar nor_2_srLatch_1_timer555_1_base1_1 0 EC_BJT_NPN
+Q1_2_nor_2_srLatch_1_timer555_1 timer555_1_qbar nor_2_srLatch_1_timer555_1_base1_2 0 EC_BJT_NPN
+Q1_1_not_4_timer555_1 out not_4_timer555_1_base1_1 0 EC_BJT_NPN
+QDischarge_timer555_1 discharge timer555_1_discharge_base 0 EC_BJT_NPN
+
+.subckt EC_IdealOpAmp out return plus minus
+Eoutput out return out mid 1
+Einput mid return plus minus 1
+.ends EC_IdealOpAmp
+
+.model EC_BJT_NPN NPN
+.model EC_BJT_PNP PNP
+
+.op
+.end

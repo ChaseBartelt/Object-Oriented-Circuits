@@ -15,7 +15,7 @@ from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
 from circuitlab.editor_bridge import EditorBridge
-from circuitlab.gui import MainWindow
+from circuitlab.viewer.window import ViewerWindow
 
 
 class EditorBridgeTest(unittest.TestCase):
@@ -26,16 +26,12 @@ class EditorBridgeTest(unittest.TestCase):
     def setUp(self):
         self.directory = TemporaryDirectory()
         self.path = Path(self.directory.name) / "circuit with spaces.ckt"
-        self.window = MainWindow()
-        self.window.use_external_editor()
+        self.window = ViewerWindow()
         self.window.show()
         self.app.processEvents()
 
     def tearDown(self):
         self.window.placement_dirty = False
-        for editor, state in self.window.documents.items():
-            editor.document().setModified(False)
-            state.placement_dirty = False
         self.window.close()
         self.window.deleteLater()
         self.app.processEvents()
@@ -52,7 +48,7 @@ class EditorBridgeTest(unittest.TestCase):
         self.window.results.search.setText("node out")
         return self.window.results.table.item(0, 2).text()
 
-    def test_queued_reload_updates_results_and_reuses_tab(self):
+    def test_queued_reload_updates_results_and_reuses_viewer(self):
         self.write_divider(4)
         self.window.open_from_editor(str(self.path))
         self.assertEqual(self.output_voltage(), "2 V")
@@ -66,11 +62,10 @@ class EditorBridgeTest(unittest.TestCase):
             if self.output_voltage() == "4 V":
                 break
         self.assertEqual(self.output_voltage(), "4 V")
-        self.assertEqual(self.window.editor_tabs.count(), 1)
+        self.assertEqual(self.window.path, self.path)
         self.assertIsNotNone(self.window.schematic.circuit)
-        self.assertTrue(self.window.split.widget(0).isHidden())
-        self.assertTrue(self.window.picker.isHidden())
-        self.assertTrue(self.window.preview_button.isHidden())
+        self.assertFalse(hasattr(self.window, "editor"))
+        self.assertFalse(hasattr(self.window, "editor_tabs"))
         self.assertTrue(self.window.views.isVisible())
         self.assertTrue(self.window.issues.isVisible())
 
@@ -112,7 +107,7 @@ class EditorBridgeTest(unittest.TestCase):
         self.assertEqual(manual, [str(self.path)])
         self.assertEqual(automatic, manual)
 
-    def test_switching_files_reloads_existing_tab_and_reads_linked_files_from_disk(self):
+    def test_switching_files_reuses_viewer_and_reads_linked_files_from_disk(self):
         self.write_divider(4)
         self.window.open_from_editor(str(self.path))
         other = self.path.with_name("other.ckt")
@@ -122,4 +117,4 @@ class EditorBridgeTest(unittest.TestCase):
         self.assertIn("V1(8)", self.window.read_linked_source(self.path))
         self.window.open_from_editor(str(self.path))
         self.assertEqual(self.output_voltage(), "4 V")
-        self.assertEqual(self.window.editor_tabs.count(), 2)
+        self.assertEqual(self.window.path, self.path)

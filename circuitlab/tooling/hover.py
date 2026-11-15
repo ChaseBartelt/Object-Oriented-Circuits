@@ -10,18 +10,18 @@ from pathlib import Path
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import QBuffer, QIODevice, QRectF, Qt
-from PySide6.QtGui import QFont, QFontDatabase, QImage, QPainter, QTextCursor
+from PySide6.QtGui import QFont, QFontDatabase, QImage, QPainter
 from PySide6.QtWidgets import QApplication
 
 from circuitlab.language.compiler import compile_circuit
 from circuitlab.viewer.device_reference import DeviceReference
-from circuitlab.viewer.editor import CircuitEditor
 from circuitlab.model.graph import CircuitError
 from circuitlab.language.linked import imported_definitions, read_includes
 from circuitlab.math.report import component_labels
 from circuitlab.layout.routing import fast_layout
 from circuitlab.viewer.schematic import SchematicView
 from circuitlab.tooling.trace import wire_trace
+from circuitlab.tooling.source_info import SourceInfo
 
 
 def png(image):
@@ -33,7 +33,6 @@ def png(image):
 
 class HoverRenderer:
     def __init__(self):
-        self.editor = CircuitEditor()
         self.device = DeviceReference()
         self.view = SchematicView()
         self.view.setInteractive(False)
@@ -43,9 +42,6 @@ class HoverRenderer:
         path = Path(request["file"]).resolve()
         if not isinstance(source, str) or len(source) > 2 * 1024 * 1024:
             return None
-        if self.editor.toPlainText() != source:
-            self.editor.setPlainText(source)
-
         def imports(text):
             try:
                 files, dependencies = read_includes(text, path)
@@ -53,19 +49,16 @@ class HoverRenderer:
             except CircuitError:
                 return ()
 
-        self.editor.read_imports = imports
-        block = self.editor.document().findBlockByNumber(int(request["line"]))
-        if not block.isValid():
+        info = SourceInfo(source, imports)
+        line, column = int(request["line"]), int(request["column"])
+        position = info.position(line, column)
+        if position is None:
             return None
-        cursor = QTextCursor(block)
-        column = int(request["column"])
-        if column < 0 or column >= block.length():
+        line_text, character = position
+        if character >= line_text.find("#") >= 0:
             return None
-        cursor.setPosition(block.position() + column)
-        if column >= block.text().find("#") >= 0:
-            return None
-        reference = self.editor.device_at(cursor)
-        help_text = self.editor.hover_help(cursor)
+        reference = info.device_at(line, column)
+        help_text = info.hover_help(line, column)
         if reference:
             kind, name, pins = reference
             self.device.reference = reference
@@ -73,7 +66,7 @@ class HoverRenderer:
             self.device.resize(340, height)
             # QWidget.grab renders without showing a native window.
             return {"text": help_text or name, "image": png(self.device.grab())}
-        location = self.editor.wire_at(cursor)
+        location = info.wire_at(line, column)
         if not location:
             return {"text": help_text} if help_text else None
         _, name, terminal, argument = location

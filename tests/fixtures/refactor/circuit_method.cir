@@ -1,0 +1,8 @@
+* Electric Circuits SPICE export
+* Component 'test' = Vbattery1
+R1_divider_1 vin out 10
+R2_divider_1 out 0 30
+Vbattery1 vin 0 DC 5
+
+.op
+.end

@@ -4,14 +4,7 @@ from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import QWidget
 
-from circuitlab.language.gates import gate_accepts
-
-
-def gate_inputs(name, arguments):
-    if "(" in arguments:
-        return arguments.partition("(")[2].partition(")")[0].count(",") + 1
-    count = arguments.count(",") + 1
-    return count - 3 if gate_accepts(name, count - 3) else max(1, count - 2)
+from circuitlab.tooling.source_info import gate_inputs
 
 
 class DeviceReference(QWidget):

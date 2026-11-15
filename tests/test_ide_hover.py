@@ -1,5 +1,7 @@
 import base64
 import os
+import subprocess
+import sys
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -20,8 +22,26 @@ class HoverTest(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.path = Path(self.temp.name) / "hover.ckt"
         self.renderer = HoverRenderer()
-        for widget in (self.renderer.editor, self.renderer.device, self.renderer.view):
+        for widget in (self.renderer.device, self.renderer.view):
             self.addCleanup(widget.deleteLater)
+
+    def test_hover_worker_does_not_load_the_source_editor(self):
+        script = """
+import sys
+from PySide6.QtWidgets import QApplication, QPlainTextEdit
+from circuitlab.tooling.hover import HoverRenderer
+app = QApplication([])
+renderer = HoverRenderer()
+assert 'circuitlab.viewer.editor' not in sys.modules
+assert 'circuitlab.editor' not in sys.modules
+assert not any(isinstance(widget, QPlainTextEdit) for widget in app.allWidgets())
+"""
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            cwd=Path(__file__).resolve().parents[1],
+            capture_output=True, text=True, timeout=30,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def preview(self, source, token, offset=0):
         index = source.index(token) + offset
@@ -62,6 +82,17 @@ R4(1k) between(split, 0);
         self.assertIn("demo(vcc, a, y, gnd)", result["text"])
         child.write_text("chip demo(power,in1,out1,ground) { R1(1k) between(in1,out1); }", encoding="utf-8")
         self.assertIn("demo(power, in1, out1, ground)", self.preview(source, "demo(")["text"])
+
+    def test_grouped_gate_input_highlights_the_correct_wire(self):
+        source = (
+            "VCC(5) between(vcc, 0);\n"
+            "VA(5) between(a, 0);\nVB(0) between(b, 0);\n"
+            "nor(vcc, (a, b), out);"
+        )
+        result = self.preview(source, "b), out")
+        self.assert_png(result)
+        self.assertEqual(result["nets"], ["b"])
+        self.assertIn("Wire: b", result["text"])
 
     def test_comments_and_invalid_circuit_do_not_crash(self):
         self.assertIsNone(self.preview("# nor(vcc,gnd,a,b,y);", "nor"))

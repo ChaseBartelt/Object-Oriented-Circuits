@@ -1,0 +1,7 @@
+# Common-emitter NPN switch. Compile / Solve to calculate its operating point.
+VCC(5) between(supply, 0);
+Vdrive(3.3) between(drive, 0);
+RC(1k) between(supply, out);
+RB(10k) between(drive, b);
+
+transQ1(b, out, 0, npn);
