@@ -1040,6 +1040,6 @@ def _summing_amplifier(circuit, sources, amp):
 
 def route(circuit, labels):
     """Reproduce the historical MATLAB geometry for existing callers."""
-    from .legacy_layout import route as legacy_route
+    from circuitlab.layout.legacy import route as legacy_route
 
     return legacy_route(circuit, labels)

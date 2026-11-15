@@ -12,8 +12,9 @@ dependencies = ["PySide6>=6.6,<7", "numpy>=1.26,<3", "scipy>=1.11,<2", "sympy>=1
 [project.gui-scripts]
 electric-circuits = "circuitlab.gui:main"
 
-[tool.setuptools]
-packages = ["circuitlab"]
+[tool.setuptools.packages.find]
+include = ["circuitlab", "circuitlab.*"]
+namespaces = false
 
 [tool.setuptools.package-data]
 circuitlab = ["libraries/chips/*.md", "libraries/chips/*/*.ckt"]
