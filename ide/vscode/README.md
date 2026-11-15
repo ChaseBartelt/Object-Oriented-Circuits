@@ -20,17 +20,19 @@ The language mode provides highlighting, bracket matching, indentation, and **Ct
 
 ## Open the schematic
 
-Open a `.ckt` file and click the **play button** at the top right, or choose **OOC: Run Circuit / Open Schematic** from **Ctrl+Shift+P**. This saves the active file and opens it in the OOC desktop window, which compiles the circuit and draws its schematic. The window includes Results, analysis, interactive layout, and export controls. Errors from circuit analysis are shown there; a circuit that can be rendered may still have solver errors.
+Open a `.ckt` file and click the **play button** at the top right, or choose **OOC: Run Circuit / Open Schematic** from **Ctrl+Shift+P**. This saves the active file and opens the lightweight OOC viewer, which compiles the circuit and draws its schematic. The window includes Results, analysis, interactive layout, diagnostics and export controls. It does not construct a source editor or file tabs: code stays in VS Code. A circuit that can be rendered may still have solver errors.
 
-Save included files before running. The play button reuses the window for that OOC checkout and reloads the saved circuit, updating the schematic and results. Opening another circuit uses the same window. Closing the window lets the next Run start a fresh one. Unsaved layout or source changes in OOC prompt before reloading.
+Save included files before running. The play button reuses the window for that OOC checkout and reloads the saved circuit, updating the schematic and results. Running another circuit uses the same window. Closing the window lets the next Run start a fresh one. Unsaved viewer layout changes prompt before an explicit reload or file switch.
 
-When launched from VS Code, OOC hides its source editor and Add a quantity controls; schematic, results, diagnostics, analysis and exports remain available. Launching OOC normally still shows its editor. The connection lasts for the VS Code session; after reloading VS Code, close the old OOC window before running again. This extension requires the matching updated OOC checkout with `--editor` support.
+**Save layout** (or **Ctrl+S** in the viewer) writes `<circuit>.ckt.layout.json` and leaves the `.ckt` source untouched, even if VS Code has newer edits. Keep that sidecar with the source when moving a project. Existing saved placements and shared gate-layout settings retain their formats and namespace. New viewer probe names, renames and removals are saved as sidecar overrides; existing `# @pin` comments still work. Double-click a viewer diagnostic to open its file and line in VS Code.
+
+The connection lasts for the VS Code session; after reloading VS Code, close the old OOC window before running again. This extension requires the matching updated OOC checkout with `--editor` support. The original editor remains available by launching `python -m circuitlab` without `--editor`. After updating Python implementation files, close the old viewer and Run again to load the new code.
 
 ### Refresh on save
 
 Click Run once to open the schematic. Saving a `.ckt` or `.txt` file in the same OOC project then refreshes the last circuit you ran, including changes to saved include files. Save All events are combined into one refresh. The window stays in the background while you type. Closing it stops automatic updates until you click Run again. Turn off **OOC: Refresh On Save** to disable this behavior.
 
-Unsaved source or layout changes in OOC pause automatic refresh; save those changes in OOC, then save in VS Code again. This protects your layout from being discarded without interrupting editing with a dialog.
+Unsaved viewer layout changes pause automatic refresh. Click **Save layout**, then save in VS Code again. This protects your layout without interrupting editing with a dialog or letting the viewer overwrite source.
 
 ### Hover previews
 
@@ -42,7 +44,7 @@ Previews use the current editor text and saved include files, and do not alter t
 
 Save included files. Open the Command Palette with **Ctrl+Shift+P** for **OOC: Check Circuit** or **OOC: Solve Circuit**. These commands save the active circuit and show text results in the **OOC** output channel, with diagnostics from the compiler shown in **Problems**.
 
-The commands use the OOC checkout's Python environment. If you edit a circuit in another folder, set **OOC: Project Root** to the OOC checkout location. Set **OOC: Python Path** if you use a Python executable outside the checkout's `.venv`. Reading, highlighting, folding and Outline work without the Python environment. Interactive schematics and waveforms are available in the OOC desktop app.
+The commands use the OOC checkout's Python environment. If you edit a circuit in another folder, set **OOC: Project Root** to the OOC checkout location. Set **OOC: Python Path** if you use a Python executable outside the checkout's `.venv`. Reading, highlighting, folding and Outline work without the Python environment. Interactive schematics and waveforms run in the separate OOC viewer.
 
 ## Build the extension from source
 
@@ -51,3 +53,5 @@ For each extension release, increase `version` in `ide/vscode/package.json`, the
 `runtime.js`, `structure.js` and `hover-client.js` form the replaceable runtime. The builder fingerprints the remaining packaged implementation and editor registrations. A matching fingerprint permits live replacement; a difference requires a reload. Keep loader changes separate when a release should apply live. Source development must use a built/staged package because `runtime-bundle.json` is generated into the VSIX.
 
 The package uses the shared OOC TextMate grammar and contains no editor runtime dependencies. The compiler commands use the existing project dependencies.
+
+The Python implementation is organized under `circuitlab/language`, `model`, `math`, `layout`, `exporters`, `tooling` and `viewer`. Existing extension launch paths such as `circuitlab.gui`, `circuitlab.cli` and `circuitlab.ide_hover` remain compatible. See the [architecture overview](../../docs/architecture.md) and [development guide](../../docs/development.md) for ownership and regression checks.

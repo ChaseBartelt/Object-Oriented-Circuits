@@ -1,6 +1,6 @@
-# Electric Circuits
+# Object-Oriented Circuits (OOC)
 
-A Python editor, schematic viewer, and solver for the Electric Circuits `.ckt` language.
+A `.ckt` circuit programming language with an interactive schematic and simulation viewer. Write code in VS Code, save to refresh the viewer, and keep electrical connections in source. The original desktop editor remains available for existing workflows.
 
 ## Quick start
 
@@ -9,26 +9,30 @@ Install Python 3.10 or newer. Extract the ZIP and open PowerShell in the directo
 ~~~powershell
 py -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -e .
-.\.venv\Scripts\python.exe -m circuitlab examples\voltage_divider.ckt
+.\.venv\Scripts\python.exe -m circuitlab --editor examples\circuit_method.ckt
 ~~~
 
-On macOS or Linux, use `python3 -m venv .venv` and `.venv/bin/python` for the last two commands. Run the module without a file to open a blank editor.
+On macOS or Linux, use `python3 -m venv .venv` and `.venv/bin/python` for the last two commands. `--editor` means the source is edited in your IDE: it opens the lightweight schematic/results viewer. Omit `--editor` to use the optional original desktop editor; running without a file opens a blank editor.
 
-In VS Code, install the [OOC language extension](ide/vscode/README.md) to edit `.ckt` files directly with syntax highlighting, Outline, folding, and commands for the OOC compiler. To launch the desktop app from VS Code, select the project's `.venv` interpreter and run `circuitlab/__main__.py`.
+In VS Code, install the [OOC language extension](ide/vscode/README.md), open a `.ckt` file, and click its **play button**. The extension provides syntax highlighting, Outline, folding, navigation, compiler diagnostics, and gate/chip/wire hover previews. It reuses the viewer window and refreshes it when you save the circuit or its included files. Save all included source files before running.
 
 In Visual Studio on Windows, use the [OOC editor setup](ide/visual-studio/README.md) to edit `.ckt` files with syntax highlighting and run OOC Check or OOC Solve from the Tools menu.
 
-Open existing `.ckt` or `.txt` files with **File → Open**. Click **Compile / Solve** or press **Ctrl+Enter**. The divider example gives **4 V** at `out`. Click a diagnostic to jump to its line. Drag the divider to resize the editor and preview. Use **Hide preview** to give the editor the full width and **Show preview** to bring back the schematic and results.
+Open existing `.ckt` or `.txt` files with **File → Open**. Click **Compile / Solve** or press **Ctrl+Enter**. `examples/circuit_method.ckt` gives **3.75 V** at `out`. In the viewer, double-click a diagnostic to open its source location in VS Code. The viewer contains no source-editor widgets; **Save layout** writes presentation data beside the circuit and never overwrites code being edited in your IDE. Unsaved layout changes pause automatic refresh until you save them.
 
 - **Schematic** shows the circuit. Click a wire or connector to highlight the whole node. Click a component label for its voltage and current. Junction dots show connections and gaps show unconnected crossings. Use **Fit**, the zoom buttons, or the mouse wheel to explore the drawing.
 - Drag components, packages, grounds, and labeled connectors to move them. Drag a horizontal wire up or down or a vertical wire left or right. Hold **Shift** while moving a symbol for diagonal leads. Right-click a part or ground and choose **Rotate clockwise** or **Rotate counterclockwise** to turn it 90°. Press **Ctrl+Z** in the schematic to undo a placement edit. **Reset placement** restores the automatic layout.
 - **Ctrl+click** components and packages to toggle their selection, or hold **Ctrl** and drag from empty space to draw a selection box. Drag any selected item to move the group. Click empty space to clear the selection.
 - Open **View → Gate Layouts** or right-click a built-in gate and choose **Edit shared gate layout**. Drag parts, wire segments, and pin labels or their endpoint circles. Select **Apply to all** to save the internals for that gate type and input count. Existing circuit-specific placements take priority. Use **Restore automatic → Apply to all** to remove a shared layout.
-- **Save** stores drawing edits alongside the circuit in a `.layout.json` file. Keep it beside the circuit file when moving the project. Hover over a wire argument to see its path in a square popup with the hovered net in blue. Hover over a gate or chip name for its symbol or package pinout.
+- **Save layout** stores drawing edits alongside the circuit in `<name>.ckt.layout.json`. Keep it beside the circuit when moving the project. In VS Code, hover over a wire argument to see a representative connected path with the hovered net in blue, or over a gate/chip name for its reference symbol or declared package pinout.
 - **Results** and **Analysis window** display the same quantities, equations, and values. Search by quantity. Labels display spaces in place of underscores, while circuit code uses the original identifiers.
 - **Render schematic** draws a parseable circuit when the solver cannot calculate its voltages and currents.
 
-Inside `main` or a `circuit` method, type a section name to see matching definitions from the current editor. Press **Tab** or **Enter** to insert the call and start filling in its arguments. Use **Ctrl+Space** to open suggestions or **Esc** to dismiss them. Hover over a method or `op1` for its argument order. **Enter** follows the current line's indentation and adds a level after `{`. Type `}` on its own line to align it with the opening block. **Tab** indents by four spaces when suggestions are closed. **Shift+Tab** outdents the current line or selection.
+### Optional desktop editor
+
+Launch without `--editor` to use the original code editor, file tabs and quantity picker. Click a diagnostic to jump to its line. Drag the divider to resize the editor and preview; **Hide preview** and **Show preview** control the preview pane. **Save** writes source and its layout sidecar.
+
+Inside `main` or a `circuit` method in this editor, type a section name to see matching definitions. Press **Tab** or **Enter** to insert the call and start filling in its arguments. Use **Ctrl+Space** to open suggestions or **Esc** to dismiss them. Hover over a method or `op1` for its argument order. **Enter** follows the current line's indentation and adds a level after `{`. Type `}` on its own line to align it with the opening block. **Tab** indents by four spaces when suggestions are closed. **Shift+Tab** outdents the current line or selection. The extension's separate editing features are described in the [VS Code guide](ide/vscode/README.md).
 
 ## Wiring and pins
 
@@ -38,7 +42,7 @@ Choose **Add pin**, click a wire, connector, or component terminal, and enter a 
 
 Voltage and current sources are drawn vertically. Input sources declared before the circuit stages are placed on the left. Sources declared later are placed near the components that use their nets.
 
-Click a pin to reopen its results. Right-click a pin marker to rename or remove it. Each node has one pin. Save the `.ckt` file to keep your pins with the circuit. They are stored as `# @pin` comments.
+Click a pin to reopen its results. Right-click a pin marker to rename or remove it. Each node has one pin. Existing `# @pin` source comments still work. In the IDE viewer, new names, renames and removals are saved as optional pin overrides in the layout sidecar, so source remains untouched. Keep the sidecar to preserve these changes. The optional desktop editor continues to support source-comment pins and preserves sidecar overrides when saving.
 
 Open `examples/three_way_crossover.ckt` and add a pin to `midOut`. The result is about **802 mV RMS** at 1 kHz.
 
@@ -52,7 +56,7 @@ Open `examples/three_way_crossover.ckt` and add a pin to `midOut`. The result is
 
 ## Connect circuit files
 
-Use **File → Open Folder** to show the circuit explorer. Double-click a folder to enter it or a file to open it in a tab. Use **Back**, **Forward**, and **Up** to browse. **File → Open** also opens a tab, and **View → Files** toggles the explorer. Each tab keeps its editor text and layout.
+Use VS Code's Explorer and editor tabs to organize circuit source files. The optional desktop editor also retains **File → Open Folder**, **Back**, **Forward**, **Up**, multiple tabs and **View → Files**; each of its tabs keeps its editor text and layout. The lightweight viewer presents the circuit most recently run or opened.
 
 Put `include("load.ckt");` at the top level of the file you build. Each path is relative to the file containing the include. Declare the nets to share with `connector(...);` in both files. Names match exactly, independent of pin order. Node `0` is common ground. Other undeclared nets stay local to their file, and component names can repeat across files.
 
@@ -70,11 +74,11 @@ connector(signal, 0);
 R1(3k) between(signal, 0);
 ```
 
-Select the including file to solve, render, or export the combined circuit. Open tabs supply their current text, including unsaved edits. Each included file can define and use its own methods. File connectors link component-based circuits for simulation and SPICE export.
+Select the including file to solve, render, or export the combined circuit. The IDE viewer and CLI use saved include files; the optional desktop editor can use unsaved text from its open tabs. Each included file can define and use its own methods. File connectors link component-based circuits for simulation and SPICE export.
 
 ### Chip library
 
-Open **View → Chip Library** to browse the package definitions. Copy the `include("@chips/...");` line from the [chip catalog](circuitlab/libraries/chips/README.md) and call the chip in `main`. Arguments are in physical pin order, starting at pin 1. Hover over an imported chip call for the pin diagram or use autocomplete inside `main`. Open `examples/chip_library_nand.ckt` for a runnable example.
+Open **View → Chip Library** to browse the package definitions. Copy the `include("@chips/...");` line from the [chip catalog](circuitlab/libraries/chips/README.md) and call the chip in `main`. Arguments are in physical pin order, starting at pin 1. Hover over an imported chip call in VS Code for the pin diagram; the optional desktop editor also offers autocomplete inside `main`. Open `examples/chip_library_nand.ckt` for a runnable example.
 
 An included file containing only `chip`, `gate`, or `circuit` definitions supplies reusable methods to the caller. The `@chips/` prefix works in saved and untitled circuits. Use ordinary relative paths for your own definition files. Calls instantiate separate copies with local internal nets. See the catalog for supported behavior and any package-specific limits.
 
@@ -82,7 +86,7 @@ Open `examples/synth/synth.ckt` for a step sequencer that selects two notes, add
 
 ## Export to LTspice
 
-Click **Export to SPICE** in the toolbar or File menu. Save the `.cir` file, open it in LTspice, and click **Run**. Export uses the current editor text and analysis mode, including unsaved edits.
+Click **Export to SPICE** in the toolbar or File menu. Save the `.cir` file, open it in LTspice, and click **Run**. The viewer exports its loaded source and analysis mode with saved include files. The optional desktop editor exports its current text, including unsaved edits. Export does not modify circuit source.
 
 The netlist contains the resolved wiring, passive components, voltage and current sources, bipolar transistors, and a self-contained ideal op-amp model. DC export uses `.op`. AC export uses `.ac list` at the circuit frequency and the same RMS source amplitudes and phases shown in the app. For DC + AC, the netlist includes the DC offsets. Change the analysis line to `.op` in LTspice to view the DC results.
 
@@ -90,7 +94,7 @@ The `.cir` file is an editable text netlist. Schematic placement, named probes, 
 
 For a drawing, click **Export LTspice .asc** in the Schematic tab or **Export LTspice Schematic** in the File menu. Open the `.asc` in LTspice to edit the components and wiring or run the included analysis command. The export uses the current wiring style and snaps the drawing to LTspice's grid. If the routes cannot fit safely, it keeps the component placement and connects the terminals by matching net labels.
 
-Chips and gates export as hierarchical blocks. Open the main `.asc` in LTspice, then right-click a block to open its internal schematic. Keep the generated `.asy` symbols and child `.asc` sheets beside the main file when moving the export.
+Chips and gates export as hierarchical blocks. Saved internal placements are used even when the package is collapsed. Open the main `.asc` in LTspice, then right-click a block to open its internal schematic. Keep the generated `.asy` symbols and child `.asc` sheets beside the main file when moving the export.
 
 ## Circuit language
 
@@ -276,29 +280,33 @@ Chips with `input` and `output` declarations export to Verilog. Chips and gates 
 
 ## Contributing
 
-The editable install in Quick start picks up changes to `circuitlab/`. Restart the desktop app after changing Python code. Use one circuit per `.ckt` file. For a quick check, open `examples/voltage_divider.ckt` and look for **4 V** at `out`. Use `examples/rc_lowpass.ckt` and `examples/three_band_mixer.ckt` to exercise AC and mixed DC + AC analysis.
+The editable install in Quick start picks up changes to `circuitlab/`. Restart running viewer/hover processes after changing Python code. Read the [architecture overview](docs/architecture.md) and [development guide](docs/development.md) before adding a feature. The [refactor validation report](docs/refactor-report.md) records preservation checks, test results and remaining limits.
+
+For a quick check, use `examples/circuit_method.ckt` and look for **3.75 V** at `out`. The current `examples/voltage_divider.ckt` has a 2 kΩ upper resistor and 10 kΩ lower resistor on 12 V, giving **10 V**. The original 4 V scenario is preserved separately in `tests/fixtures/voltage_divider.ckt`; tests do not depend on changing that editable example back. Use `examples/rc_lowpass.ckt` and `examples/three_band_mixer.ckt` for AC and mixed DC + AC analysis.
 
 | If you're changing… | Start here |
 | --- | --- |
-| Source syntax or editor recognition | `syntax.py` for shared grammar, source lines, and mode detection. `editor.py` for completion and syntax highlighting. |
-| Reusable circuit methods | `methods.py` for declaration validation, argument binding, and per-call names. |
-| Compile-time control flow | `control_flow.py` expands loops and branches into electrical statements. |
-| Wiring and compiler diagnostics | `compiler.py` builds the graph in `graph.py` from expanded statements. |
-| Equations, units, or calculated quantities | `quantities.py` defines available inputs. `numbers.py` parses SI values. `math_engine.py` applies equation rules and uses SymPy for RC and RL step responses. |
-| Circuit simulation or probes | `analysis.py` coordinates the solve and evaluates probes. `simulation.py` solves the nodal equations with NumPy and SciPy. `report.py` formats the results. |
-| Schematic placement and wiring | `layout.py` builds conventional layouts. `routing.py` routes general circuits. `wiring.py` handles labeled connectors and buffered signal paths. `layout_checks.py` verifies net connectivity. |
-| Desktop interactions | `gui.py` connects commands to the editor, results, and schematic. `schematic.py` paints the shared layout and handles clicks. `pins.py` reads and writes saved pin comments. |
-| LTspice export | `spice.py` formats electrical values and writes `.cir` netlists. `ltspice.py` places native symbols and wires in `.asc` schematics. |
-| Digital chip export | `verilog.py` validates pin declarations and combinational logic and emits Verilog modules. |
+| Source syntax or editor recognition | [`language/syntax.py`](circuitlab/language/syntax.py) for grammar and source rows; [`tooling/source_info.py`](circuitlab/tooling/source_info.py) for shared text inspection. |
+| Reusable circuit methods | [`language/methods.py`](circuitlab/language/methods.py) for declaration validation, argument binding and per-call names. |
+| Compile-time control flow | [`language/control_flow.py`](circuitlab/language/control_flow.py) expands loops and branches into electrical statements. |
+| Wiring and compiler diagnostics | [`language/compiler.py`](circuitlab/language/compiler.py) is the entry point, [`language/document.py`](circuitlab/language/document.py) expands documents, and [`language/builder.py`](circuitlab/language/builder.py) constructs the [`model/graph.py`](circuitlab/model/graph.py) circuit/component records. |
+| Equations, units, or calculated quantities | [`math/quantities.py`](circuitlab/math/quantities.py), [`math/numbers.py`](circuitlab/math/numbers.py), and [`math/equations.py`](circuitlab/math/equations.py). |
+| Circuit simulation or probes | [`math/analysis.py`](circuitlab/math/analysis.py) orchestrates solving; [`math/linear.py`](circuitlab/math/linear.py) and [`math/nonlinear.py`](circuitlab/math/nonlinear.py) implement numerical analysis; [`math/results.py`](circuitlab/math/results.py) defines backend/result contracts; [`math/report.py`](circuitlab/math/report.py) formats results. |
+| Schematic placement and wiring | [`layout/geometry.py`](circuitlab/layout/geometry.py) defines drawing data/pins, [`layout/automatic.py`](circuitlab/layout/automatic.py) places known circuit shapes, [`layout/routing.py`](circuitlab/layout/routing.py) routes arbitrary graphs, and [`layout/editing.py`](circuitlab/layout/editing.py) handles interactive movement. |
+| Viewer and original editor | [`viewer/window.py`](circuitlab/viewer/window.py) is the lightweight viewer; [`viewer/legacy.py`](circuitlab/viewer/legacy.py) is the optional editor; [`tooling/session.py`](circuitlab/tooling/session.py) owns source/compilation state without Qt. |
+| LTspice export | [`exporters/spice.py`](circuitlab/exporters/spice.py) writes netlists; [`exporters/ltspice.py`](circuitlab/exporters/ltspice.py) writes native sheets and hierarchy companions. |
+| Digital chip export | [`exporters/verilog.py`](circuitlab/exporters/verilog.py) validates standalone combinational chips and emits Verilog. |
 
-Both the solver and renderer consume the compiled `Circuit`. Keep electrical connections in that graph. The layout tracks each wire by its net so a visual crossing cannot become an electrical junction. `legacy_layout.py` retains the historical geometry used by the MATLAB comparison tests.
+Both the solver and renderer consume the compiled `Circuit`. Keep electrical connections in that graph. The layout tracks each wire by its net so a visual crossing cannot become an electrical junction. `layout/legacy.py` retains the historical geometry used by MATLAB comparison tests. Root-level compatibility modules keep older imports working; new implementation belongs in the organized packages.
 
-Call `circuitlab.analysis.solve_input(source, mode, backend=...)` to solve without Qt. A new simulation backend implements `SimulationBackend.solve` and returns the node voltages, branch values, and equivalent circuit fields defined by `Network`.
+Call `circuitlab.math.analysis.solve_input(source, mode, backend=...)` to solve text without Qt, or use `circuitlab.tooling.session.CircuitSession` for a saved document and its includes. The historical `circuitlab.analysis` import remains supported. A new simulation backend implements `SimulationBackend.solve` and returns the node voltages, branch values and equivalent-circuit fields defined by `Network`.
 
 ### Run the tests
 
 ~~~powershell
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
+$env:OOC_PYTHON = (Resolve-Path .\.venv\Scripts\python.exe).Path
+node --test ide/vscode/test/*.test.js
 ~~~
 
-The suite checks circuit methods, wiring, both export formats, and the desktop editor with Qt's offscreen platform. The captured MATLAB R2026a fixtures allow the parity tests to run with Python alone. To regenerate them in MATLAB, add `tests/` to the MATLAB path and call `captureReference(legacyRoot, casesJsonPath, referenceJsonPath)`.
+The suites check language and graph behavior, nominal gate truth tables, calculations, wiring, exports, both viewer shells and IDE integration. Qt tests use the offscreen platform; Node is needed for extension tests. Immutable refactor fixtures preserve source scopes, terminal mappings, selected numerical outputs, SPICE text and saved root/child layouts. The captured MATLAB R2026a fixtures allow parity tests to run with Python alone. To regenerate them in MATLAB, add `tests/` to the MATLAB path and call `captureReference(legacyRoot, casesJsonPath, referenceJsonPath)`.
