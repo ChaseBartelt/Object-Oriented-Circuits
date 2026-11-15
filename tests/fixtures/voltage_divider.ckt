@@ -1,0 +1,15 @@
+# Stable regression fixture: 12 V across 2 kohm and 1 kohm gives 4 V at out.
+V1(12) between(Vin, 0);
+
+series top {
+    R1 = 2k;
+}
+
+series bottom {
+    R2 = 1k;
+}
+
+main {
+    top(Vin, out);
+    bottom(out, 0);
+}

@@ -29,6 +29,7 @@ from circuitlab.schematic import SCALE, point
 from circuitlab.spice import export_spice
 
 EXAMPLES = Path(__file__).resolve().parents[1] / "examples"
+FIXTURES = Path(__file__).resolve().parent / "fixtures"
 
 
 class ApplicationTest(unittest.TestCase):
@@ -42,6 +43,7 @@ class ApplicationTest(unittest.TestCase):
         examples = Path(self.examples_dir.name)
         shutil.copytree(EXAMPLES, examples, dirs_exist_ok=True,
                         ignore=shutil.ignore_patterns("*.layout.json"))
+        shutil.copytree(FIXTURES, examples / "fixtures", dirs_exist_ok=True)
         self.window = MainWindow()
         open_path = self.window.open_path
 
@@ -49,6 +51,8 @@ class ApplicationTest(unittest.TestCase):
             path = Path(path)
             if path.is_relative_to(EXAMPLES):
                 path = examples / path.relative_to(EXAMPLES)
+            elif path.is_relative_to(FIXTURES):
+                path = examples / "fixtures" / path.relative_to(FIXTURES)
             return open_path(path, **kwargs)
 
         self.window.open_path = open_example
@@ -375,7 +379,7 @@ main { nand(supply, 0, input_a, input_b, out); }
 
     def test_solve_search_and_probe(self):
         win = self.window
-        self.assertTrue(win.open_path(EXAMPLES / "voltage_divider.ckt"))
+        self.assertTrue(win.open_path(FIXTURES / "voltage_divider.ckt"))
         win.results.search.setText("node out")
         self.assertEqual(win.results.table.rowCount(), 1)
         self.assertEqual(win.results.table.item(0, 2).text(), "4 V")

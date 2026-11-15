@@ -7,6 +7,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 ROOT = Path(__file__).resolve().parents[1]
+FIXTURES = Path(__file__).resolve().parent / "fixtures"
 
 
 class CliTest(unittest.TestCase):
@@ -22,7 +23,7 @@ class CliTest(unittest.TestCase):
     def test_solves_the_voltage_divider_from_a_path_with_spaces(self):
         with TemporaryDirectory() as folder:
             path = Path(folder) / "voltage divider.ckt"
-            path.write_bytes((ROOT / "examples" / "voltage_divider.ckt").read_bytes())
+            path.write_bytes((FIXTURES / "voltage_divider.ckt").read_bytes())
             result = self.run_cli("solve", path)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("Node out: 4 V", result.stdout)
