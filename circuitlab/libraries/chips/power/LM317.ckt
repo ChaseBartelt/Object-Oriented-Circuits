@@ -1,0 +1,16 @@
+# LM317 | TO-220 | pin 1 first.
+# Ideal series regulator with a 1.25 V reference and approximately 2 V dropout. No current or thermal limits.
+# Datasheet: https://www.ti.com/lit/ds/symlink/lm317.pdf
+
+chip LM317(adj, out, vin) {
+    VRef(1.25) between(target, adj);
+    VHeadroom(2) between(vin, limit);
+    VHigh(5) between(high, adj);
+    switch1(limit, target, high, select, 0, 100, 1G);
+    switch2(target, limit, high, limited, 0, 100, 1G);
+    RPull1(100k) between(select, adj);
+    RPull2(100k) between(limited, adj);
+    switch3(select, adj, target, command, 2.5, 100, 1G);
+    switch4(limited, adj, limit, command, 2.5, 100, 1G);
+    op1(command, out, out);
+}

@@ -4,7 +4,7 @@ import re
 from dataclasses import dataclass, field, replace
 from math import sqrt
 
-from .graph import Circuit, CircuitError, Component, Probe, WireTap, ground_references
+from .graph import Circuit, CircuitError, Component, Probe, Pulse, WireTap, ground_references
 from .math_engine import solve_known
 from .methods import expand_main
 from .numbers import real, scalar
@@ -26,8 +26,10 @@ from .syntax import (
     INLINE,
     OP,
     PLACEMENT,
+    PULSE,
     SECTION,
     SOURCE_WIRE,
+    SWITCH_CALL,
     TRANSISTOR,
     TRANS_CALL,
     TRANS_POSITIONAL,
@@ -129,10 +131,18 @@ def compile_circuit(source, mode="auto", *, render_only=False, path=None, read_s
     """Compile source into a circuit graph or standalone quantity inputs."""
     if not isinstance(source, str):
         source = "\n".join(source)
-    if path is not None:
+    if path is not None or any(
+        (match := INCLUDE.fullmatch(row)) and match[1].startswith("@chips/")
+        for row, _, _ in source_rows(source)
+    ):
         from .linked import compile_linked
 
         return compile_linked(source, path, mode, render_only=render_only, read_source=read_source)
+    return compile_document(source, mode, render_only=render_only)
+
+
+def compile_document(source, mode, *, render_only=False, path=None, definitions=None):
+    """Elaborate one document after its includes have been read."""
     if has_chip(source):
         raise CircuitError(
             "Use File > Export Verilog for this chip."
@@ -161,17 +171,25 @@ def compile_circuit(source, mode="auto", *, render_only=False, path=None, read_s
         elif INCLUDE.fullmatch(text):
             raise CircuitError("Save this circuit to resolve its relative include paths.", line)
         else:
-            rows.append((text, line, binding))
+            rows.append((text, line, replace(binding, path=path) if path else binding))
             depth += text.count("{") - text.count("}")
     compiler = Compiler(mode)
     compiler.circuit.named_wires.update(connectors)
     compiler.circuit.connector_pins = tuple(connectors)
     owners, lines = {}, {}
+    paths = {}
+    imports = [
+        (text, line, replace(binding, path=filename))
+        for filename, content in (definitions or {}).items()
+        for text, line, binding in source_rows(content)
+    ]
     for order, (text, line, binding) in enumerate(
-        expand_main(rows, compiler.circuit.instances), 1
+        expand_main(rows, compiler.circuit.instances, imports=imports), 1
     ):
         compiler.order = order
         lines[order] = line
+        if binding.path is not None:
+            paths[order] = binding.path
         if binding.instance is not None:
             owners[order] = binding.instance
         try:
@@ -179,7 +197,7 @@ def compile_circuit(source, mode="auto", *, render_only=False, path=None, read_s
         except CircuitError as error:
             if error.line is not None:
                 raise
-            raise CircuitError(str(error), line, error.code) from None
+            raise CircuitError(str(error), line, error.code, path=binding.path) from None
     circuit = compiler.finish(render_only)
     for pin, line in connectors.items():
         if circuit.resolve_wire(pin) not in circuit.nodes:
@@ -191,6 +209,9 @@ def compile_circuit(source, mode="auto", *, render_only=False, path=None, read_s
     }
     circuit.component_lines = {
         part.name: lines[part.order] for part in circuit.components if part.order in lines
+    }
+    circuit.component_files = {
+        part.name: paths[part.order] for part in circuit.components if part.order in paths
     }
     return circuit
 
@@ -279,6 +300,27 @@ class Compiler:
                 pins[pin[1].lower()] = parse_wires(pin[2], 1)[0]
             return
         group = self.group
+        if call and SWITCH_CALL.fullmatch(call[1]):
+            if group or self.battery or self.mode == "transient":
+                raise CircuitError("Place switches in a steady-state circuit or method.")
+            arguments = [arg.strip() for arg in call[2].split(",")]
+            if len(arguments) != 7:
+                raise CircuitError("Use switch1(control, reference, a, b, threshold, on, off).")
+            control, reference, a, b = map(binding.wire, parse_wires(",".join(arguments[:4]), 4))
+            threshold = real(scalar(arguments[4], "V"))
+            on, off = (real(scalar(value, "ohm")) for value in arguments[5:])
+            if not 0 < on < off:
+                raise CircuitError("Switch resistances require 0 < on < off.")
+            name = binding.part(call[1])
+            if name.casefold() in self.names:
+                raise CircuitError(f'Give switch "{name}" a unique component name.')
+            self.names.add(name.casefold())
+            self.circuit.components.append(Component(
+                name, "S", a, b, on, label=name, order=self.order, in_plus=control,
+                in_minus=reference, threshold=threshold, off_resistance=off,
+            ))
+            self.circuit.named_wires.update((a, b, control, reference))
+            return
         transistor = TRANSISTOR.fullmatch(text)
         compact = TRANS_CALL.fullmatch(call[1]) if call else None
         positional = TRANS_POSITIONAL.fullmatch(text.rstrip(";").strip())
@@ -832,15 +874,29 @@ class Compiler:
             raise CircuitError(
                 f'Component "{name}" needs a name beginning R, C, L, V, or I.'
             )
-        value, dc, equation = (
-            _source(raw, kind, self.mode)
-            if kind in "VI"
-            else (scalar(raw, UNITS[kind]), 0, "Given")
-        )
+        pulse = None
+        if signal := PULSE.fullmatch(raw.strip()):
+            if self.mode != "dc" or kind != "V":
+                raise CircuitError("Pulse sources use a voltage source in DC mode. Run the waveform in Results.")
+            fields = signal[1].split(",")
+            if len(fields) != 7:
+                raise CircuitError("Use pulse(low, high, delay, rise, fall, width, period).")
+            low, high, delay, rise, fall, width, period = (
+                real(scalar(field, "V" if index < 2 else "s"))
+                for index, field in enumerate(fields)
+            )
+            if delay < 0 or min(rise, fall, width) <= 0 or period < rise + fall + width:
+                raise CircuitError("Use a nonnegative pulse delay, positive rise, fall and width, and a period that fits all three.")
+            pulse = Pulse(low, high, delay, rise, fall, width, period)
+            value, dc, equation = low, low, "Pulse initial level"
+        elif kind in "VI":
+            value, dc, equation = _source(raw, kind, self.mode)
+        else:
+            value, dc, equation = scalar(raw, UNITS[kind]), 0, "Given"
         name = binding.part(name)
         p, n = binding.wire(p), binding.wire(n)
         self.circuit.components.append(
-            Component(name, kind, p, n, value, dc, name, equation, order=self.order)
+            Component(name, kind, p, n, value, dc, name, equation, order=self.order, pulse=pulse)
         )
         if binding.scope:
             self.method_parts = True
@@ -936,7 +992,7 @@ class Compiler:
             self.resolve_tap_names()
         if self.amps and c.grounds != {"0"}:
             self.connect_amp_returns()
-        if render_only and not c.components:
+        if render_only and not c.components and not c.instances:
             raise CircuitError(
                 "Enter a circuit with component rows or series/parallel blocks to render it."
             )
@@ -946,7 +1002,7 @@ class Compiler:
         """Find each ideal op amp's output reference after wiring is resolved."""
         c = self.circuit
         branches = [
-            (part.p, part.n, part.base) if part.kind == "Q" else (part.p, part.n)
+            part.terminal_nets if part.kind in {"Q", "S"} else (part.p, part.n)
             for part in c.components
             if part.kind != "O"
         ]

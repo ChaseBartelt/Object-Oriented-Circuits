@@ -1,0 +1,6 @@
+circuit oocMux2(vcc, gnd, select, a, b, y) {
+    not(vcc, gnd, select, select_n);
+    nand(vcc, gnd, a, select_n, a_n);
+    nand(vcc, gnd, b, select, b_n);
+    nand(vcc, gnd, a_n, b_n, y);
+}

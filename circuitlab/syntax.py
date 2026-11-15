@@ -16,10 +16,12 @@ SECTION = re.compile(
 DEFAULT_TERMINALS = ("a", "b")
 NET_METHODS = {"circuit", "gate", "chip"}
 OVERRIDE = re.compile(r"@override", re.I)
+UNAVAILABLE_MODEL = re.compile(r"model\s*=\s*unavailable", re.I)
 INLINE = re.compile(r"(series|parallel)\s*(?:\(([^()]*)\)\s*)?\{", re.I)
 BATTERY_BRACE = re.compile(r"battery\s+([A-Za-z][A-Za-z0-9_]*)\s*\{", re.I)
 TRANSISTOR = re.compile(r"transistor\s+([A-Za-z][A-Za-z0-9_]*)\s*\{", re.I)
 TRANS_CALL = re.compile(r"trans([A-Za-z0-9_]+)", re.I)
+SWITCH_CALL = re.compile(r"switch([A-Za-z0-9_]+)", re.I)
 TRANS_POSITIONAL = re.compile(r"transistor\s+([A-Za-z][A-Za-z0-9_]*)\s*\(([^()]*)\)", re.I)
 CHIP = re.compile(r"chip\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(([^()]*)\)\s*\{", re.I)
 CHIP_START = re.compile(
@@ -46,8 +48,9 @@ PARAMETER_TARGET = re.compile(r"[RCLXVI][A-Za-z0-9_]*", re.I)
 PART_ARGUMENT = re.compile(r"([RCL][A-Za-z0-9_]*)\s*\(([^()]+)\)", re.I)
 PART_PLACEMENT = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)\s+between\s*\(([^()]*)\)", re.I)
 PLACEMENT = re.compile(
-    r"([A-Za-z][A-Za-z0-9_]*)\s*\(([^()]+)\)\s+between\s*\(([^()]*)\)", re.I
+    r"([A-Za-z][A-Za-z0-9_]*)\s*\(((?:[^()]|\([^()]*\))+)\)\s+between\s*\(([^()]*)\)", re.I
 )
+PULSE = re.compile(r"pulse\s*\(([^()]*)\)", re.I)
 SOURCE_WIRE = re.compile(
     r"([VI][A-Za-z0-9_]*)\s*=\s*([^:;]+)\s*:\s*wire\s*=\s*([^;]*)\s*;?", re.I
 )
@@ -68,6 +71,7 @@ class Binding:
     in_main: bool = False
     values: dict[str, str] = field(default_factory=dict)
     instance: int | None = None
+    path: object = None
 
     def wire(self, wire):
         if not self.scope or wire == "0":

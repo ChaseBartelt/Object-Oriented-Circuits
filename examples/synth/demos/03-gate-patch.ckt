@@ -1,0 +1,19 @@
+# Logic combinations used to choose notes and build accent patterns.
+# Render, then plot the outputs in Results at 10 us. Or set VA and VB to DC voltages.
+include("@chips/logic/74HC00.ckt");
+include("@chips/logic/74HC02.ckt");
+include("@chips/logic/74HC04.ckt");
+include("@chips/logic/74HC08.ckt");
+include("@chips/logic/74HC32.ckt");
+include("@chips/logic/74HC86.ckt");
+VCC(5) between(supply, 0);
+VA(pulse(0, 5, 1m, 100u, 100u, 1m, 3m)) between(a, 0);
+VB(pulse(0, 5, 1.5m, 100u, 100u, 2m, 5m)) between(b, 0);
+main {
+    SN74HC00(a, b, nand_out, 0, 0, nc002, 0, nc003, 0, 0, nc004, 0, 0, supply);
+    SN74HC02(nor_out, a, b, nc022, 0, 0, 0, 0, 0, nc023, 0, 0, nc024, supply);
+    SN74HC04(a, not_out, 0, nc042, 0, nc043, 0, nc044, 0, nc045, 0, nc046, 0, supply);
+    SN74HC08(a, b, and_out, 0, 0, nc082, 0, nc083, 0, 0, nc084, 0, 0, supply);
+    SN74HC32(a, b, or_out, 0, 0, nc322, 0, nc323, 0, 0, nc324, 0, 0, supply);
+    SN74HC86(a, b, xor_out, 0, 0, nc862, 0, nc863, 0, 0, nc864, 0, 0, supply);
+}

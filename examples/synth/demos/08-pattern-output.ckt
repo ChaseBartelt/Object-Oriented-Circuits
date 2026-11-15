@@ -1,0 +1,12 @@
+# Shift in a short pattern and latch it on a separate clock. Results: qb and qh.
+include("@chips/sequential/74HC595.ckt");
+VCC(5) between(supply, 0);
+VClear(pulse(0, 5, 1m, 100u, 100u, 19m, 21m)) between(clear_n, 0);
+VShift(pulse(0, 5, 2m, 100u, 100u, 400u, 1.6m)) between(shift_clk, 0);
+VLatch(pulse(0, 5, 1.4m, 100u, 100u, 400u, 12.5m)) between(latch_clk, 0);
+VData(pulse(0, 5, 1.2m, 100u, 100u, 1.6m, 3.2m)) between(serial_data, 0);
+RLoadB(100k) between(qb, 0);
+RLoadH(100k) between(qh, 0);
+main {
+    SN74HC595(qb, qc, qd, qe, qf, qg, qh, 0, serial_next, clear_n, shift_clk, latch_clk, 0, serial_data, qa, supply);
+}

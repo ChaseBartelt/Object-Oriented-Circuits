@@ -1,0 +1,15 @@
+# Sampling switches use separated thresholds so both stages cannot track at once.
+# Ideal buffers isolate the hold capacitors from the following stage and load.
+circuit oocDFlipFlop(vcc, gnd, d, clk, preset_n, clear_n, q, q_n) {
+    switchSample(gnd, clk, d, master, -1.5, 100, 1e12);
+    switchTransfer(clk, gnd, master_buffer, slave, 3.5, 100, 1e12);
+    switchPreset(vcc, preset_n, vcc, slave, 2.5, 1, 1e12);
+    switchClear(vcc, clear_n, gnd, slave, 2.5, 1, 1e12);
+    CMaster(10p) between(master, gnd);
+    CSlave(10p) between(slave, gnd);
+    op1(master, master_buffer, master_buffer);
+    op2(slave, q, q);
+    not(vcc, gnd, q, inverted);
+    switchInversePreset(vcc, clear_n, vcc, q_n, 2.5, 1, 1e12);
+    RInverse(100) between(inverted, q_n);
+}

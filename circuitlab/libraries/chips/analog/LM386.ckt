@@ -1,0 +1,15 @@
+# LM386 | 8-pin package | pin 1 first.
+# Ideal small-signal gain of 20 around half supply. Gain and bypass pins are passive.
+# Datasheet: https://www.ti.com/lit/ds/symlink/lm386.pdf
+
+chip LM386(gain1, minus, plus, gnd, out, vcc, bypass, gain8) {
+    RVTop(10k) between(vcc, mid);
+    RVBottom(10k) between(mid, gnd);
+    op1(mid, feedback, bias);
+    RLoop(1k) between(bias, feedback);
+    R1(1k) between(plus, pos_mix);
+    R2(20k) between(bias, pos_mix);
+    R3(1k) between(minus, neg_mix);
+    R4(20k) between(out, neg_mix);
+    op2(pos_mix, neg_mix, out);
+}

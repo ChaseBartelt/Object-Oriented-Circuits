@@ -12,7 +12,9 @@ def clean_point(point):
     return tuple(round(x, 8) for x in point)
 
 
-def route_anchors(layout, net, pins=None, *, moving_ground=None, moving_connector=None):
+def route_anchors(
+    layout, net, pins=None, *, moving_ground=None, moving_connector=None, moving_boundary=None,
+):
     if pins is None:
         pins = layout.pins()
     return {
@@ -24,7 +26,8 @@ def route_anchors(layout, net, pins=None, *, moving_ground=None, moving_connecto
         clean_point(point) for point in layout.grounds
         if point != moving_ground and layout.ground_names.get(point, "0") == net
     } | {
-        clean_point(point) for name, point in layout.boundary.items() if name == net
+        clean_point(point) for name, point in layout.boundary.items()
+        if name == net and name != moving_boundary and point != moving_ground
     }
 
 
@@ -131,7 +134,8 @@ def replace_route(layout, net, edges):
         layout.junctions[net] = junctions
     else:
         layout.junctions.pop(net, None)
-    layout.labels.pop(net, None)
+    if not edges or ("net", net) not in layout.label_offsets:
+        layout.labels.pop(net, None)
 
 
 def wire_slide_candidates(original, net, edge, distance, *, snap=0):

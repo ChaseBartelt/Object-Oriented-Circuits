@@ -1,0 +1,17 @@
+# SN74HC157 | 16-pin package | pin 1 first.
+# Quad multiplexer at nominal 5 V. A high enable_n forces all outputs low.
+# Datasheet: https://www.ti.com/lit/ds/symlink/sn74hc157.pdf
+
+include("../shared/mux.ckt");
+
+chip SN74HC157(select, a1, b1, y1, a2, b2, y2, gnd, y3, b3, a3, y4, b4, a4, enable_n, vcc) {
+    not(vcc, gnd, enable_n, enabled);
+    oocMux2(vcc, gnd, select, a1, b1, mux1);
+    and(vcc, gnd, mux1, enabled, y1);
+    oocMux2(vcc, gnd, select, a2, b2, mux2);
+    and(vcc, gnd, mux2, enabled, y2);
+    oocMux2(vcc, gnd, select, a3, b3, mux3);
+    and(vcc, gnd, mux3, enabled, y3);
+    oocMux2(vcc, gnd, select, a4, b4, mux4);
+    and(vcc, gnd, mux4, enabled, y4);
+}

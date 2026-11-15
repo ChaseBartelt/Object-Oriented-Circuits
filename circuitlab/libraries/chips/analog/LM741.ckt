@@ -1,0 +1,11 @@
+# LM741 | 8-pin package | pin 1 first.
+# Ideal op-amp channels. Supply, rail limits, offset and bandwidth are omitted.
+# Datasheet: https://www.ti.com/lit/ds/symlink/lm741.pdf
+
+chip LM741(offset1, minus, plus, vminus, offset2, out, vplus, nc) {
+    op1(plus, minus, out);
+}
+
+chip uA741(offset1, minus, plus, vminus, offset2, out, vplus, nc) {
+    LM741(offset1, minus, plus, vminus, offset2, out, vplus, nc);
+}

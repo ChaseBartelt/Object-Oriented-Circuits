@@ -1,0 +1,19 @@
+# Buffered differential pair with a current-mirror load and hysteresis.
+circuit oocDifferential(vcc, gnd, pos, neg, y) {
+    RTail(4.7k) between(tail, gnd);
+    RLoad(47k) between(vcc, sense);
+    RPull(10k) between(shifted, gnd);
+    CNode(10p) between(sense, gnd);
+    op1(pos, pos_buf, pos_buf);
+    op2(neg, neg_buf, neg_buf);
+    RIn(470) between(pos_buf, plus);
+    RHyst(22k) between(y, plus);
+    transQP(plus, mirror, tail, npn);
+    transQN(neg_buf, sense, tail, npn);
+    transQRef(mirror, mirror, vcc, pnp);
+    transQMirror(mirror, sense, vcc, pnp);
+    transQClamp(sense, sense, vcc, pnp);
+    transQShift(sense, shifted, vcc, pnp);
+    not(vcc, gnd, shifted, y);
+}
+

@@ -148,6 +148,7 @@ class CircuitEditor(QPlainTextEdit):
         self.viewport().setMouseTracking(True)
         self.hovered_wire = None
         self.hovered_device = None
+        self.read_imports = None
         self.gutter = Gutter(self)
         self.highlighter = CircuitHighlighter(self.document())
         self.completions = QStringListModel(self)
@@ -172,6 +173,15 @@ class CircuitEditor(QPlainTextEdit):
         cursor.setPosition(0, QTextCursor.MoveMode.KeepAnchor)
         return cursor.selectedText().replace("\u2029", "\n")
 
+    def method_signatures(self):
+        source = self.toPlainText()
+        methods = {}
+        if self.read_imports and "include" in source.casefold():
+            for included in self.read_imports(source):
+                methods.update(_methods(included))
+        methods.update(_methods(source))
+        return methods
+
     def _completion_prefix(self):
         if self.textCursor().hasSelection():
             return None
@@ -191,7 +201,7 @@ class CircuitEditor(QPlainTextEdit):
         if prefix is None or (not prefix and not explicit):
             popup.hide()
             return
-        methods = _methods(self.toPlainText())
+        methods = self.method_signatures()
         builtin = prefix if OP.fullmatch(prefix) else "op1"
         names = {key: method[1] for key, method in methods.items()}
         names[builtin.casefold()] = builtin
@@ -225,7 +235,7 @@ class CircuitEditor(QPlainTextEdit):
             QTextCursor.MoveOperation.EndOfBlock, QTextCursor.MoveMode.KeepAnchor
         )
         suffix = end.selectedText().lstrip()
-        method = _methods(self.toPlainText()).get(name.casefold())
+        method = self.method_signatures().get(name.casefold())
         if suffix.startswith("("):
             cursor.insertText(name)
         else:
@@ -360,7 +370,7 @@ class CircuitEditor(QPlainTextEdit):
         if CONNECTOR.fullmatch(code.strip()) and column <= code.lower().index("connector") + 9:
             return "connector(pin, ...)\nShare these nets by name with files in the same build."
         if INCLUDE.fullmatch(code.strip()):
-            return 'include("file.ckt")\nBuild this circuit with a file relative to its folder.'
+            return 'include("file.ckt")\nLoad a relative file or use @chips/ for the bundled library.'
         if code.strip().casefold() == "@override":
             return (
                 "Put @Override above a built-in gate definition. Calls with the same "
@@ -380,7 +390,7 @@ class CircuitEditor(QPlainTextEdit):
                         "input voltages equal and draws zero input current. Connect out "
                         "back to in- to make a voltage follower."
                     )
-                method = _methods(self.toPlainText()).get(name.casefold())
+                method = self.method_signatures().get(name.casefold())
                 if method:
                     kind, declared, pins = method
                     return f"{declared}({pins})\nCall this {kind} section with wires in the listed order."
@@ -462,7 +472,7 @@ class CircuitEditor(QPlainTextEdit):
         name, raw = match.groups()
         if not 0 <= column < len(name):
             return None
-        method = _methods(self.toPlainText()).get(name.casefold())
+        method = self.method_signatures().get(name.casefold())
         if method and method[0] in {"chip", "gate"}:
             kind, name, pins = method
             return kind, name, tuple(pin.strip() for pin in pins.split(",") if pin.strip())

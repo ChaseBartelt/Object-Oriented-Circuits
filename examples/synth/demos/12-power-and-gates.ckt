@@ -1,0 +1,22 @@
+# The regulators provide DC references. The Darlington array sinks gate current.
+# Try Compile / Solve and compare rail, ref, and gate0.
+include("@chips/power/LM317.ckt");
+include("@chips/power/TL431.ckt");
+include("@chips/power/ULN2003A.ckt");
+Vin(10) between(input, 0);
+VTrig(5) between(trig, 0);
+RSet(240) between(rail, adj);
+RTrim(720) between(adj, 0);
+RBias(1k) between(rail, ref);
+RGate1(2.2k) between(rail, gate0);
+RGate2(2.2k) between(rail, gate1);
+RGate3(2.2k) between(rail, gate2);
+RGate4(2.2k) between(rail, gate3);
+RGate5(2.2k) between(rail, gate4);
+RGate6(2.2k) between(rail, gate5);
+RGate7(2.2k) between(rail, gate6);
+main {
+    LM317(adj, rail, input);
+    TL431(ref, 0, ref);
+    ULN2003A(trig, 0, 0, 0, 0, 0, 0, 0, rail, gate6, gate5, gate4, gate3, gate2, gate1, gate0);
+}

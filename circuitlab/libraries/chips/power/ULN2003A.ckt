@@ -1,0 +1,15 @@
+# ULN2003A | 16-pin package | pin 1 first.
+# Darlington array approximation. Connect common appropriately for inductive clamps.
+# Datasheet: https://www.ti.com/lit/ds/symlink/uln2003a.pdf
+
+include("../shared/darlington.ckt");
+
+chip ULN2003A(in1, in2, in3, in4, in5, in6, in7, gnd, common, out7, out6, out5, out4, out3, out2, out1) {
+    oocDarlington(in1, gnd, out1, common);
+    oocDarlington(in2, gnd, out2, common);
+    oocDarlington(in3, gnd, out3, common);
+    oocDarlington(in4, gnd, out4, common);
+    oocDarlington(in5, gnd, out5, common);
+    oocDarlington(in6, gnd, out6, common);
+    oocDarlington(in7, gnd, out7, common);
+}

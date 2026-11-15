@@ -1,0 +1,15 @@
+# Two independent NE556 channels. Channel 2 is held in reset for a stable reference.
+# Set channel 1's reset to 0 V for a DC check. Results: tone1 at 10 us.
+include("@chips/timers/NE556.ckt");
+VCC(5) between(supply, 0);
+VReset1(5) between(reset1_n, 0);
+VReset2(0) between(reset2_n, 0);
+R1(10k) between(supply, dis1);
+R2(10k) between(dis1, time1);
+C1(100n) between(time1, 0);
+R3(10k) between(supply, dis2);
+R4(10k) between(dis2, time2);
+C2(220n) between(time2, 0);
+main {
+    NE556(dis1, time1, ctrl1, reset1_n, tone1, time1, 0, time2, tone2, reset2_n, ctrl2, time2, dis2, supply);
+}

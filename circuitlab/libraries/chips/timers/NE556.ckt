@@ -1,0 +1,10 @@
+# NE556 | 14-pin package | pin 1 first.
+# Two independent discrete 555 channels with shared power.
+# Datasheet: https://www.ti.com/lit/ds/symlink/ne556.pdf
+
+include("NE555.ckt");
+
+chip NE556(disch1, thres1, ctrl1, reset1_n, out1, trig1, gnd, trig2, out2, reset2_n, ctrl2, thres2, disch2, vcc) {
+    NE555(gnd, trig1, out1, reset1_n, ctrl1, thres1, disch1, vcc);
+    NE555(gnd, trig2, out2, reset2_n, ctrl2, thres2, disch2, vcc);
+}

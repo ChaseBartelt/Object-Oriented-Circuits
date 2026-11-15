@@ -1,0 +1,8 @@
+# LM358 | 8-pin package | pin 1 first.
+# Ideal op-amp channels. Supply, rail limits, offset and bandwidth are omitted.
+# Datasheet: https://www.ti.com/lit/ds/symlink/lm358.pdf
+
+chip LM358(out1, minus1, plus1, vminus, plus2, minus2, out2, vplus) {
+    op1(plus1, minus1, out1);
+    op2(plus2, minus2, out2);
+}

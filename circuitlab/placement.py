@@ -5,6 +5,8 @@ import math
 
 from .layout import Layout
 from .layout_checks import preserves_nets
+from .routing import _mark_crossings
+from .wire_edit import replace_route
 
 
 def placement_path(path):
@@ -48,6 +50,7 @@ def pack_layout(layout):
         "boundary": layout.boundary,
         "rotations": layout.rotations,
         "crossings": [[net, a, b, cuts] for (net, a, b), cuts in layout.crossings.items()],
+        "label_offsets": list(layout.label_offsets.items()),
     }
 
 
@@ -100,9 +103,35 @@ def restore_layout(record, circuit, boundary):
             boundary=points_map(record["boundary"]),
             crossings={(net, point(a), point(b)): [finite(cut) for cut in cuts]
                        for net, a, b, cuts in record["crossings"]},
+            label_offsets={
+                tuple(key): point(offset) for key, offset in record.get("label_offsets", ())
+                if isinstance(key, (list, tuple)) and len(key) >= 2 and isinstance(key[0], str)
+            },
         )
-        if drawing.boundary.keys() <= set(boundary) and preserves_nets(circuit, drawing):
-            return drawing
+        if drawing.boundary.keys() <= set(boundary):
+            _restore_ground_boundaries(drawing, circuit.grounds)
+            if preserves_nets(circuit, drawing):
+                return drawing
     except (AttributeError, KeyError, TypeError, ValueError, OverflowError):
         pass
     return None
+
+
+def _restore_ground_boundaries(drawing, ground_nets):
+    """Remove old leads kept alive by a ground port left at a previous position."""
+    repaired = False
+    for net, position in drawing.boundary.items():
+        if net not in ground_nets or position in drawing.grounds:
+            continue
+        nearby = min(
+            (p for p in drawing.grounds if drawing.ground_names.get(p, "0") == net),
+            key=lambda p: math.dist(position, p),
+            default=None,
+        )
+        if nearby is not None:
+            drawing.boundary[net] = nearby
+            replace_route(drawing, net, drawing.wires.get(net, ()))
+            repaired = True
+    if repaired:
+        drawing.crossings.clear()
+        _mark_crossings(drawing)

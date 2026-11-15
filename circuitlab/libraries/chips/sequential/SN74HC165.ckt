@@ -1,0 +1,41 @@
+# SN74HC165 | 16-pin package | pin 1 first.
+# 5 V parallel-load shift register approximation. Initialize by driving load_n low.
+# Datasheet: https://www.ti.com/lit/ds/symlink/sn74hc165.pdf
+
+include("../shared/flipFlop.ckt");
+
+chip SN74HC165(load_n, clk, e, f, g, h, qh_n, gnd, qh, serial_in, a, b, c, d, clk_inhibit, vcc) {
+    or(vcc, gnd, clk, clk_inhibit, shift_clk);
+    not(vcc, gnd, a, a_n);
+    or(vcc, gnd, load_n, a_n, preset_a_n);
+    or(vcc, gnd, load_n, a, clear_a_n);
+    oocDFlipFlop(vcc, gnd, serial_in, shift_clk, preset_a_n, clear_a_n, qa, qa_n);
+    not(vcc, gnd, b, b_n);
+    or(vcc, gnd, load_n, b_n, preset_b_n);
+    or(vcc, gnd, load_n, b, clear_b_n);
+    oocDFlipFlop(vcc, gnd, qa, shift_clk, preset_b_n, clear_b_n, qb, qb_n);
+    not(vcc, gnd, c, c_n);
+    or(vcc, gnd, load_n, c_n, preset_c_n);
+    or(vcc, gnd, load_n, c, clear_c_n);
+    oocDFlipFlop(vcc, gnd, qb, shift_clk, preset_c_n, clear_c_n, qc, qc_n);
+    not(vcc, gnd, d, d_n);
+    or(vcc, gnd, load_n, d_n, preset_d_n);
+    or(vcc, gnd, load_n, d, clear_d_n);
+    oocDFlipFlop(vcc, gnd, qc, shift_clk, preset_d_n, clear_d_n, qd, qd_n);
+    not(vcc, gnd, e, e_n);
+    or(vcc, gnd, load_n, e_n, preset_e_n);
+    or(vcc, gnd, load_n, e, clear_e_n);
+    oocDFlipFlop(vcc, gnd, qd, shift_clk, preset_e_n, clear_e_n, qe, qe_n);
+    not(vcc, gnd, f, f_n);
+    or(vcc, gnd, load_n, f_n, preset_f_n);
+    or(vcc, gnd, load_n, f, clear_f_n);
+    oocDFlipFlop(vcc, gnd, qe, shift_clk, preset_f_n, clear_f_n, qf, qf_n);
+    not(vcc, gnd, g, g_n);
+    or(vcc, gnd, load_n, g_n, preset_g_n);
+    or(vcc, gnd, load_n, g, clear_g_n);
+    oocDFlipFlop(vcc, gnd, qf, shift_clk, preset_g_n, clear_g_n, qg, qg_n);
+    not(vcc, gnd, h, h_n);
+    or(vcc, gnd, load_n, h_n, preset_h_n);
+    or(vcc, gnd, load_n, h, clear_h_n);
+    oocDFlipFlop(vcc, gnd, qg, shift_clk, preset_h_n, clear_h_n, qh, qh_n);
+}

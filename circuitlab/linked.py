@@ -3,24 +3,28 @@
 from dataclasses import replace
 from pathlib import Path
 
-from .compiler import Compiler, compile_circuit
+from .compiler import Compiler, compile_document
 from .graph import CircuitError
 from .numbers import set_known
-from .syntax import INCLUDE, analysis_mode, has_chip
+from .syntax import INCLUDE, NET_METHODS, OVERRIDE, SECTION, analysis_mode, has_chip, source_rows
+
+CHIP_LIBRARY = Path(__file__).resolve().parent / "libraries" / "chips"
 
 
-def compile_linked(source, path, mode, *, render_only=False, read_source=None):
-    """Build the entry file and each include once, resolving paths from the caller."""
-    entry = Path(path).resolve()
+def read_includes(source, path, read_source=None):
+    """Collect file text and direct dependencies in discovery order."""
+    entry = Path(path).resolve() if path is not None else None
     if read_source is None:
         read_source = lambda path: path.read_text(encoding="utf-8-sig")
     files = {}
+    imports = {}
     visiting = set()
 
     def visit(path, text):
         visiting.add(path)
         lines = text.splitlines()
         files[path] = text
+        imports[path] = []
         depth = 0
         for i, line in enumerate(lines):
             include = INCLUDE.fullmatch(line.strip()) or INCLUDE.fullmatch(
@@ -32,7 +36,14 @@ def compile_linked(source, path, mode, *, render_only=False, read_source=None):
                 filename = Path(include[1])
                 if filename.is_absolute() or filename.drive or filename.suffix.lower() not in {".ckt", ".txt"}:
                     raise CircuitError("Use a relative path to a .ckt or .txt file.", i + 1, path=path)
-                target = (path.parent / filename).resolve()
+                if filename.parts[0] == "@chips":
+                    target = CHIP_LIBRARY.joinpath(*filename.parts[1:]).resolve()
+                    if not target.is_relative_to(CHIP_LIBRARY):
+                        raise CircuitError("Use a path inside the chip library.", i + 1, path=path)
+                elif path is None:
+                    raise CircuitError("Save this circuit to resolve its relative include paths.", i + 1)
+                else:
+                    target = (path.parent / filename).resolve()
                 if target in visiting:
                     raise CircuitError(f'Include cycle through "{include[1]}".', i + 1, path=path)
                 if target not in files:
@@ -41,6 +52,7 @@ def compile_linked(source, path, mode, *, render_only=False, read_source=None):
                     except (OSError, UnicodeError) as error:
                         raise CircuitError(f'Cannot open "{include[1]}": {error}', i + 1, path=path) from None
                     visit(target, child)
+                imports[path].append(target)
                 lines[i] = ""
             else:
                 code = line.partition("#")[0]
@@ -49,23 +61,62 @@ def compile_linked(source, path, mode, *, render_only=False, read_source=None):
         visiting.remove(path)
 
     visit(entry, source)
+    return files, imports
+
+
+def definition_file(source):
+    """Recognize include files whose top level contains only reusable definitions."""
+    depth = 0
+    for row, _, _ in source_rows(source):
+        if depth == 0 and not OVERRIDE.fullmatch(row):
+            header = SECTION.fullmatch(row)
+            if not header or header[1].lower() not in NET_METHODS:
+                return False
+        depth += row.count("{") - row.count("}")
+    return True
+
+
+def imported_definitions(path, files, imports):
+    definitions = {}
+
+    def collect(parent):
+        for child in imports[parent]:
+            if child not in definitions and definition_file(files[child]):
+                definitions[child] = files[child]
+                collect(child)
+
+    collect(path)
+    return definitions
+
+
+def compile_linked(source, path, mode, *, render_only=False, read_source=None):
+    """Build electrical files and make imported definitions available to their callers."""
+    files, imports = read_includes(source, path, read_source)
+    entry = next(iter(files))
     if len(files) == 1:
-        return compile_circuit(source, mode, render_only=render_only)
-    mode = analysis_mode("\n".join(files.values())) if mode.lower() == "auto" else mode.lower()
+        return compile_document(source, mode, render_only=render_only)
+    executable = {
+        path: text for path, text in files.items() if path == entry or not definition_file(text)
+    }
+    mode = analysis_mode("\n".join(executable.values())) if mode.lower() == "auto" else mode.lower()
     if mode == "transient":
         raise CircuitError("Linked files use a steady-state analysis mode.")
 
     circuits = []
-    for path, text in files.items():
+    for path, text in executable.items():
+        definitions = imported_definitions(path, files, imports)
         try:
             if has_chip(text):
                 raise CircuitError("File connectors link electrical circuits. Export digital chips to Verilog.")
-            circuit = compile_circuit(text, mode)
-            if circuit.reduce_groups:
-                circuit = compile_circuit(text, mode, render_only=True)
+            circuit = compile_document(text, mode, path=path, definitions=definitions)
+            if circuit.reduce_groups and (render_only or len(executable) > 1):
+                circuit = compile_document(text, mode, render_only=True, path=path, definitions=definitions)
         except CircuitError as error:
-            raise CircuitError(error.message, error.line, error.code, path=path) from None
+            raise CircuitError(error.message, error.line, error.code, path=error.path or path) from None
         circuits.append((path, circuit))
+
+    if len(circuits) == 1:
+        return circuits[0][1]
 
     root = circuits[0][1]
     shared = {pin for _, circuit in circuits for pin in circuit.connector_pins}
@@ -109,7 +160,7 @@ def compile_linked(source, path, mode, *, render_only=False, read_source=None):
                 p=net(part.p), n=net(part.n), base=net(part.base),
                 in_plus=net(part.in_plus), in_minus=net(part.in_minus),
             ))
-            result.component_files[name] = path
+            result.component_files[name] = circuit.component_files.get(part.name, path)
             if part.name in circuit.component_lines:
                 result.component_lines[name] = circuit.component_lines[part.name]
             if part.name in circuit.owners:
@@ -118,7 +169,7 @@ def compile_linked(source, path, mode, *, render_only=False, read_source=None):
             instance, parent=None if instance.parent is None else base + instance.parent,
             pins=tuple((pin, net(circuit.resolve_wire(value))) for pin, value in instance.pins),
             arguments=tuple((raw, net(circuit.resolve_wire(value))) for raw, value in instance.arguments),
-            path=path,
+            path=instance.path or path,
         ) for instance in circuit.instances)
         result.grounds.update(map(net, circuit.grounds))
         result.named_wires.update(map(net, circuit.named_wires))
@@ -146,6 +197,6 @@ def compile_linked(source, path, mode, *, render_only=False, read_source=None):
         compiler = Compiler(result.mode)
         compiler.circuit = result
         compiler.connect_amp_returns()
-    if render_only and not result.components:
+    if render_only and not (result.components or result.instances):
         raise CircuitError("Add components to the entry file or an included circuit.")
     return result

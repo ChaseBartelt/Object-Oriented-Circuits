@@ -14,7 +14,7 @@ def wire_trace(circuit, location, path=None):
         local = part.name.split(".", 1)[-1] if part.name.startswith("@file") else part.name
         if (
             circuit.component_lines.get(part.name) == line
-            and (not circuit.component_files or circuit.component_files.get(part.name) == path)
+            and circuit.component_files.get(part.name, path) == path
             and (local.casefold() == key or local.casefold().startswith(key + "_"))
         ):
             matches.append(part)

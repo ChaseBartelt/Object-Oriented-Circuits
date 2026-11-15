@@ -5,13 +5,14 @@ import re
 from collections import Counter, defaultdict, deque
 from dataclasses import dataclass, replace
 
-from PySide6.QtCore import QPoint, QPointF, QRectF, Qt, QTimer, Signal
+from PySide6.QtCore import QPoint, QPointF, QRect, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QBrush, QColor, QFont, QKeySequence, QPainter, QPainterPath, QPen, QShortcut
 from PySide6.QtWidgets import (
     QGraphicsScene,
     QGraphicsSimpleTextItem,
     QGraphicsView,
     QMenu,
+    QRubberBand,
 )
 
 from .hood import METHOD_PREFIX, hood_levels
@@ -19,8 +20,9 @@ from .layout import BJT_PIN_OFFSET, package_pins, rotate_point
 from .placement import pack_layout, restore_layout
 from .report import component_labels
 from .routing import (
-    fast_layout, ground_attachment, ground_wire_alignments, move_connector, move_ground,
-    move_symbol, move_wire, schematic_layout, split_wire, symbol_wire_alignments,
+    fast_layout, ground_attachment, ground_wire_alignments, move_boundary, move_connector, move_ground,
+    move_symbol, move_symbols, move_wire, schematic_layout, split_wire, symbol_terminal_offsets,
+    symbol_wire_alignments,
 )
 from .wiring import labeled
 
@@ -55,6 +57,12 @@ class SchematicDrag:
     align_axis: int | None = None
     alignments: dict | None = None
     snapped_offset: float | None = None
+    terminal_offsets: set | None = None
+    snapped_terminal: tuple | None = None
+    control: bool = False
+    selection: frozenset[str] = frozenset()
+    caption: QGraphicsSimpleTextItem | None = None
+    caption_start: QPointF | None = None
 
 
 class SchematicView(QGraphicsView):
@@ -66,9 +74,12 @@ class SchematicView(QGraphicsView):
     pin_removed = Signal(str)
     move_refused = Signal()
     placement_changed = Signal()
+    gate_layout_requested = Signal(str, int)
 
-    def __init__(self):
+    def __init__(self, gate_layouts=None):
         super().__init__()
+        self.gate_layouts = gate_layouts
+        self.root_boundary = ()
         self.setScene(QGraphicsScene(self))
         self.setBackgroundBrush(QColor("#ffffff"))
         self.setRenderHint(QPainter.RenderHint.Antialiasing)
@@ -83,6 +94,7 @@ class SchematicView(QGraphicsView):
         self.anchors = {}
         self.pin_items = []
         self.captions = []
+        self.label_offsets = {}
         self.place_pin = False
         self.circuit = None
         self.layout = None
@@ -93,6 +105,12 @@ class SchematicView(QGraphicsView):
         self.label_font.setPixelSize(12)
         self.saved_pins = {}
         self.expanded = set()
+        self.selection_key = None
+        self.selected_symbols = set()
+        self.selection_items = []
+        self.selection_start = None
+        self.selection_box = QRubberBand(QRubberBand.Shape.Rectangle, self.viewport())
+        self.selection_box.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         self.packages = {}
         self.level_layouts = {}
         self.levels = {}
@@ -124,6 +142,10 @@ class SchematicView(QGraphicsView):
         self.circuit = None
         self.layout = None
         self.expanded.clear()
+        self.selection_key = None
+        self.selected_symbols.clear()
+        self.selection_start = None
+        self.selection_box.hide()
         self.level_layouts.clear()
         self.manual_layouts.clear()
         self.rotation_bases.clear()
@@ -132,7 +154,11 @@ class SchematicView(QGraphicsView):
         self.drag_timer.stop()
 
     def _clear_scene(self):
+        if self.drag is not None and self.drag.caption is not None:
+            self.drag_timer.stop()
+            self.drag = None
         self.scene().clear()
+        self.selection_items.clear()
         self.paths.clear()
         self.net_items.clear()
         self.anchors.clear()
@@ -143,12 +169,22 @@ class SchematicView(QGraphicsView):
         self.level_offsets.clear()
         self.highlight = None
 
-    def draw(self, circuit, pins=None):
+    def draw(self, circuit, pins=None, *, boundary=(), layout=None):
         """Open a circuit at its top schematic level."""
         if circuit is not self.circuit:
             self.clear(preserve_placement=True)
         self.circuit = circuit
         self.saved_pins = pins or {}
+        self.root_boundary = boundary
+        if layout is not None:
+            self.level_layouts[None, self.layout_mode] = layout
+        self._redraw()
+
+    def refresh_gate_layouts(self):
+        self.level_layouts = {
+            key: layout for key, layout in self.level_layouts.items()
+            if not (key[0] and key[0].startswith(METHOD_PREFIX))
+        }
         self._redraw()
 
     def _redraw(self, focus=None, *, preview=None, selected=None):
@@ -160,6 +196,8 @@ class SchematicView(QGraphicsView):
         self.offset = QPointF()
         for name, view, body, boundary in hood_levels(circuit, self.expanded):
             self.level = name
+            if name is None:
+                boundary = self.root_boundary
             package_layout = any(part.kind == "H" for part in view.components)
             key = name, self.layout_mode
             if key in self.placement_records:
@@ -167,13 +205,20 @@ class SchematicView(QGraphicsView):
                 if saved is not None:
                     self.manual_layouts[key] = saved
             if key not in self.level_layouts:
-                labels = component_labels(view)
-                if self.layout_mode == "labeled":
-                    layout = labeled(view, labels)
-                elif name is not None or package_layout:
-                    layout = fast_layout(view, labels, boundary=boundary)
-                else:
-                    layout = schematic_layout(view, labels, self.layout_mode)
+                layout = None
+                if self.gate_layouts is not None and name:
+                    instance = circuit.instances[int(name.removeprefix(METHOD_PREFIX))]
+                    layout = self.gate_layouts.for_instance(
+                        instance, view, boundary, use_default=self.layout_mode != "labeled",
+                    )
+                if layout is None:
+                    labels = component_labels(view)
+                    if self.layout_mode == "labeled":
+                        layout = labeled(view, labels)
+                    elif name is not None or package_layout or boundary:
+                        layout = fast_layout(view, labels, boundary=boundary)
+                    else:
+                        layout = schematic_layout(view, labels, self.layout_mode)
                 self.level_layouts[key] = layout
             layout = self.manual_layouts.get(key, self.level_layouts[key])
             if preview is not None and key == preview.key:
@@ -182,10 +227,15 @@ class SchematicView(QGraphicsView):
             if name is None:
                 self.layout = layout
                 self._paint_level(view, layout)
+                for net, pos in layout.boundary.items():
+                    if net not in view.grounds:
+                        self.paint_boundary(net, pos, net)
             else:
                 self._paint_details(name, view, layout, body)
         self.offset = QPointF()
         self.level = None
+        self.label_offsets = self.layout.label_offsets
+        self.paint_selection(preview)
         self.update_pins(self.saved_pins, fit=False)
         scene = self.scene()
         if preview is not None:
@@ -209,6 +259,7 @@ class SchematicView(QGraphicsView):
 
     def _paint_level(self, circuit, layout):
         scene = self.scene()
+        self.label_offsets = layout.label_offsets
         self.level_offsets[self.level, self.layout_mode] = QPointF(self.offset)
         labels = component_labels(circuit)
         for name in layout.wires:
@@ -281,8 +332,7 @@ class SchematicView(QGraphicsView):
             self.ground(pos, net, layout.ground_rotations.get(pos, 0))
             self.anchors.setdefault(net, self.scene_position(pos))
         for name, pos, probe, alignment in component_captions:
-            item = self.place_caption(name, pos, INK, probe, alignment)
-            self.drag_handle(item, *probe)
+            self.place_caption(name, pos, INK, probe, alignment, move_key=("component", probe[1]))
         for name, pos in layout.labels.items():
             if (
                 pos not in layout.grounds
@@ -292,7 +342,8 @@ class SchematicView(QGraphicsView):
             ):
                 if "." not in name:
                     self.place_caption(
-                        name.replace("_", " "), (pos[0], pos[1] + 0.17), NET, ("node", name)
+                        name.replace("_", " "), (pos[0], pos[1] + 0.17), NET, ("node", name),
+                        move_key=("net", name),
                     )
                 self.anchors.setdefault(name, self.scene_position(pos))
         for index, (net, pos, name, left, below) in enumerate(layout.connectors):
@@ -313,6 +364,7 @@ class SchematicView(QGraphicsView):
                 NET,
                 ("node", net),
                 ("right" if left else "left") + (" below" if below else ""),
+                move_key=("connector", *pos),
             )
             for handle in (item, caption):
                 self.drag_handle(handle, "connector", net)
@@ -342,6 +394,7 @@ class SchematicView(QGraphicsView):
                 NET,
                 ("node", net),
                 alignment,
+                move_key=("tap", *names),
             )
             p = self.mapped(pos)
             marker = scene.addEllipse(
@@ -383,6 +436,74 @@ class SchematicView(QGraphicsView):
         item.setData(2, (self.level, self.layout_mode))
         item.setCursor(Qt.CursorShape.OpenHandCursor)
 
+    def paint_boundary(self, net, pos, name):
+        p = self.mapped(pos)
+        marker = self.scene().addEllipse(
+            p.x() - 3, p.y() - 3, 6, 6, self.pen(NET, 1.2), QBrush(Qt.GlobalColor.white)
+        )
+        marker.setZValue(3)
+        self.net_items[net].append(marker)
+        caption = self.place_caption(
+            name, (pos[0] - 0.22, pos[1]), NET, ("node", net), "right",
+            move_key=("boundary", net),
+        )
+        for handle in (marker, caption):
+            self.drag_handle(handle, "boundary", net)
+        marker.setToolTip(f"Drag pin {name}")
+        self.anchors.setdefault(net, self.scene_position(pos))
+
+    def paint_selection(self, preview=None):
+        for item in self.selection_items:
+            self.scene().removeItem(item)
+        self.selection_items.clear()
+        key = self.selection_key
+        if preview is not None and preview.selection:
+            key, names = preview.key, preview.selection
+        else:
+            names = self.selected_symbols
+        if key not in self.level_offsets or not names:
+            return
+        layout = self.manual_layouts.get(key, self.level_layouts[key])
+        if preview is not None and preview.key == key:
+            layout = preview.preview or layout
+        offset = self.level_offsets[key]
+        pen = self.pen(ACCENT, 1.5)
+        for part, a, b, _ in layout.symbols:
+            if part.name not in names:
+                continue
+            turns = layout.rotations.get(part.name, 0)
+            height = max(0.8, (len(part.package_pins) + 1) // 2 / 2 + 0.4) if part.kind == "H" else 0.8
+            corners = ((min(a[0], b[0]), min(a[1], b[1]) - height),
+                       (max(a[0], b[0]), max(a[1], b[1]) + height))
+            first, second = (point(rotate_point(c, a, b, turns)) + offset for c in corners)
+            rect = QRectF(first, second).normalized().adjusted(-4, -3, 4, 3)
+            self.selection_items.append(self.scene().addRect(rect, pen))
+
+    def clear_selection(self):
+        if self.selected_symbols:
+            self.selected_symbols.clear()
+            self.selection_key = None
+            self.paint_selection()
+
+    def select_box(self, bounds):
+        candidates = defaultdict(set)
+        for key, offset in self.level_offsets.items():
+            drawing = self.manual_layouts.get(key, self.level_layouts[key])
+            for part, a, b, _ in drawing.symbols:
+                center = point(tuple((first + second) / 2 for first, second in zip(a, b)))
+                if bounds.contains(self.mapFromScene(center + offset)):
+                    candidates[key].add(part.name)
+        if not candidates:
+            self.clear_selection()
+            return
+        key = self.selection_key
+        if key not in candidates:
+            key = max(candidates, key=lambda level: len(candidates[level]))
+            self.selected_symbols.clear()
+        self.selection_key = key
+        self.selected_symbols.update(candidates[key])
+        self.paint_selection()
+
     def package(self, part, a, b, *, number_pins, transistor_open=False):
         x, y = a
         height = max(0.8, (len(part.package_pins) + 1) // 2 / 2 + 0.2)
@@ -398,7 +519,8 @@ class SchematicView(QGraphicsView):
         rect.setToolTip(tooltip)
         self.packages[part.name] = (part, rect.rect())
         title = self.label(
-            part.label, ((left + right) / 2, y + height + 0.1), INK, ("hood", part.name)
+            part.label, ((left + right) / 2, y + height + 0.1), INK, ("hood", part.name),
+            move_key=("component", part.name),
         )
         title.setToolTip(tooltip)
         self.drag_handle(title, "hood", part.name)
@@ -422,6 +544,7 @@ class SchematicView(QGraphicsView):
                 label.moveBy(0, label.boundingRect().height() / 2)
             if self.symbol_turn is not None:
                 self.rotate_caption(label, self.symbol_turn[2])
+            self.movable_caption(label, ("terminal", part.name, index))
         if self.symbol_turn is not None:
             self.rotate_caption(title, self.symbol_turn[2])
 
@@ -461,7 +584,7 @@ class SchematicView(QGraphicsView):
         for net, pos in layout.boundary.items():
             if net not in circuit.grounds:
                 caption = " / ".join(pin_names[net]) or net
-                self.place_caption(caption, pos, NET, ("node", net), "right")
+                self.paint_boundary(net, pos, caption)
         area = QRectF(
             left, top, max(header.boundingRect().width() + 24, local.width() + margins * 2),
             local.height() + margins * 2.5,
@@ -482,6 +605,10 @@ class SchematicView(QGraphicsView):
         self.offset = QPointF()
 
     def toggle_package(self, name):
+        if name.startswith(METHOD_PREFIX) and not self.circuit.instances[
+            int(name.removeprefix(METHOD_PREFIX))
+        ].model_available:
+            return
         focus = self.mapToScene(self.viewport().rect().center())
         if name in self.expanded:
             self.expanded.remove(name)
@@ -535,7 +662,8 @@ class SchematicView(QGraphicsView):
                 continue
             x, y = self.anchors[net]
             item = self.place_caption(
-                name, (x, y + 1.02), PROBE, ("pin", net), "left"
+                name, (x, y + 1.02), PROBE, ("pin", net), "left",
+                move_key=("probe", net),
             )
             item.setToolTip(f"{name} · {net}")
             self.pin_items.append(item)
@@ -623,7 +751,7 @@ class SchematicView(QGraphicsView):
             path.lineTo(self.mapped(p))
         return self.scene().addPath(path, self.pen(INK))
 
-    def label(self, text, p, color, probe=None, alignment="center"):
+    def label(self, text, p, color, probe=None, alignment="center", *, move_key=None):
         item = self.scene().addSimpleText(
             "\n".join(text) if isinstance(text, list) else text, self.label_font
         )
@@ -649,11 +777,23 @@ class SchematicView(QGraphicsView):
                 self.net_items[probe[1]].append(item)
         if not probe or probe[0] != "pin":
             self.captions.append(item)
+        if move_key is not None:
+            self.movable_caption(item, move_key)
         return item
 
-    def place_caption(self, text, p, color, probe, alignment="center"):
+    def movable_caption(self, item, key):
+        item.setData(2, (self.level, self.layout_mode))
+        item.setData(4, key)
+        item.setData(5, item.pos())
+        item.setCursor(Qt.CursorShape.OpenHandCursor)
+        if key in self.label_offsets:
+            item.setPos(item.pos() + point(self.label_offsets[key]))
+
+    def place_caption(self, text, p, color, probe, alignment="center", *, move_key=None):
         """Choose a nearby position clear of component labels and other captions."""
-        item = self.label(text, p, color, probe, alignment)
+        item = self.label(text, p, color, probe, alignment, move_key=move_key)
+        if move_key in self.label_offsets:
+            return item
         base = item.pos()
         obstacles = [
             other.sceneBoundingRect().adjusted(-2, -1, 2, 1)
@@ -692,6 +832,7 @@ class SchematicView(QGraphicsView):
         caption = self.place_caption(
             name, turned((x, y - 0.65)), NET, ("node", name),
             ("bottom", "right", "center", "left")[turns],
+            move_key=("ground", *p),
         )
         bounds = QRectF(
             self.mapped(turned((x - 0.42, y))), self.mapped(turned((x + 0.42, y - 0.65)))
@@ -723,6 +864,18 @@ class SchematicView(QGraphicsView):
             return (x + 2.15, y + 0.77), "center"
         if part.kind == "Q":
             return self.transistor_symbol(part, a, b)
+        if part.kind == "S":
+            x, y = a
+            right = b[0]
+            self.lines([(x + 0.8, y + 0.95), (right - 0.8, y + 0.95),
+                        (right - 0.8, y - 0.95), (x + 0.8, y - 0.95),
+                        (x + 0.8, y + 0.95)])
+            for offset, sign in ((0.6, "+"), (-0.6, "-")):
+                self.lines([(x, y + offset), (x + 0.8, y + offset)])
+                self.lines([(right - 0.8, y + offset), (right, y + offset)])
+                self.label(sign, (x + 1.1, y + offset), INK)
+            self.lines([(right - 1.3, y - 0.55), (right - 1.9, y + 0.47)])
+            return ((x + right) / 2, y + 1.0), "center"
         x, y = (a[0] + b[0]) / 2, (a[1] + b[1]) / 2
         length = math.dist(a, b)
         dx, dy = (b[0] - a[0]) / length, (b[1] - a[1]) / length
@@ -822,7 +975,7 @@ class SchematicView(QGraphicsView):
     def target(self, pos, nets_only=False):
         for item in self.items(pos):
             kind, name = item.data(0), item.data(1)
-            if kind in {"ground", "connector"}:
+            if kind in {"ground", "connector", "boundary"}:
                 return "node", name
             if kind in {"wire", "node", "pin"} or (
                 kind in {"component", "hood"} and not nets_only
@@ -836,7 +989,7 @@ class SchematicView(QGraphicsView):
             names = {
                 item.data(1)
                 for item in nearby
-                if item.data(0) in {"wire", "node", "pin", "ground", "connector"}
+                if item.data(0) in {"wire", "node", "pin", "ground", "connector", "boundary"}
             }
             if len(names) == 1:
                 return "node", names.pop()
@@ -846,24 +999,47 @@ class SchematicView(QGraphicsView):
         if event.button() == Qt.MouseButton.LeftButton:
             self.setFocus(Qt.FocusReason.MouseFocusReason)
             pos = event.position().toPoint()
+            control = bool(event.modifiers() & Qt.KeyboardModifier.ControlModifier)
             if not self.place_pin:
                 stop_at_terminal = False
                 for item in self.items(pos):
                     key = item.data(2)
+                    if item.data(4) is not None and not control:
+                        self.clear_selection()
+                        self.start_drag(item.data(0), item.data(1), tuple(key), pos, caption=item)
+                        event.accept()
+                        return
                     if item.data(0) in {"node", "pin"}:
                         stop_at_terminal = True
                         break
                     if key is not None:
+                        kind, name, key = item.data(0), item.data(1), tuple(key)
+                        selectable = kind in {"component", "hood"}
+                        if control and not selectable:
+                            continue
+                        if not (selectable and (control or (
+                            key == self.selection_key and name in self.selected_symbols
+                        ))):
+                            self.clear_selection()
                         self.start_drag(
-                            item.data(0), item.data(1), tuple(key), pos, terminal=item.data(3)
+                            kind, name, key, pos, terminal=item.data(3),
+                            control=control and selectable,
                         )
                         event.accept()
                         return
+                if control:
+                    self.selection_start = pos
+                    self.selection_box.setGeometry(QRect(pos, pos))
+                    self.selection_box.show()
+                    event.accept()
+                    return
                 if not stop_at_terminal and (wire := self.nearest_wire(pos)):
+                    self.clear_selection()
                     key, net, edge = wire
                     self.start_drag("wire", net, key, pos, edge)
                     event.accept()
                     return
+            self.clear_selection()
             target = self.target(pos, self.place_pin)
             if target:
                 kind, name = target
@@ -882,10 +1058,14 @@ class SchematicView(QGraphicsView):
                 return
         super().mousePressEvent(event)
 
-    def start_drag(self, kind, name, key, pos, edge=None, *, terminal=None):
+    def start_drag(self, kind, name, key, pos, edge=None, *, terminal=None, control=False, caption=None):
         layout = self.manual_layouts.get(key, self.level_layouts[key])
+        selection = self.selected_symbols if key == self.selection_key else set()
+        members = selection | {name} if control or name in selection else ()
         self.drag = SchematicDrag(
-            kind, name, key, pos, layout, self.levels[key], edge=edge, terminal=terminal
+            kind, name, key, pos, layout, self.levels[key], edge=edge, terminal=terminal,
+            control=control, selection=frozenset(members),
+            caption=caption, caption_start=caption.pos() if caption is not None else None,
         )
 
     def nearest_wire(self, pos, *, straight_only=True):
@@ -927,6 +1107,16 @@ class SchematicView(QGraphicsView):
             return
         drag.last_position = pos
         delta = self.mapToScene(pos) - self.mapToScene(drag.start)
+        if drag.caption is not None:
+            drag.caption.setPos(drag.caption_start + delta)
+            drag.preview = drag.original
+            if not delta.isNull():
+                offset = drag.caption.pos() - drag.caption.data(5)
+                label_key = tuple(drag.caption.data(4))
+                drag.preview = replace(drag.original, label_offsets={
+                    **drag.original.label_offsets, label_key: (offset.x() / SCALE, -offset.y() / SCALE),
+                })
+            return
         dx, dy = round(delta.x() / SCALE, 2), round(-delta.y() / SCALE, 2)
         pixels_per_unit = self.transform().m11() * SCALE
         if drag.kind == "wire":
@@ -941,8 +1131,16 @@ class SchematicView(QGraphicsView):
                 drag.circuit, drag.original, drag.name, drag.edge, distance,
                 snap=SNAP_PIXELS / pixels_per_unit,
             )
+        elif len(drag.selection) > 1:
+            drag.preview = move_symbols(
+                drag.circuit, drag.original, drag.selection, (dx, dy), diagonal=drag.diagonal,
+            )
         elif drag.kind == "connector":
             self.preview_connector_drag(drag, (dx, dy), pixels_per_unit)
+        elif drag.kind == "boundary":
+            drag.preview = move_boundary(
+                drag.circuit, drag.original, drag.name, (dx, dy), diagonal=drag.diagonal
+            )
         else:
             self.preview_symbol_drag(drag, (dx, dy), pixels_per_unit)
         self._redraw(preview=drag, selected=drag.name if drag.kind == "wire" else self.highlight)
@@ -975,6 +1173,9 @@ class SchematicView(QGraphicsView):
         ground = tuple(drag.terminal) if drag.kind == "ground" else None
         move = move_ground if ground is not None else move_symbol
         target = ground if ground is not None else drag.name
+        if ground is None and not drag.diagonal and self.snap_symbol_terminal(drag, delta, pixels_per_unit):
+            return
+        drag.snapped_terminal = None
         if drag.alignments is None and not drag.diagonal:
             alignments = ground_wire_alignments if ground is not None else symbol_wire_alignments
             drag.align_axis, drag.alignments = alignments(drag.original, target)
@@ -1014,11 +1215,37 @@ class SchematicView(QGraphicsView):
             drag.circuit, drag.original, target, delta, diagonal=drag.diagonal
         )
 
+    def snap_symbol_terminal(self, drag, delta, pixels_per_unit):
+        if drag.terminal_offsets is None:
+            drag.terminal_offsets = symbol_terminal_offsets(drag.original, drag.name)
+        if (
+            drag.snapped_terminal is not None
+            and math.dist(delta, drag.snapped_terminal) * pixels_per_unit <= SNAP_RELEASE_PIXELS
+        ):
+            return True
+        candidates = sorted(
+            (distance, offset) for offset in drag.terminal_offsets
+            if (distance := math.dist(delta, offset)) * pixels_per_unit <= SNAP_PIXELS
+        )
+        for _, offset in candidates:
+            drawing = move_symbol(drag.circuit, drag.original, drag.name, offset)
+            if drawing is not None:
+                drag.preview = drawing
+                drag.snapped_terminal = offset
+                drag.snapped_offset = None
+                return True
+        return False
+
     def paint_pending_drag(self):
         if self.drag is not None and self.drag.pending is not None:
             self.preview_drag(self.drag.pending)
 
     def mouseMoveEvent(self, event):
+        if self.selection_start is not None:
+            bounds = QRect(self.selection_start, event.position().toPoint()).normalized()
+            self.selection_box.setGeometry(bounds)
+            event.accept()
+            return
         if self.drag is None:
             super().mouseMoveEvent(event)
             return
@@ -1034,6 +1261,14 @@ class SchematicView(QGraphicsView):
         event.accept()
 
     def mouseReleaseEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton and self.selection_start is not None:
+            bounds = QRect(self.selection_start, event.position().toPoint()).normalized()
+            self.selection_start = None
+            self.selection_box.hide()
+            if bounds.width() >= 4 and bounds.height() >= 4:
+                self.select_box(bounds)
+            event.accept()
+            return
         if event.button() != Qt.MouseButton.LeftButton or self.drag is None:
             super().mouseReleaseEvent(event)
             return
@@ -1046,16 +1281,25 @@ class SchematicView(QGraphicsView):
             drag.last_position = None
         if (end - drag.start).manhattanLength() < 4 and drag.pending is None:
             self.drag = None
-            if drag.kind == "hood":
+            if drag.control:
+                if self.selection_key != drag.key:
+                    self.selected_symbols.clear()
+                self.selection_key = drag.key
+                self.selected_symbols.symmetric_difference_update({drag.name})
+                self.paint_selection()
+            elif drag.kind == "hood":
                 self.toggle_package(drag.name)
             elif drag.kind == "wire":
                 self.probe_wire(drag.name)
-            elif drag.kind in {"ground", "connector"}:
+            elif drag.kind in {"ground", "connector", "boundary", "node", "pin"}:
                 self.highlight_net(drag.name)
-                self.probed.emit("node", drag.name)
+                self.probed.emit("pin" if drag.kind == "pin" else "node", drag.name)
             else:
                 self.probed.emit(drag.kind, drag.name)
         else:
+            if drag.control:
+                self.selection_key = drag.key
+                self.selected_symbols = set(drag.selection)
             self.preview_drag(end)
             self.drag = None
             if drag.preview is None:
@@ -1079,16 +1323,29 @@ class SchematicView(QGraphicsView):
                     ground, net = tuple(item.data(3)), item.data(1)
                     menu = QMenu(self)
                     menu.addAction("Rotate clockwise", lambda: self.rotate_ground(tuple(key), ground))
+                    menu.addAction(
+                        "Rotate counterclockwise", lambda: self.rotate_ground(tuple(key), ground, direction=-1)
+                    )
                     menu.addAction("Add pin…", lambda: self.pin_requested.emit(net))
                     menu.exec(event.globalPos())
                     return
-                if kind in {"node", "pin", "connector"}:
+                if kind in {"node", "pin", "connector", "boundary"}:
                     break
                 if key is not None and kind in {"component", "hood"}:
                     name = item.data(1)
                     menu = QMenu(self)
+                    if kind == "hood" and name.startswith(METHOD_PREFIX):
+                        instance = self.circuit.instances[int(name.removeprefix(METHOD_PREFIX))]
+                        if instance.builtin_gate:
+                            menu.addAction(
+                                "Edit shared gate layout…",
+                                lambda: self.gate_layout_requested.emit(instance.name, len(instance.pins) - 3),
+                            )
                     menu.addAction(
                         "Rotate clockwise", lambda: self.rotate_component(tuple(key), name)
+                    )
+                    menu.addAction(
+                        "Rotate counterclockwise", lambda: self.rotate_component(tuple(key), name, direction=-1)
                     )
                     menu.exec(event.globalPos())
                     return
@@ -1121,10 +1378,10 @@ class SchematicView(QGraphicsView):
         self.placement_changed.emit()
         self._redraw(self.mapToScene(self.viewport().rect().center()), selected=net)
 
-    def rotate_ground(self, key, point):
+    def rotate_ground(self, key, point, *, direction=1):
         original = self.manual_layouts.get(key, self.level_layouts[key])
         rotations = dict(original.ground_rotations)
-        turns = (rotations.pop(point, 0) + 1) % 4
+        turns = (rotations.pop(point, 0) + direction) % 4
         if turns:
             rotations[point] = turns
         self.remember_placement(key)
@@ -1133,12 +1390,12 @@ class SchematicView(QGraphicsView):
         self.placement_changed.emit()
         self._redraw(self.mapToScene(self.viewport().rect().center()), selected=self.highlight)
 
-    def rotate_component(self, key, name):
+    def rotate_component(self, key, name, *, direction=1):
         original = self.manual_layouts.get(key, self.level_layouts[key])
         part, base, turns = self.rotation_bases.get(key, (name, original, 0))
         if part != name:
             base, turns = original, 0
-        turns = (turns + 1) % 4
+        turns = (turns + direction) % 4
         drawing = (
             move_symbol(self.levels[key], base, name, (0, 0), rotate=turns)
             if turns else base

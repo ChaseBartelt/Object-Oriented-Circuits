@@ -1,0 +1,12 @@
+# SN74HC04 | 14-pin package | pin 1 first.
+# 5 V logic-family approximation using OOC transistor gates.
+# Datasheet: https://www.ti.com/lit/ds/symlink/sn74hc04.pdf
+
+chip SN74HC04(a1, y1, a2, y2, a3, y3, gnd, y4, a4, y5, a5, y6, a6, vcc) {
+    not(vcc, gnd, a1, y1);
+    not(vcc, gnd, a2, y2);
+    not(vcc, gnd, a3, y3);
+    not(vcc, gnd, a4, y4);
+    not(vcc, gnd, a5, y5);
+    not(vcc, gnd, a6, y6);
+}

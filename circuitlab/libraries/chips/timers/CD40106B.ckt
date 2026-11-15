@@ -1,0 +1,14 @@
+# CD40106B | 14-pin package | pin 1 first.
+# Discrete Schmitt inverters. Thresholds and timing are approximate.
+# Datasheet: https://www.ti.com/lit/ds/symlink/cd40106b.pdf
+
+include("../shared/schmitt.ckt");
+
+chip CD40106B(a1, y1, a2, y2, a3, y3, gnd, y4, a4, y5, a5, y6, a6, vcc) {
+    oocSchmittInvert(vcc, gnd, a1, y1);
+    oocSchmittInvert(vcc, gnd, a2, y2);
+    oocSchmittInvert(vcc, gnd, a3, y3);
+    oocSchmittInvert(vcc, gnd, a4, y4);
+    oocSchmittInvert(vcc, gnd, a5, y5);
+    oocSchmittInvert(vcc, gnd, a6, y6);
+}

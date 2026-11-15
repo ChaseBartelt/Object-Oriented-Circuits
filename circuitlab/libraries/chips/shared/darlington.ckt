@@ -1,0 +1,9 @@
+# Two BJTs form the driver. A diode-connected BJT approximates the clamp.
+circuit oocDarlington(input_pin, gnd, collector, common) {
+    RInput(2.7k) between(input_pin, base);
+    RBase(7.2k) between(base, mid);
+    RMid(3k) between(mid, gnd);
+    transQ1(base, collector, mid, npn);
+    transQ2(mid, collector, gnd, npn);
+    transQClamp(collector, collector, common, npn);
+}

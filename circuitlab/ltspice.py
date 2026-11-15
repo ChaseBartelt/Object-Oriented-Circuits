@@ -7,11 +7,12 @@ from itertools import combinations
 
 from .graph import CircuitError
 from .hood import METHOD_PREFIX, hood_levels
-from .layout import BJT_PIN_OFFSET, package_pins, wire_axis
+from .layout import BJT_PIN_OFFSET, package_pins, rotate_point, wire_axis
 from .layout_checks import segments_intersect
 from .report import component_labels
 from .routing import fast_layout
 from .spice import SpiceNames, opamp_subcircuit, spice_circuit
+from .wire_edit import route_anchors, wire_graph
 
 # Pin locations relative to the anchors in LTspice's built-in symbol library.
 SYMBOLS = {
@@ -118,11 +119,6 @@ def export_schematic(circuit, layout):
 
 def _export_drawing(layout, spice, *, blocks=None, ports=None, aliases=(), commands=True):
     options = dict(blocks=blocks or {}, ports=ports or {}, aliases=aliases, commands=commands)
-    # Snapping a diagonal and its junctions independently can disconnect them.
-    if layout.rotations or any(
-        wire_axis(edge) is None for edges in layout.wires.values() for edge in edges
-    ):
-        return _export_with_pin_labels(layout, spice, options)
     for scale in ((64, 96, 128) if blocks else (48, 64, 96, 128)):
         try:
             return _schematic(layout, spice, scale, **options), False
@@ -141,6 +137,21 @@ def _export_with_pin_labels(layout, spice, options):
             "The rendered symbols are too close for the LTspice grid. "
             "Select Labeled connectors and export again."
         ) from None
+
+
+def _display_value(symbol):
+    if symbol.kind in {"R", "L", "C"}:
+        value = float(symbol.value)
+        for multiplier, suffix in ((1e6, "Meg"), (1e3, "k"), (1e-3, "m"),
+                                   (1e-6, "u"), (1e-9, "n"), (1e-12, "p")):
+            scaled = value / multiplier
+            if 1 <= scaled < 1000:
+                # Use a compact spelling only if it recreates the same value.
+                text = repr(scaled).removesuffix(".0")
+                if float(text) * multiplier == value:
+                    return text + suffix
+                break
+    return symbol.value
 
 
 class GridConflict(Exception):
@@ -169,7 +180,12 @@ def _schematic(layout, spice, scale, *, pin_flags=False, blocks, ports, aliases,
 
     if not pin_flags:
         for net in layout.wires:
-            for a, b in layout.visible_segments(net):
+            segments = list(layout.visible_segments(net))
+            if any(wire_axis(edge) is None for edge in segments):
+                # Insert tees before snapping so both wires round to the same junction.
+                graph = wire_graph(segments, route_anchors(layout, net))
+                segments = sorted((a, b) for a, neighbors in graph.items() for b in neighbors if a < b)
+            for a, b in segments:
                 wire(net, point(a), point(b))
         for net, p, _, _, _ in layout.connectors:
             flags[net].add(point(p))
@@ -177,10 +193,26 @@ def _schematic(layout, spice, scale, *, pin_flags=False, blocks, ports, aliases,
             flags[layout.ground_names.get(p, "0")].add(point(p))
 
     for part, start, end, top in layout.symbols:
-        symbol_terminals = []
+        terminals = []
+        turns = layout.rotations.get(part.name, 0)
+        x_center, y_center = point(tuple((a + b) / 2 for a, b in zip(start, end)))
 
-        def pin(net, at):
-            symbol_terminals.append((net, at))
+        def turn(at):
+            if not turns:
+                return at
+            dx, dy = at[0] - x_center, at[1] - y_center
+            dx, dy = ((dx, dy), (-dy, dx), (-dx, -dy), (dy, -dx))[turns]
+            return x_center + dx, y_center + dy
+
+        def pin(net, at, *, anchor=None, bends=()):
+            native = turn(at)
+            terminals.append((net, native))
+            if anchor is None:
+                flags[net].add(native)
+            else:
+                route = (point(rotate_point(anchor, start, end, turns)), *map(turn, bends), native)
+                for a, b in zip(route, route[1:]):
+                    wire(net, a, b)
 
         block = blocks.get(part.name)
         model = spice.parts.get(part.name)
@@ -192,12 +224,9 @@ def _schematic(layout, spice, scale, *, pin_flags=False, blocks, ports, aliases,
             origin = x, a[1]
             symbol, rotation = block.name, "R0"
             for (_, net, left, offset), (_, _, pin_x, pin_y) in zip(package_pins(part), block.pins):
-                at = point(((start if left else end)[0], start[1] + offset))
+                anchor = ((start if left else end)[0], start[1] + offset)
                 terminal = x + pin_x, a[1] + pin_y
-                bend = (terminal[0], at[1])
-                wire(net, at, bend)
-                wire(net, bend, terminal)
-                pin(net, terminal)
+                pin(net, terminal, anchor=anchor, bends=((terminal[0], point(anchor)[1]),))
         elif model is None:
             raise CircuitError(f"Cannot export the empty block {part.label}.")
         elif model.kind == "X":
@@ -210,34 +239,38 @@ def _schematic(layout, spice, scale, *, pin_flags=False, blocks, ports, aliases,
             for net, sign in ((part.in_plus, "+"), (part.in_minus, "-")):
                 upper = sign == top
                 offset = 0.35 if upper else -0.35
-                at = point((start[0], start[1] + offset))
+                anchor = start[0], start[1] + offset
                 lane = y - 16 if upper else y + 16
-                wire(net, at, (x + 16, at[1]))
-                wire(net, (x + 16, at[1]), (x + 16, lane))
-                wire(net, (x + 16, lane), (x + 32, lane))
-                pin(net, (x + 32, lane))
-            wire(part.p, (x + 96, y), b)
-            pin(part.p, (x + 96, y))
+                pin(net, (x + 32, lane), anchor=anchor, bends=((x + 16, point(anchor)[1]), (x + 16, lane)))
+            pin(part.p, (x + 96, y), anchor=end)
             for pin_y in (y - 32, y + 32):
                 supply = (x + 64, pin_y)
                 pin(part.n, supply)
-                if not pin_flags:
-                    flags[part.n].add(supply)
         elif model.kind == "Q":
             x, y = a
             if b[0] < x + 64:
                 raise GridConflict
             symbol, rotation = part.transistor_type, "R0"
             origin = (x, y - 48)
-            pin(part.base, a)
+            pin(part.base, a, anchor=start)
             # Both native BJT symbols place C and E 64 units right of B.
             for net, direction in ((part.p, 1), (part.n, -1)):
-                at = point((end[0], end[1] + direction * BJT_PIN_OFFSET))
+                anchor = end[0], end[1] + direction * BJT_PIN_OFFSET
                 terminal = (x + 64, y - direction * 48)
-                bend = (terminal[0], at[1])
-                wire(net, at, bend)
-                wire(net, bend, terminal)
-                pin(net, terminal)
+                pin(net, terminal, anchor=anchor, bends=((terminal[0], point(anchor)[1]),))
+        elif model.kind == "S":
+            x, y = a[0] + 64, a[1]
+            if b[0] < x + 16:
+                raise GridConflict
+            symbol, rotation = "sw", "R0"
+            origin = x, y - 56
+            for net, anchor, terminal in (
+                (part.in_plus, (start[0], start[1] + 0.6), (x - 48, y + 24)),
+                (part.in_minus, (start[0], start[1] - 0.6), (x - 48, y - 24)),
+                (part.p, (end[0], end[1] + 0.6), (x, y - 40)),
+                (part.n, (end[0], end[1] - 0.6), (x, y + 40)),
+            ):
+                pin(net, terminal, anchor=anchor, bends=((terminal[0], point(anchor)[1]),))
         else:
             symbol, pin_x, p_y, n_y = SYMBOLS[model.kind]
             dx, dy = b[0] - a[0], b[1] - a[1]
@@ -246,33 +279,21 @@ def _schematic(layout, spice, scale, *, pin_flags=False, blocks, ports, aliases,
             rotation, transform = _orientation(dx, dy)
             first = transform(pin_x, p_y)
             last = transform(pin_x, n_y)
-            center = (snap((start[0] + end[0]) / 2), snap(-(start[1] + end[1]) / 2))
             length = n_y - p_y
             unit = ((dx > 0) - (dx < 0), (dy > 0) - (dy < 0))
-            along = (center[0] - a[0]) * unit[0] + (center[1] - a[1]) * unit[1]
+            along = (x_center - a[0]) * unit[0] + (y_center - a[1]) * unit[1]
             lead = min(max(0, along - 16 * round(length / 32)), abs(dx or dy) - length)
             p = (a[0] + lead * unit[0], a[1] + lead * unit[1])
             origin = p[0] - first[0], p[1] - first[1]
             n = origin[0] + last[0], origin[1] + last[1]
-            wire(part.p, a, p)
-            wire(part.n, b, n)
-            pin(part.p, p)
-            pin(part.n, n)
-        turns = layout.rotations.get(part.name, 0)
+            pin(part.p, p, anchor=start)
+            pin(part.n, n, anchor=end)
         if turns:
-            x, y = point(((start[0] + end[0]) / 2, (start[1] + end[1]) / 2))
-
-            def turn(at):
-                dx, dy = at[0] - x, at[1] - y
-                dx, dy = ((dx, dy), (-dy, dx), (-dx, -dy), (dy, -dx))[turns]
-                return x + dx, y + dy
-
-            symbol_terminals = [(net, turn(at)) for net, at in symbol_terminals]
             origin = turn(origin)
             angle = int(rotation[1:])
             angle = angle + (90 if rotation[0] == "R" else -90) * turns
             rotation = f"{rotation[0]}{angle % 360}"
-        for net, at in symbol_terminals:
+        for net, at in terminals:
             points[net].add(at)
             if pin_flags:
                 flags[net].add(at)
@@ -281,7 +302,7 @@ def _schematic(layout, spice, scale, *, pin_flags=False, blocks, ports, aliases,
             f"SYMATTR InstName {block.instance if block else model.name}",
         ]
         if not block:
-            lines.append(f"SYMATTR Value {model.value}")
+            lines.append(f"SYMATTR Value {_display_value(model)}")
             if model.kind == "L":
                 lines.append(f"SYMATTR SpiceLine {model.extra.strip()}")
             elif model.kind in "VI" and model.extra:

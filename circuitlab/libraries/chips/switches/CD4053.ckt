@@ -1,0 +1,22 @@
+# CD4053 | 16-pin package | pin 1 first.
+# 5 V control approximation. Uses bidirectional 470 ohm / 1 Gohm switches with a 2.5 V threshold. Analog rail clipping is omitted.
+# Datasheet: https://www.ti.com/lit/ds/symlink/cd4053b.pdf
+
+chip CD4053(by, bx, cy, c_common, cx, inhibit, vee, gnd, s2, s1, s0, ax, ay, a_common, b_common, vdd) {
+    not(vdd, gnd, inhibit, enabled);
+    not(vdd, gnd, s0, ns0);
+    and(vdd, gnd, enabled, ns0, x0);
+    and(vdd, gnd, enabled, s0, y0);
+    switch1(x0, gnd, ax, a_common, 2.5, 470, 1G);
+    switch2(y0, gnd, ay, a_common, 2.5, 470, 1G);
+    not(vdd, gnd, s1, ns1);
+    and(vdd, gnd, enabled, ns1, x1);
+    and(vdd, gnd, enabled, s1, y1);
+    switch3(x1, gnd, bx, b_common, 2.5, 470, 1G);
+    switch4(y1, gnd, by, b_common, 2.5, 470, 1G);
+    not(vdd, gnd, s2, ns2);
+    and(vdd, gnd, enabled, ns2, x2);
+    and(vdd, gnd, enabled, s2, y2);
+    switch5(x2, gnd, cx, c_common, 2.5, 470, 1G);
+    switch6(y2, gnd, cy, c_common, 2.5, 470, 1G);
+}

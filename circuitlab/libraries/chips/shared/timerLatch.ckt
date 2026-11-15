@@ -1,0 +1,5 @@
+circuit oocTimerLatch(vcc, gnd, set, clear, q, qbar) {
+    nor(vcc, gnd, clear, qbar, q);
+    nor(vcc, gnd, set, q, qbar);
+}
+

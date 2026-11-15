@@ -8,6 +8,7 @@ from .analysis import conflicts
 from .compiler import compile_circuit
 from .graph import Circuit, CircuitError, ground_references
 from .math_engine import solve_known
+from .nonlinear import SWITCH_TRANSITION
 from .syntax import AC_VOLTAGE, BJT_MODEL_NAME, BJT_TYPES, FREQUENCY
 
 OPAMP_MODEL = "EC_IdealOpAmp"
@@ -86,8 +87,11 @@ def spice_netlist(circuit: Circuit) -> str:
         elif model.kind == "Q":
             base = spice.nodes[part.base]
             lines.append(f"{model.name} {p} {base} {n} {model.value}")
+        elif model.kind == "S":
+            plus, minus = spice.nodes[part.in_plus], spice.nodes[part.in_minus]
+            lines.append(f"{model.name} {p} {n} {plus} {minus} {model.value}")
         else:
-            dc = "DC " if model.kind in "VI" else ""
+            dc = "DC " if model.kind in "VI" and part.pulse is None else ""
             lines.append(f"{model.name} {p} {n} {dc}{model.value}{model.extra}")
     lines.extend(f"{name} {node} 0 DC 0" for name, node in spice.references)
     if any(part.kind == "O" for part in circuit.components):
@@ -142,6 +146,7 @@ def _bjt_models(parts):
 
 def spice_circuit(circuit: Circuit) -> SpiceCircuit:
     """Normalize values and names before writing a netlist or schematic."""
+    circuit.require_models()
     if not circuit.components or circuit.mode == "transient":
         raise CircuitError("SPICE export requires a DC or AC circuit with components.")
     parts = circuit.components
@@ -152,7 +157,12 @@ def spice_circuit(circuit: Circuit) -> SpiceCircuit:
 
     models, definitions, lines = _bjt_models(parts)
     frequency = None
+    pulses = [part.pulse for part in parts if part.pulse is not None]
     directive = ".op"
+    if pulses:
+        stop = max(pulse.delay + 2 * pulse.period for pulse in pulses)
+        step = min(pulse.period for pulse in pulses) / 100
+        directive = f".tran 0 {_number(stop)} 0 {_number(step)} uic"
     if circuit.mode != "dc":
         values, notes, _ = solve_known("ac", circuit.known)
         if conflicts(notes):
@@ -161,7 +171,7 @@ def spice_circuit(circuit: Circuit) -> SpiceCircuit:
             )
         frequency = values.get("f")
         if frequency is None:
-            if circuit.mode == "mixed" or any(part.kind in "CLXQ" for part in parts):
+            if circuit.mode == "mixed" or any(part.kind in "CLXQS" for part in parts):
                 raise CircuitError(
                     "Enter a frequency (f, T, or w) for SPICE AC export."
                 )
@@ -189,7 +199,7 @@ def spice_circuit(circuit: Circuit) -> SpiceCircuit:
             lines.append(f"* Wire alias {ascii(tap.name)} = {nodes[tap.net]}")
 
     branches = [
-        (part.p, part.base, part.n) if part.kind == "Q" else (part.p, part.n)
+        part.terminal_nets if part.kind in {"Q", "S"} else (part.p, part.n)
         for part in parts
     ]
     references = ground_references(circuit.grounds, branches)
@@ -197,9 +207,11 @@ def spice_circuit(circuit: Circuit) -> SpiceCircuit:
         raise CircuitError("Connect the circuit to ground before exporting.")
     names = SpiceNames()
     elements = {}
+    switches = {}
+    model_names = SpiceNames(*models.values())
     for part in parts:
         p, n = nodes[part.p], nodes[part.n]
-        if p == n and part.kind != "Q":
+        if p == n and part.kind not in {"Q", "S"}:
             raise CircuitError(f"{part.name} needs two distinct nodes.")
         kind, value = part.kind, part.value
         if kind == "X":
@@ -220,7 +232,7 @@ def spice_circuit(circuit: Circuit) -> SpiceCircuit:
                 extra = " Rser=0"
         elif kind in {"V", "I"}:
             dc = part.value if circuit.mode == "dc" else part.dc
-            spec = _number(dc)
+            spec = part.pulse.spice() if part.pulse is not None else _number(dc)
             if frequency is not None:
                 phase = math.degrees(math.atan2(value.imag, value.real)) if value else 0
                 amplitude = math.hypot(value.real, value.imag)
@@ -230,6 +242,11 @@ def spice_circuit(circuit: Circuit) -> SpiceCircuit:
             spec = OPAMP_MODEL
         elif kind == "Q":
             spec = models[part.name]
+        elif kind == "S":
+            key = part.value, part.off_resistance, part.threshold
+            if key not in switches:
+                switches[key] = model_names.claim(f"EC_SW{len(switches) + 1}")
+            spec = switches[key]
         else:
             raise CircuitError(f"SPICE export does not support component type {kind}.")
         label = part.label or part.name
@@ -247,6 +264,11 @@ def spice_circuit(circuit: Circuit) -> SpiceCircuit:
     references = tuple(
         (names.claim("V_EC_ref", "V"), nodes[node])
         for node in sorted(set(references.values()) - {"0"})
+    )
+    definitions += tuple(
+        f".model {name} SW(Ron={_number(on)} Roff={_number(off)} "
+        f"Vt={_number(threshold)} Vh=-{SWITCH_TRANSITION})"
+        for (on, off, threshold), name in switches.items()
     )
     return SpiceCircuit(nodes, elements, references, directive, tuple(lines), definitions)
 

@@ -1,0 +1,7 @@
+# PT2399 | 16-pin package | pin 1 first.
+# Pinout only. Clock-controlled audio conversion and delay memory need a model.
+# Datasheet: https://www.princeton.com.tw/en-us/Products/Multi-Media-Audio/Echo-Processor/EP-PT2399
+
+chip PT2399(vcc, ref, analog_gnd, digital_gnd, clk_out, vco, cc1, cc0, op1_out, op1_in, op2_in, op2_out, lpf2_in, lpf2_out, lpf1_out, lpf1_in) {
+    model = unavailable;
+}

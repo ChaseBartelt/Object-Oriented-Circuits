@@ -1,0 +1,11 @@
+include("@chips/sequential/CD4017.ckt");
+include("@chips/logic/74HC32.ckt");
+
+chip SynthSequencer(vcc, gnd, beat, pitch, accent, step0, step5) {
+    # Pause at step 9 briefly, then reset before the next loop.
+    VReset(pulse(5, 0, 5m, 100u, 100u, 875m, 900m)) between(reset, gnd);
+    CD4017(step5, step1, step0, step2, step6, step7, step3, gnd, step8, step4, step9, carry, gnd, beat, reset, vcc);
+
+    # Play the higher pitch on steps 0, 2, 5, and 7. Accents repeat at 0 and 5.
+    SN74HC32(step0, step2, pitch_a, step5, step7, pitch_b, gnd, pitch, pitch_a, pitch_b, accent, step0, step5, vcc);
+}

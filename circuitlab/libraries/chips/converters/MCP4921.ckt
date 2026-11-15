@@ -1,0 +1,7 @@
+# MCP4921 | 8-pin package | pin 1 first.
+# Pinout only. SPI input register, latch, and 12-bit conversion need a model.
+# Datasheet: https://ww1.microchip.com/downloads/en/DeviceDoc/21897B.pdf
+
+chip MCP4921(vdd, cs_n, sck, sdi, ldac_n, vref, avss, vout) {
+    model = unavailable;
+}

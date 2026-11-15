@@ -1,0 +1,7 @@
+# TL071 | 8-pin package | pin 1 first.
+# Ideal op-amp channels. Supply, rail limits, offset and bandwidth are omitted.
+# Datasheet: https://www.ti.com/lit/ds/symlink/tl071.pdf
+
+chip TL071(offset1, minus, plus, vminus, offset2, out, vplus, nc) {
+    op1(plus, minus, out);
+}

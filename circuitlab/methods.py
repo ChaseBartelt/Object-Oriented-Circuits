@@ -1,7 +1,7 @@
 """Expand reusable circuit methods before assigning electrical connections."""
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from .gates import GATE_HELP, gate_accepts, gate_body, gate_call_help, gate_signature
 from .graph import CircuitError, MethodInstance
@@ -20,8 +20,10 @@ from .syntax import (
     PART_ARGUMENT,
     PART_PLACEMENT,
     SECTION,
+    SWITCH_CALL,
     TRANSISTOR,
     TRANS_CALL,
+    UNAVAILABLE_MODEL,
     UNITS,
     Binding,
     SourceRow,
@@ -97,8 +99,10 @@ def _bind_arguments(method, raw, parent):
     return actual, mapping, parts
 
 
-def expand_main(rows: list[SourceRow], instances: list[MethodInstance]) -> list[SourceRow]:
+def expand_main(rows: list[SourceRow], instances: list[MethodInstance], *, imports=()) -> list[SourceRow]:
     """Replace method calls with bound statements in execution order."""
+    import_count = len(imports)
+    rows = [*imports, *rows]
     starts = [i for i, (text, _, _) in enumerate(rows) if MAIN.fullmatch(text)]
     if len(starts) > 1:
         raise CircuitError("Use one main block.", rows[starts[1]][1])
@@ -139,23 +143,23 @@ def expand_main(rows: list[SourceRow], instances: list[MethodInstance]) -> list[
         if i == start:
             i = stop + 1
             continue
-        text, line, _ = rows[i]
+        text, line, origin = rows[i]
         annotation = None
         if OVERRIDE.fullmatch(text):
             annotation = line
             i += 1
             if i < len(rows):
-                text, line, _ = rows[i]
+                text, line, origin = rows[i]
             else:
                 text = ""
         match = SECTION.fullmatch(text)
         if annotation and (not match or match[1].lower() != "gate"):
             raise CircuitError("Put @Override directly above a gate definition.", annotation)
-        if match and not starts and not annotation and (
+        if match and not starts and not annotation and i >= import_count and (
             match[1].lower() in NET_METHODS or match[3] is None
         ):
             raise CircuitError(f'Call "{match[2]}" from a main block.', line)
-        if not match or (not starts and not annotation):
+        if not match or (not starts and not annotation and i >= import_count):
             (before if i < start else after).append(rows[i])
             i += 1
             continue
@@ -165,7 +169,7 @@ def expand_main(rows: list[SourceRow], instances: list[MethodInstance]) -> list[
         key = name.casefold()
         if OP.fullmatch(name) or (not annotation and key in definitions):
             raise CircuitError(
-                f'Section name "{name}" is reserved or already defined.', line
+                f'Section name "{name}" is reserved or already defined.', line, path=origin.path
             )
         if raw is None:
             pins = DEFAULT_TERMINALS
@@ -213,7 +217,7 @@ def expand_main(rows: list[SourceRow], instances: list[MethodInstance]) -> list[
         ):
             requirement = "distinct" if net_method or targets else "two distinct"
             raise CircuitError(
-                f'Use {requirement} parameter names in the header of "{name}".', line
+                f'Use {requirement} parameter names in the header of "{name}".', line, path=origin.path
             )
         if not net_method and targets and targets.keys() != set(pins):
             missing = ", ".join(p for p in pins if p not in targets)
@@ -231,7 +235,9 @@ def expand_main(rows: list[SourceRow], instances: list[MethodInstance]) -> list[
 
     def expand(body, parent, active, *, top_level=False):
         transistor = False
-        for text, line, _ in body:
+        for text, line, origin in body:
+            if parent.path != origin.path:
+                parent = replace(parent, path=origin.path)
             if transistor:
                 yield text, line, parent
                 transistor = text != "}"
@@ -247,24 +253,26 @@ def expand_main(rows: list[SourceRow], instances: list[MethodInstance]) -> list[
             key = call[1].casefold()
             method_key = key, None
             gate_wires = None
+            builtin_gate = False
             passed = ()
             if key in GATE_HELP and key not in definitions:
                 try:
                     gate_wires, passed = _bind_gate_call(key, call[2], parent)
                 except CircuitError as error:
-                    raise CircuitError(str(error), line) from None
+                    raise CircuitError(error.message, line, path=parent.path) from None
                 arity = len(gate_wires)
                 method_key = key, arity
                 method = overrides.get(method_key)
                 if method is None:
+                    builtin_gate = True
                     pins, statements = gate_body(key, arity - 3)
                     child = [(statement, line, parent) for statement in statements]
                     method = Method("gate", key, pins, child, {})
             elif top_level or key not in definitions:
-                if top_level or TRANS_CALL.fullmatch(call[1]):
+                if top_level or TRANS_CALL.fullmatch(call[1]) or SWITCH_CALL.fullmatch(call[1]):
                     yield text, line, parent
                     continue
-                raise CircuitError(f'Unknown section "{call[1]}".', line)
+                raise CircuitError(f'Unknown section "{call[1]}".', line, path=parent.path)
             else:
                 method = definitions[key]
             kind, name = method.kind, method.name
@@ -272,7 +280,7 @@ def expand_main(rows: list[SourceRow], instances: list[MethodInstance]) -> list[
             formal, child, targets = method.parameters, method.body, method.targets
             if method_key in active:
                 raise CircuitError(
-                    f'Circuit method "{name}" calls itself recursively.', line
+                    f'Circuit method "{name}" calls itself recursively.', line, path=parent.path
                 )
             parts = {}
             try:
@@ -288,13 +296,13 @@ def expand_main(rows: list[SourceRow], instances: list[MethodInstance]) -> list[
                     mapping = dict(zip(formal, actual))
             except CircuitError as error:
                 if targets:
-                    raise CircuitError(str(error), line) from None
+                    raise CircuitError(error.message, line, path=parent.path) from None
                 message = (
                     f"{name} expects {len(formal)} wire arguments."
                     if net_method
                     else f"Use {name}(inputWire, outputWire); with two wire names."
                 )
-                raise CircuitError(message, line) from None
+                raise CircuitError(message, line, path=parent.path) from None
             # Sibling calls get distinct scopes even when they share a definition.
             instance = parent.scope, key
             counts[instance] = counts.get(instance, 0) + 1
@@ -303,8 +311,15 @@ def expand_main(rows: list[SourceRow], instances: list[MethodInstance]) -> list[
             index = len(instances)
             instances.append(
                 MethodInstance(kind, name, parent.instance, tuple(mapping.items()),
-                               line=line, arguments=passed)
+                               line=line, arguments=passed, path=parent.path,
+                               builtin_gate=builtin_gate,
+                               model_available=not (
+                                   kind == "chip" and len(child) == 1
+                                   and UNAVAILABLE_MODEL.fullmatch(child[0][0])
+                               ))
             )
+            if not instances[-1].model_available:
+                continue
             binding = Binding(
                 scope, mapping, in_main=bool(targets and parent.in_main),
                 values=values, instance=index

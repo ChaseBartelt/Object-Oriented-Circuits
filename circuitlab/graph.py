@@ -16,6 +16,35 @@ class CircuitError(ValueError):
 
 
 @dataclass(frozen=True)
+class Pulse:
+    low: float
+    high: float
+    delay: float
+    rise: float
+    fall: float
+    width: float
+    period: float
+
+    def at(self, time):
+        if time <= self.delay:
+            return self.low
+        phase = (time - self.delay) % self.period
+        if phase < self.rise:
+            fraction = phase / self.rise
+        elif phase < self.rise + self.width:
+            fraction = 1
+        elif phase < self.rise + self.width + self.fall:
+            fraction = (self.rise + self.width + self.fall - phase) / self.fall
+        else:
+            fraction = 0
+        return self.low + (self.high - self.low) * fraction
+
+    def spice(self):
+        values = (self.low, self.high, self.delay, self.rise, self.fall, self.width, self.period)
+        return "PULSE(" + " ".join(f"{value:.15g}" for value in values) + ")"
+
+
+@dataclass(frozen=True)
 class Component:
     """An oriented branch, an ideal op amp, or a bipolar transistor."""
 
@@ -34,6 +63,9 @@ class Component:
     transistor_type: str = ""
     model: str = ""
     package_pins: tuple[tuple[str, str], ...] = ()
+    threshold: float = 0.0
+    off_resistance: float = 0.0
+    pulse: Pulse | None = None
 
     @property
     def is_source(self):
@@ -45,7 +77,7 @@ class Component:
             return tuple(net for _, net in self.package_pins)
         if self.kind == "Q":
             return self.base, self.p, self.n
-        if self.kind == "O":
+        if self.kind in {"O", "S"}:
             return self.in_plus, self.in_minus, self.p, self.n
         return self.p, self.n
 
@@ -81,6 +113,8 @@ class MethodInstance:
     line: int | None = None
     arguments: tuple[tuple[str, str], ...] = ()
     path: object = None
+    model_available: bool = True
+    builtin_gate: bool = False
 
 
 @dataclass
@@ -111,6 +145,14 @@ class Circuit:
     def resolve_wire(self, name: str) -> str:
         return next((tap.net for tap in self.wire_taps if tap.name == name), name)
 
+    def require_models(self):
+        missing = next((instance for instance in self.instances if not instance.model_available), None)
+        if missing:
+            raise CircuitError(
+                f"{missing.name} is available as a schematic pinout. A simulation model is required.",
+                missing.line, "UnavailableChipModel", path=missing.path,
+            )
+
     @property
     def nodes(self) -> tuple[str, ...]:
         return tuple(
@@ -119,8 +161,8 @@ class Circuit:
                     "0",
                     *(e.p for e in self.components if e.kind != "H"),
                     *(e.n for e in self.components if e.kind != "H"),
-                    *(e.in_plus for e in self.components if e.kind == "O"),
-                    *(e.in_minus for e in self.components if e.kind == "O"),
+                    *(e.in_plus for e in self.components if e.kind in {"O", "S"}),
+                    *(e.in_minus for e in self.components if e.kind in {"O", "S"}),
                     *(e.base for e in self.components if e.kind == "Q"),
                     *(net for e in self.components if e.kind == "H" for net in e.terminal_nets),
                 ]

@@ -1,17 +1,21 @@
 """Check that the simpler views preserve component pins and net identity."""
 
 import unittest
+from dataclasses import replace
 from itertools import combinations
 from pathlib import Path
 from random import Random
 
 from circuitlab.analysis import solve_input
 from circuitlab.compiler import compile_circuit
+from circuitlab.gate_layouts import default_gate_layout, gate_preview
 from circuitlab.graph import Circuit, Component
 from circuitlab.layout import compact, grounded_bridge
 from circuitlab.layout_checks import preserves_nets
+from circuitlab.placement import pack_layout, restore_layout
 from circuitlab.report import component_labels
-from circuitlab.routing import connected_layout, schematic_layout
+from circuitlab.routing import connected_layout, fast_layout, ground_attachment, move_ground, schematic_layout
+from circuitlab.wire_edit import clean_point
 from circuitlab.wiring import labeled, signal_flow
 
 
@@ -24,6 +28,122 @@ def intersect(a, b, c, d):
 
 
 class SchematicWiring(unittest.TestCase):
+    def test_wide_and_layout_adds_matching_input_rows_and_keeps_the_output_stage(self):
+        self.assertIsNone(default_gate_layout("and", 2))
+        original = default_gate_layout("and", 3)
+        for count in (3, 4, 5, 8, 32):
+            with self.subTest(count=count):
+                circuit, boundary = gate_preview("and", count)
+                drawing = default_gate_layout("and", count)
+                self.assertEqual(set(drawing.boundary), set(boundary))
+                self.assertTrue(preserves_nets(circuit, drawing))
+                for net in ("vcc", "y"):
+                    self.assertEqual(drawing.boundary[net], original.boundary[net])
+                for part in ("RC1_and_1", "RC2_and_1", "CNode1_and_1", "CNode2_and_1", "Q2_1_and_1"):
+                    self.assertEqual(drawing.positions[part], original.positions[part])
+                input_positions = [drawing.boundary[pin] for pin in boundary[2:-1]]
+                self.assertEqual(len(input_positions), count)
+                self.assertTrue(all(x == input_positions[0][0] for x, _ in input_positions))
+                rows = [drawing.positions[f"Q1_{index}_and_1"] for index in range(1, count + 1)]
+                self.assertEqual([y for _, y in rows], [y for _, y in input_positions])
+                row_gaps = {upper[1] - lower[1] for upper, lower in zip(rows, rows[1:])}
+                self.assertEqual(len(row_gaps), 1)
+                self.assertGreater(next(iter(row_gaps)), 0)
+                self.assertLess(drawing.boundary["gnd"][1], rows[-1][1])
+
+    def test_nand_layout_keeps_the_output_rail_above_a_row_for_each_input(self):
+        self.assertIsNone(default_gate_layout("nand", 1))
+        original = default_gate_layout("nand", 2)
+        for count in (2, 3, 4, 8, 32):
+            with self.subTest(count=count):
+                circuit, boundary = gate_preview("nand", count)
+                drawing = default_gate_layout("nand", count)
+                self.assertEqual(set(drawing.boundary), set(boundary))
+                self.assertTrue(preserves_nets(circuit, drawing))
+                self.assertFalse(drawing.crossings)
+                for net in ("vcc", "y"):
+                    self.assertEqual(drawing.boundary[net], original.boundary[net])
+                for name in ("RC1_nand_1", "CNode1_nand_1"):
+                    self.assertEqual(drawing.positions[name], original.positions[name])
+                for index, pin in enumerate(boundary[2:-1], 1):
+                    _, y = drawing.boundary[pin]
+                    self.assertLess(y, drawing.boundary["y"][1])
+                    self.assertEqual(drawing.positions[f"RB1_{index}_nand_1"][1], y)
+                    self.assertEqual(drawing.positions[f"Q1_{index}_nand_1"][1], y)
+                self.assertLess(drawing.boundary["gnd"][1], drawing.boundary[boundary[-2]][1])
+
+    def test_or_layout_adds_parallel_rows_below_the_same_inverter(self):
+        self.assertIsNone(default_gate_layout("or", 1))
+        original = default_gate_layout("or", 2)
+        for count in (2, 3, 4, 8, 32):
+            with self.subTest(count=count):
+                circuit, boundary = gate_preview("or", count)
+                drawing = default_gate_layout("or", count)
+                self.assertEqual(set(drawing.boundary), set(boundary))
+                self.assertTrue(preserves_nets(circuit, drawing))
+                self.assertEqual(len(drawing.grounds), count + 3)
+                for name in ("RC1_or_1", "RC2_or_1", "CNode1_or_1", "CNode2_or_1", "Q2_1_or_1"):
+                    self.assertEqual(drawing.positions[name], original.positions[name])
+                for index, pin in enumerate(boundary[2:-1], 1):
+                    _, y = drawing.boundary[pin]
+                    self.assertLess(y, drawing.positions["Q2_1_or_1"][1])
+                    self.assertEqual(drawing.positions[f"RB1_{index}_or_1"][1], y)
+                    self.assertEqual(drawing.positions[f"Q1_{index}_or_1"][1], y)
+
+    def test_nor_layout_keeps_the_capacitor_above_the_shared_collector_rail(self):
+        original = default_gate_layout("nor", 1)
+        for count in (1, 2, 4, 8, 32):
+            with self.subTest(count=count):
+                circuit, boundary = gate_preview("nor", count)
+                drawing = default_gate_layout("nor", count)
+                self.assertEqual(set(drawing.boundary), set(boundary))
+                self.assertTrue(preserves_nets(circuit, drawing))
+                self.assertFalse(drawing.crossings)
+                self.assertEqual(len(drawing.grounds), count + 1)
+                self.assertEqual(drawing.positions["RC1_nor_1"], original.positions["RC1_nor_1"])
+                _, cap_bottom, cap_top, _ = next(s for s in drawing.symbols if s[0].kind == "C")
+                self.assertEqual(cap_bottom[0], cap_top[0])
+                self.assertGreater(cap_top[1], drawing.boundary["y"][1])
+                for index, pin in enumerate(boundary[2:-1], 1):
+                    _, y = drawing.boundary[pin]
+                    self.assertLess(y, drawing.boundary["y"][1])
+                    self.assertEqual(drawing.positions[f"RB1_{index}_nor_1"][1], y)
+                    self.assertEqual(drawing.positions[f"Q1_{index}_nor_1"][1], y)
+
+    def test_gate_ground_moves_with_its_port_and_trims_the_capacitor_lead(self):
+        circuit, boundary = gate_preview("and", 2)
+        drawing = fast_layout(circuit, component_labels(circuit), boundary=boundary)
+        ground = drawing.boundary["gnd"]
+        capacitor_pin = next(
+            clean_point(b) for part, _, b, _ in drawing.symbols if part.name == "CNode1_and_1"
+        )
+        self.assertEqual(ground_attachment(drawing, ground), capacitor_pin)
+        offset = tuple(pin - start for pin, start in zip(capacitor_pin, ground))
+        moved = move_ground(circuit, drawing, ground, offset)
+
+        self.assertEqual(moved.boundary["gnd"], capacitor_pin)
+        self.assertIn(capacitor_pin, moved.grounds)
+        self.assertEqual(len(moved.wires["gnd"]), len(drawing.wires["gnd"]) - 1)
+        self.assertTrue(preserves_nets(circuit, moved))
+
+    def test_restore_trims_a_saved_stub_at_a_previous_gate_ground_position(self):
+        circuit, boundary = gate_preview("and", 2)
+        original = fast_layout(circuit, component_labels(circuit), boundary=boundary)
+        ground = original.boundary["gnd"]
+        moved = move_ground(circuit, original, ground, (2, 0))
+        x, y = clean_point(ground)
+        stale = (x, y + 0.6)
+        saved = replace(
+            moved, boundary={**moved.boundary, "gnd": stale},
+            wires={**moved.wires, "gnd": [*moved.wires["gnd"], ((x, y), stale)]},
+        )
+        self.assertTrue(preserves_nets(circuit, saved))
+        restored = restore_layout(pack_layout(saved), circuit, boundary)
+
+        self.assertEqual(restored.grounds, moved.grounds)
+        self.assertEqual(restored.boundary, moved.boundary)
+        self.assertEqual(restored.wires, moved.wires)
+
     def test_source_rail_is_straight_above_multiple_loads(self):
         circuit = compile_circuit("""
             Vexc EXC 0 10

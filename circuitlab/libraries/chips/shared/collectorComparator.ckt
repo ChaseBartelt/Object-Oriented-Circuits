@@ -1,0 +1,6 @@
+include("differential.ckt");
+circuit oocCollectorComparator(vcc, vminus, plus, minus, collector, emitter) {
+    oocDifferential(vcc, vminus, minus, plus, drive);
+    RB(47k) between(drive, base);
+    transQOut(base, collector, emitter, npn);
+}

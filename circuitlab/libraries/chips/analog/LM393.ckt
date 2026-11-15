@@ -1,0 +1,10 @@
+# LM393 | 8-pin package | pin 1 first.
+# Open-collector comparator approximation. Use pull-ups. Input range and offset differ from the IC.
+# Datasheet: https://www.ti.com/lit/ds/symlink/lm393.pdf
+
+include("../shared/collectorComparator.ckt");
+
+chip LM393(out1, minus1, plus1, vminus, plus2, minus2, out2, vplus) {
+    oocCollectorComparator(vplus, vminus, plus1, minus1, out1, vminus);
+    oocCollectorComparator(vplus, vminus, plus2, minus2, out2, vminus);
+}

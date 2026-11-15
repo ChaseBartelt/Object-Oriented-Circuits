@@ -1,0 +1,22 @@
+# SN74HC4040 | 16-pin package | pin 1 first.
+# 5 V ripple counter approximation. Initialize with reset. Timing is set by discrete gates.
+# Datasheet: https://www.ti.com/lit/ds/symlink/sn74hc4040.pdf
+
+include("../shared/flipFlop.ckt");
+
+chip SN74HC4040(q12, q6, q5, q7, q4, q3, q2, gnd, q1, clk, reset, q9, q8, q10, q11, vcc) {
+    not(vcc, gnd, reset, reset_n);
+    not(vcc, gnd, clk, clk_n);
+    oocDFlipFlop(vcc, gnd, q1_n, clk_n, vcc, reset_n, q1, q1_n);
+    oocDFlipFlop(vcc, gnd, q2_n, q1_n, vcc, reset_n, q2, q2_n);
+    oocDFlipFlop(vcc, gnd, q3_n, q2_n, vcc, reset_n, q3, q3_n);
+    oocDFlipFlop(vcc, gnd, q4_n, q3_n, vcc, reset_n, q4, q4_n);
+    oocDFlipFlop(vcc, gnd, q5_n, q4_n, vcc, reset_n, q5, q5_n);
+    oocDFlipFlop(vcc, gnd, q6_n, q5_n, vcc, reset_n, q6, q6_n);
+    oocDFlipFlop(vcc, gnd, q7_n, q6_n, vcc, reset_n, q7, q7_n);
+    oocDFlipFlop(vcc, gnd, q8_n, q7_n, vcc, reset_n, q8, q8_n);
+    oocDFlipFlop(vcc, gnd, q9_n, q8_n, vcc, reset_n, q9, q9_n);
+    oocDFlipFlop(vcc, gnd, q10_n, q9_n, vcc, reset_n, q10, q10_n);
+    oocDFlipFlop(vcc, gnd, q11_n, q10_n, vcc, reset_n, q11, q11_n);
+    oocDFlipFlop(vcc, gnd, q12_n, q11_n, vcc, reset_n, q12, q12_n);
+}

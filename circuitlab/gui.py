@@ -6,7 +6,7 @@ import sys
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from PySide6.QtCore import QDir, QIODevice, QPoint, QSaveFile, QSignalBlocker, Qt
+from PySide6.QtCore import QDir, QIODevice, QPoint, QSaveFile, QSettings, QSignalBlocker, Qt
 from PySide6.QtGui import QColor, QKeySequence, QTextCursor
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPushButton,
+    QSpinBox,
     QSplitter,
     QStyle,
     QTableWidget,
@@ -41,7 +42,10 @@ from .analysis import Diagnostic, analyze, diagnostics
 from .compiler import analysis_mode, compile_circuit
 from .device_reference import DeviceReference
 from .editor import CircuitEditor
+from .gate_layouts import GateLayouts, default_gate_layout, gate_preview
+from .gates import GATE_HELP, gate_accepts
 from .graph import Circuit, CircuitError, MethodInstance
+from .linked import CHIP_LIBRARY, imported_definitions, read_includes
 from .ltspice import export_hierarchy, export_schematic
 from .numbers import format_value
 from .pins import circuit_text, pin_comment, pin_entries, read_pins
@@ -52,7 +56,7 @@ from .routing import fast_layout
 from .schematic import SchematicView
 from .scope import Oscilloscope
 from .spice import export_spice
-from .syntax import INCLUDE, has_chip, source_rows
+from .syntax import INCLUDE, MAIN, has_chip, source_rows
 from .trace import wire_trace
 from .verilog import compile_chips, export_verilog
 
@@ -98,6 +102,121 @@ def button(label, callback, layout):
 
 def search_text(value):
     return " ".join(value.casefold().replace("_", " ").split())
+
+
+class GateLayoutDialog(QDialog):
+    """Edit the schematic used by every instance of a built-in gate."""
+
+    def __init__(self, parent, layouts, initial=None):
+        super().__init__(parent)
+        self.setWindowTitle("Gate Layouts")
+        self.setWindowFlag(Qt.WindowType.WindowMaximizeButtonHint)
+        self.setSizeGripEnabled(True)
+        available = parent.screen().availableGeometry()
+        self.resize(min(900, available.width() - 48), min(620, available.height() - 64))
+        self.layouts = layouts
+        self.drafts = {}
+        self.key = None
+        self.max_inputs = max(32, initial[1] if initial else 0)
+        panel = QVBoxLayout(self)
+        controls = QHBoxLayout()
+        self.gate = QComboBox()
+        self.gate.setAccessibleName("Gate")
+        for name in GATE_HELP:
+            self.gate.addItem(name.upper(), name)
+        self.inputs = QSpinBox()
+        self.inputs.setAccessibleName("Input count")
+        controls.addWidget(QLabel("Gate"))
+        controls.addWidget(self.gate)
+        controls.addWidget(QLabel("Inputs"))
+        controls.addWidget(self.inputs)
+        controls.addStretch()
+        self.preview = SchematicView()
+        button("Fit", self.preview.fit, controls)
+        panel.addLayout(controls)
+        panel.addWidget(self.preview, 1)
+        actions = QHBoxLayout()
+        actions.addStretch()
+        button("Restore automatic", self.restore_automatic, actions)
+        button("Apply to all", self.apply_layout, actions)
+        button("Close", self.reject, actions)
+        panel.addLayout(actions)
+        footer = QHBoxLayout()
+        self.message = QLabel()
+        self.message.setWordWrap(True)
+        self.message.setContentsMargins(0, 0, 16, 0)
+        footer.addWidget(self.message, 1)
+        self.saved_button = button("Use saved layout", self.restore_saved, footer)
+        panel.addLayout(footer)
+        self.preview.placement_changed.connect(self.record_draft)
+        self.preview.move_refused.connect(
+            lambda: self.message.setText("Try an open spot where the existing nets can stay connected.")
+        )
+        if initial:
+            name, count = initial
+            self.gate.setCurrentIndex(self.gate.findData(name))
+            self.update_input_range()
+            self.inputs.setValue(count)
+        self.gate.currentIndexChanged.connect(self.change_gate)
+        self.inputs.valueChanged.connect(self.load_gate)
+        self.change_gate()
+
+    def update_input_range(self):
+        name = self.gate.currentData()
+        choices = [count for count in range(1, self.max_inputs + 1) if gate_accepts(name, count)]
+        with QSignalBlocker(self.inputs):
+            self.inputs.setRange(choices[0], choices[-1])
+            self.inputs.setEnabled(len(choices) > 1)
+
+    def change_gate(self):
+        self.update_input_range()
+        self.load_gate()
+
+    def load_gate(self):
+        self.key = self.gate.currentData(), self.inputs.value()
+        self.saved_button.setEnabled(self.layouts.has_saved(self.key))
+        self.message.setText("Drag parts, wires, and pin ends. Click Apply to all to save.")
+        record = self.drafts.get(self.key, self.layouts.get(self.key))
+        self.draw_gate(record)
+
+    def draw_gate(self, layout):
+        circuit, boundary = gate_preview(*self.key)
+        self.base_layout = layout
+        self.preview.clear()
+        self.preview.draw(circuit, boundary=boundary, layout=layout or default_gate_layout(*self.key))
+
+    def record_draft(self):
+        self.drafts[self.key] = self.preview.manual_layouts.get((None, "auto"), self.base_layout)
+        self.message.setText("Layout edited. Click Apply to all to save it.")
+
+    def restore_automatic(self):
+        self.drafts[self.key] = None
+        self.draw_gate(None)
+        name, inputs = self.key
+        self.message.setText(f"Apply the automatic layout for {inputs}-input {name.upper()} gates. Your saved layout is kept.")
+
+    def restore_saved(self):
+        layout = self.layouts.saved(self.key)
+        if layout is None:
+            self.message.setText("The saved layout could not be loaded.")
+            return
+        self.drafts[self.key] = layout
+        self.draw_gate(layout)
+        self.message.setText("Click Apply to all to use this saved layout again.")
+
+    def apply_layout(self):
+        if self.key not in self.drafts:
+            self.message.setText("There are no layout changes to apply for this gate.")
+            return
+        layout = self.drafts[self.key]
+        if self.layouts.set(self.key, layout):
+            del self.drafts[self.key]
+            self.saved_button.setEnabled(self.layouts.has_saved(self.key))
+            self.parent().schematic.refresh_gate_layouts()
+            name, inputs = self.key
+            self.message.setText(f"Saved the layout for {inputs}-input {name.upper()} gates.")
+        else:
+            self.message.setText("Could not save the gate layout to your app settings.")
 
 
 class Results(QWidget):
@@ -365,6 +484,7 @@ class MainWindow(QMainWindow):
 
     def add_tab(self, path=None, data=None, source=""):
         editor = CircuitEditor()
+        editor.read_imports = lambda source: self.editor_imports(editor, source)
         editor.setPlainText(source)
         state = CircuitTab(editor, path, data)
         if path is not None:
@@ -427,7 +547,11 @@ class MainWindow(QMainWindow):
         canvas.setContentsMargins(0, 0, 0, 0)
         controls = QHBoxLayout()
         controls.setContentsMargins(4, 4, 4, 0)
-        self.schematic = SchematicView()
+        settings = QSettings("Electric Circuits", "Object-Oriented Circuits")
+        self.schematic = SchematicView(GateLayouts(settings))
+        self.schematic.gate_layout_requested.connect(
+            lambda name, inputs: self.edit_gate_layouts((name, inputs))
+        )
         self.schematic.placement_changed.connect(self.placement_changed)
         self.schematic.probed.connect(self.probe)
         self.schematic.pin_requested.connect(self.name_pin)
@@ -493,7 +617,10 @@ class MainWindow(QMainWindow):
         files.addAction("Export &Verilog…", self.export_verilog)
         files.addSeparator()
         files.addAction("&Quit", self.close, QKeySequence.StandardKey.Quit)
-        self.menuBar().addMenu("&View").addAction(self.explorer.toggleViewAction())
+        view = self.menuBar().addMenu("&View")
+        view.addAction(self.explorer.toggleViewAction())
+        view.addAction("Chip Library", self.show_chip_library)
+        view.addAction("Gate Layouts…", lambda: self.edit_gate_layouts())
         compile_action = (
             self.menuBar()
             .addMenu("&Circuit")
@@ -512,6 +639,36 @@ class MainWindow(QMainWindow):
             if (self.path if editor is self.editor else state.path) == path:
                 return editor.toPlainText()
         return path.read_text(encoding="utf-8-sig")
+
+    def show_chip_library(self):
+        self.folder = CHIP_LIBRARY
+        self.set_folder(self.folder)
+        self.explorer.show()
+
+    def edit_gate_layouts(self, initial=None):
+        dialog = GateLayoutDialog(self, self.schematic.gate_layouts, initial)
+        dialog.exec()
+        dialog.deleteLater()
+
+    def editor_imports(self, editor, source):
+        path = self.path if editor is self.editor else self.documents[editor].path
+        try:
+            files, imports = read_includes(source, path, self.read_linked_source)
+        except CircuitError:
+            return ()
+        return imported_definitions(next(iter(files)), files, imports).values()
+
+    def library_preview(self, source):
+        if self.path is None or not self.path.is_relative_to(CHIP_LIBRARY):
+            return None
+        if any(MAIN.fullmatch(row) for row, _, _ in source_rows(source)):
+            return None
+        signatures = self.editor.method_signatures()
+        stem = self.path.stem.casefold()
+        signature = signatures.get(stem) or signatures.get("sn" + stem)
+        if signature and signature[0] == "chip":
+            return f"\nmain {{ {signature[1]}({signature[2]}); }}\n"
+        return None
 
     def build_circuit(self, source, mode, *, render_only=False):
         return compile_circuit(
@@ -634,7 +791,7 @@ class MainWindow(QMainWindow):
         issues = []
         if not any(row.partition("#")[0].strip() for row in source.splitlines()):
             self.status.setText("Open a circuit or enter known quantities.")
-        elif has_chip(source) and not self.includes_files(source):
+        elif self.library_preview(source) or (has_chip(source) and not self.includes_files(source)):
             try:
                 self._draw_source(source, "dc")
             except CircuitError as error:
@@ -685,6 +842,9 @@ class MainWindow(QMainWindow):
                 ],
             )
         else:
+            preview = self.library_preview(source)
+            if preview:
+                source += preview
             circuit = self.build_circuit(source, mode, render_only=True)
         self.schematic.draw(circuit, self.pins)
         self.scope.set_circuit(circuit)

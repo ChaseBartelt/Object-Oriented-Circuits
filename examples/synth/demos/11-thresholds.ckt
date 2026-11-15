@@ -1,0 +1,19 @@
+# Open-collector comparators with pull-ups. Try changing Vin between 1 and 4 V.
+include("@chips/analog/LM393.ckt");
+include("@chips/analog/LM339.ckt");
+include("@chips/analog/LM311.ckt");
+VCC(5) between(supply, 0);
+Vin(3) between(signal, 0);
+VRef(2.5) between(ref, 0);
+R1(10k) between(supply, gate_dual);
+R2(10k) between(supply, spare2);
+R3(10k) between(supply, gate_quad);
+R4(10k) between(supply, spare3);
+R5(10k) between(supply, spare4);
+R6(10k) between(supply, spare5);
+R7(10k) between(supply, gate_emitter);
+main {
+    LM393(gate_dual, ref, signal, 0, signal, ref, spare2, supply);
+    LM339(spare3, gate_quad, supply, ref, signal, signal, ref, ref, signal, signal, ref, 0, spare5, spare4);
+    LM311(0, signal, ref, 0, balance, strobe, gate_emitter, supply);
+}

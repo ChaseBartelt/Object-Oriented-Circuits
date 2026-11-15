@@ -1,5 +1,6 @@
 """Exercise the normal editor, solve, render, and file workflows through Qt."""
 
+import json
 import os
 import shutil
 import unittest
@@ -12,15 +13,18 @@ from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QEvent, QPoint, Qt
+from PySide6.QtCore import QEvent, QPoint, QSettings, Qt
 from PySide6.QtGui import QContextMenuEvent, QHelpEvent, QTextCursor
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QPushButton, QToolTip
 
-from circuitlab.gui import MainWindow
+from circuitlab.gate_layouts import GateLayouts, default_gate_layout, gate_preview
+from circuitlab.gui import GateLayoutDialog, MainWindow
+from circuitlab.layout import symbol_pins
 from circuitlab.layout_checks import preserves_nets
-from circuitlab.placement import placement_path
-from circuitlab.routing import _mark_crossings, move_ground, move_symbol
+from circuitlab.placement import pack_layout, placement_path
+from circuitlab.report import component_labels
+from circuitlab.routing import _mark_crossings, fast_layout, move_ground, move_symbol
 from circuitlab.schematic import SCALE, point
 from circuitlab.spice import export_spice
 
@@ -65,6 +69,309 @@ class ApplicationTest(unittest.TestCase):
         while schematic.drag.last_position != end and monotonic() < deadline:
             QTest.qWait(10)
         self.assertEqual(schematic.drag.last_position, end)
+
+    def test_gate_layout_dialog_resizes_and_allows_shortening_a_pin_lead(self):
+        config = str(Path(self.examples_dir.name) / "pin-settings.ini")
+        layouts = GateLayouts(QSettings(config, QSettings.Format.IniFormat))
+        dialog = GateLayoutDialog(self.window, layouts, ("not", 1))
+        self.addCleanup(dialog.deleteLater)
+        dialog.show()
+        self.app.processEvents()
+        preview = dialog.preview
+        viewport = preview.viewport()
+        self.assertTrue(dialog.isSizeGripEnabled())
+        self.assertTrue(dialog.windowFlags() & Qt.WindowType.WindowMaximizeButtonHint)
+        dialog.resize(540, 360)
+        self.app.processEvents()
+        small = viewport.size()
+        dialog.resize(700, 500)
+        self.app.processEvents()
+        self.assertGreater(viewport.width(), small.width())
+        self.assertGreater(viewport.height(), small.height())
+
+        original = preview.layout
+        port = original.boundary["a"]
+        pin = next(pos for net, pos in original.pins() if net == "a")
+        halfway = tuple((a + b) / 2 for a, b in zip(port, pin))
+        marker = next(
+            item for item in preview.scene().items()
+            if item.data(0) == "boundary" and item.data(1) == "a" and not hasattr(item, "text")
+        )
+        start = preview.mapFromScene(marker.sceneBoundingRect().center())
+        end = start + preview.mapFromScene(point(halfway)) - preview.mapFromScene(point(port))
+        QTest.mousePress(viewport, Qt.MouseButton.LeftButton, pos=start)
+        self.assertEqual(preview.drag.kind, "boundary")
+        QTest.mouseMove(viewport, end)
+        self.wait_for_drag_preview(preview, end)
+        moved = preview.layout
+        self.assertLess(dist(pin, moved.boundary["a"]), dist(pin, port))
+        self.assertLess(sum(dist(*edge) for edge in moved.wires["a"]),
+                        sum(dist(*edge) for edge in original.wires["a"]))
+        self.assertTrue(preserves_nets(preview.circuit, moved))
+        QTest.mouseRelease(viewport, Qt.MouseButton.LeftButton, pos=end)
+        dialog.apply_layout()
+        reloaded = GateLayouts(QSettings(config, QSettings.Format.IniFormat))
+        self.assertEqual(reloaded.get(("not", 1)).boundary["a"], moved.boundary["a"])
+        QTest.keyClick(preview, Qt.Key.Key_Z, Qt.KeyboardModifier.ControlModifier)
+        self.assertEqual(preview.layout.boundary["a"], port)
+        dialog.restore_automatic()
+        dialog.apply_layout()
+        self.assertIsNone(layouts.get(("not", 1)))
+        dialog.saved_button.click()
+        self.assertEqual(preview.layout.boundary["a"], moved.boundary["a"])
+        dialog.apply_layout()
+        self.assertEqual(layouts.get(("not", 1)).boundary["a"], moved.boundary["a"])
+        dialog.close()
+
+    def test_gate_labels_drag_without_moving_their_anchors_and_reopen(self):
+        config = str(Path(self.examples_dir.name) / "label-settings.ini")
+        layouts = GateLayouts(QSettings(config, QSettings.Format.IniFormat))
+        dialog = GateLayoutDialog(self.window, layouts, ("and", 2))
+        self.addCleanup(dialog.deleteLater)
+        dialog.show()
+        self.app.processEvents()
+        preview = dialog.preview
+        viewport = preview.viewport()
+        original = preview.layout
+        resistor = next(part for part, *_ in original.symbols if part.kind == "R")
+        package = next(part for part, *_ in original.symbols if part.kind == "H")
+        for key in (
+            ("component", resistor.name), ("terminal", package.name, 1),
+            ("boundary", "a"), ("ground", *original.grounds[0]),
+        ):
+            with self.subTest(key=key):
+                previous = preview.layout
+                item = next(item for item in preview.scene().items() if item.data(4) == key)
+                position = item.pos()
+                start = preview.mapFromScene(item.sceneBoundingRect().center())
+                end = start + QPoint(18, -29)
+                QTest.mousePress(viewport, Qt.MouseButton.LeftButton, pos=start)
+                self.assertIs(preview.drag.caption, item)
+                QTest.mouseMove(viewport, end)
+                self.wait_for_drag_preview(preview, end)
+                self.assertNotEqual(item.pos(), position)
+                QTest.mouseRelease(viewport, Qt.MouseButton.LeftButton, pos=end)
+                self.assertIn(key, preview.layout.label_offsets)
+                self.assertEqual(replace(preview.layout, label_offsets=original.label_offsets), original)
+        QTest.keyClick(preview, Qt.Key.Key_Z, Qt.KeyboardModifier.ControlModifier)
+        self.assertIs(preview.layout, previous)
+        dialog.apply_layout()
+        expected = preview.layout.label_offsets
+        reloaded = GateLayouts(QSettings(config, QSettings.Format.IniFormat))
+        self.assertEqual(reloaded.get(("and", 2)).label_offsets, expected)
+        dialog.close()
+
+    def test_gate_layout_applies_across_instances_and_reloads_from_settings(self):
+        win = self.window
+        config = str(Path(self.examples_dir.name) / "gate-settings.ini")
+        layouts = GateLayouts(QSettings(config, QSettings.Format.IniFormat))
+        win.schematic.gate_layouts = layouts
+        source = """chip Quad(supply, a, b, y, z) {
+    nand(supply, a, b, y);
+    nand(supply, a, a, z);
+}
+main { Quad(vcc, in_a, in_b, out_a, out_b); }
+"""
+        win.editor.setPlainText(source)
+        win.render_source()
+        schematic = win.schematic
+        schematic.toggle_package("@method:0")
+        for name in ("@method:1", "@method:2"):
+            schematic.toggle_package(name)
+        dial = GateLayoutDialog(win, layouts)
+        self.addCleanup(dial.deleteLater)
+        dial.gate.setCurrentIndex(dial.gate.findData("nand"))
+        dial.show()
+        self.app.processEvents()
+        preview = dial.preview
+        original = preview.layout
+        _, a, b, _ = original.symbols[0]
+        start = preview.mapFromScene(point(tuple((x + y) / 2 for x, y in zip(a, b))))
+        end = start + QPoint(round(preview.transform().m11() * SCALE * -4), 0)
+        viewport = preview.viewport()
+        QTest.mousePress(viewport, Qt.MouseButton.LeftButton, pos=start)
+        QTest.mouseMove(viewport, end)
+        self.wait_for_drag_preview(preview, end)
+        QTest.mouseRelease(viewport, Qt.MouseButton.LeftButton, pos=end)
+        self.assertNotEqual(preview.layout.positions, original.positions)
+        ground = preview.layout.grounds[0]
+        preview.rotate_ground((None, "auto"), ground)
+        self.assertEqual(preview.layout.ground_rotations[ground], 1)
+        template_part = preview.layout.symbols[0][0].name
+        caption = next(
+            item for item in preview.scene().items() if item.data(4) == ("component", template_part)
+        )
+        start = preview.mapFromScene(caption.sceneBoundingRect().center())
+        end = start + QPoint(0, -22)
+        QTest.mousePress(viewport, Qt.MouseButton.LeftButton, pos=start)
+        QTest.mouseRelease(viewport, Qt.MouseButton.LeftButton, pos=end)
+        label_offset = preview.layout.label_offsets["component", template_part]
+        positions = [a for _, a, _, _ in preview.layout.symbols]
+        dial.apply_layout()
+        self.assertEqual(win.editor.toPlainText(), source)
+        for name in ("@method:1", "@method:2"):
+            key = name, "auto"
+            drawing = schematic.level_layouts[key]
+            self.assertEqual([a for _, a, _, _ in drawing.symbols], positions)
+            self.assertEqual(drawing.ground_rotations[ground], 1)
+            self.assertEqual(drawing.label_offsets["component", drawing.symbols[0][0].name], label_offset)
+            self.assertTrue(preserves_nets(schematic.levels[key], drawing))
+        new_layouts = GateLayouts(QSettings(config, QSettings.Format.IniFormat))
+        self.assertEqual(new_layouts.get(("nand", 2)).positions, preview.layout.positions)
+        self.assertIsNone(new_layouts.get(("nand", 3)))
+        win.editor.setPlainText("""@Override
+gate nand(vcc, gnd, a, b, y) {
+    R1(1k) between(a, y);
+}
+main { nand(supply, 0, input_a, input_b, out); }
+""")
+        win.render_source()
+        schematic.toggle_package("@method:0")
+        custom = schematic.level_layouts["@method:0", "auto"]
+        self.assertEqual(len(custom.symbols), 1)
+        self.assertFalse(schematic.circuit.instances[0].builtin_gate)
+        dial.restore_automatic()
+        dial.apply_layout()
+        self.assertIsNone(GateLayouts(QSettings(config, QSettings.Format.IniFormat)).get(("nand", 2)))
+        dial.close()
+
+    def test_wide_and_default_is_shared_by_gate_dialog_and_expanded_instances(self):
+        win = self.window
+        config = str(Path(self.examples_dir.name) / "and-layout-settings.ini")
+        settings = QSettings(config, QSettings.Format.IniFormat)
+        layouts = GateLayouts(settings)
+        earlier, boundary = gate_preview("and", 3)
+        previous = fast_layout(earlier, component_labels(earlier), boundary=boundary)
+        record = pack_layout(previous)
+        record.pop("label_offsets")
+        settings.setValue(layouts.path(("and", 3)), json.dumps(record))
+        win.schematic.gate_layouts = layouts
+        win.editor.setPlainText(
+            "and(vdd, 0, a, b, c, d, y);\nand(vdd, 0, a, a, c, d, e, z);\nand(vdd, 0, a, b, c, out);"
+        )
+        win.render_source()
+        for index, count in enumerate((4, 5)):
+            name = f"@method:{index}"
+            win.schematic.toggle_package(name)
+            key = name, "auto"
+            drawing = win.schematic.level_layouts[key]
+            default = default_gate_layout("and", count)
+            self.assertEqual([(a, b) for _, a, b, _ in drawing.symbols],
+                             [(a, b) for _, a, b, _ in default.symbols])
+            self.assertTrue(preserves_nets(win.schematic.levels[key], drawing))
+        default = default_gate_layout("and", 4)
+        custom = replace(default, label_offsets={("boundary", "y"): (1, 1)})
+        self.assertTrue(layouts.set(("and", 4), custom))
+        dialog = GateLayoutDialog(win, layouts, ("and", 4))
+        self.addCleanup(dialog.deleteLater)
+        self.assertIs(dialog.preview.layout, custom)
+        dialog.restore_automatic()
+        self.assertIs(dialog.preview.layout, default)
+        dialog.apply_layout()
+        self.assertIsNone(layouts.get(("and", 4)))
+        reloaded = GateLayouts(QSettings(config, QSettings.Format.IniFormat))
+        self.assertIsNone(reloaded.get(("and", 4)))
+        self.assertEqual(reloaded.saved(("and", 4)), custom)
+        self.assertEqual(reloaded.get(("and", 3)), previous)
+        self.assertTrue(dialog.saved_button.isEnabled())
+        dialog.saved_button.click()
+        self.assertEqual(dialog.preview.layout, custom)
+        dialog.apply_layout()
+        self.assertEqual(GateLayouts(QSettings(config, QSettings.Format.IniFormat)).get(("and", 4)), custom)
+        dialog.inputs.setValue(3)
+        self.assertEqual(dialog.preview.layout, previous)
+        dialog.restore_automatic()
+        three_input = default_gate_layout("and", 3)
+        self.assertIs(dialog.preview.layout, three_input)
+        dialog.apply_layout()
+        win.schematic.toggle_package("@method:2")
+        drawing = win.schematic.level_layouts["@method:2", "auto"]
+        self.assertEqual([(a, b) for _, a, b, _ in drawing.symbols],
+                         [(a, b) for _, a, b, _ in three_input.symbols])
+        dialog.close()
+
+    def test_nand_or_and_nor_defaults_are_used_in_gate_dialog_and_expanded_circuit(self):
+        win = self.window
+        config = str(Path(self.examples_dir.name) / "gate-default-settings.ini")
+        layouts = GateLayouts(QSettings(config, QSettings.Format.IniFormat))
+        win.schematic.gate_layouts = layouts
+        win.editor.setPlainText(
+            "nand(vdd, 0, a, a, b, nand_y);\n"
+            "nand(vdd, ret, a, b, c, d, nand_out);\n"
+            "or(vdd, 0, a, a, b, or_y);\n"
+            "or(vdd, ret, a, b, c, d, or_out);\n"
+            "nor(vdd, 0, a, nor_y);\n"
+            "nor(vdd, ret, a, b, c, d, nor_out);"
+        )
+        win.render_source()
+        cases = (("nand", 3), ("nand", 4), ("or", 3), ("or", 4), ("nor", 1), ("nor", 4))
+        for index, (gate, count) in enumerate(cases):
+            with self.subTest(gate=gate, count=count):
+                dialog = GateLayoutDialog(win, layouts, (gate, count))
+                self.addCleanup(dialog.deleteLater)
+                default = default_gate_layout(gate, count)
+                self.assertIs(dialog.preview.layout, default)
+                name = f"@method:{index}"
+                win.schematic.toggle_package(name)
+                key = name, "auto"
+                drawing = win.schematic.level_layouts[key]
+                self.assertEqual([(a, b) for _, a, b, _ in drawing.symbols],
+                                 [(a, b) for _, a, b, _ in default.symbols])
+                self.assertTrue(preserves_nets(win.schematic.levels[key], drawing))
+                dialog.close()
+
+    def test_apply_without_a_draft_keeps_an_unreadable_gate_layout(self):
+        config = str(Path(self.examples_dir.name) / "unreadable-gate-settings.ini")
+        settings = QSettings(config, QSettings.Format.IniFormat)
+        layouts = GateLayouts(settings)
+        key = "and", 3
+        stored = '{"symbols": []}'
+        settings.setValue(layouts.path(key), stored)
+        dialog = GateLayoutDialog(self.window, layouts, key)
+        self.addCleanup(dialog.deleteLater)
+        self.assertIsNone(layouts.get(key))
+        dialog.apply_layout()
+        self.assertEqual(settings.value(layouts.path(key)), stored)
+        self.assertFalse(settings.contains(layouts.path(key, "automatic/v1")))
+        dialog.close()
+
+    def test_gate_resistor_snaps_straight_into_the_transistor_base(self):
+        config = str(Path(self.examples_dir.name) / "snap-settings.ini")
+        layouts = GateLayouts(QSettings(config, QSettings.Format.IniFormat))
+        dialog = GateLayoutDialog(self.window, layouts, ("buf", 1))
+        self.addCleanup(dialog.deleteLater)
+        dialog.show()
+        self.app.processEvents()
+        preview = dialog.preview
+        original = preview.layout
+        transistor = next(
+            symbol for symbol in original.symbols if symbol[0].base and symbol[0].name.startswith("Q1")
+        )
+        net = transistor[0].base
+        resistor = next(
+            symbol for symbol in original.symbols if symbol[0].kind == "R" and net in symbol[0].terminal_nets
+        )
+        part, a, b, _ = resistor
+        name = part.name
+        base = next(pos for wire, pos in symbol_pins(*transistor) if wire == net)
+        lead = next(pos for wire, pos in symbol_pins(*resistor) if wire == net)
+        start = preview.mapFromScene(point(tuple((x + y) / 2 for x, y in zip(a, b))))
+        end = start + preview.mapFromScene(point(base)) - preview.mapFromScene(point(lead)) + QPoint(8, 10)
+        self.assertTrue(original.wires[net])
+        viewport = preview.viewport()
+        QTest.mousePress(viewport, Qt.MouseButton.LeftButton, pos=start)
+        QTest.mouseMove(viewport, end)
+        self.wait_for_drag_preview(preview, end)
+        self.assertIsNotNone(preview.drag.snapped_terminal)
+        QTest.mouseRelease(viewport, Qt.MouseButton.LeftButton, pos=end)
+        moved = next(symbol for symbol in preview.layout.symbols if symbol[0].name == name)
+        pin = next(pos for wire, pos in symbol_pins(*moved) if wire == net)
+        self.assertAlmostEqual(dist(pin, base), 0)
+        self.assertNotIn(net, preview.layout.wires)
+        self.assertTrue(preserves_nets(preview.circuit, preview.layout))
+        preview.undo_placement()
+        self.assertIs(preview.layout, original)
+        dialog.close()
 
     def test_solve_search_and_probe(self):
         win = self.window
@@ -142,6 +449,72 @@ class ApplicationTest(unittest.TestCase):
         self.assertFalse(win.editor.document().isModified())
         schematic.reset_placement()
         self.assertIs(schematic.layout, original)
+
+    def test_ctrl_click_selects_parts_for_one_live_and_undoable_drag(self):
+        win = self.window
+        win.open_path(EXAMPLES / "timer555.ckt")
+        schematic = win.schematic
+        source = win.editor.toPlainText()
+        original = schematic.layout
+        chip = "@method:0"
+
+        def center(name):
+            _, a, b, _ = next(row for row in schematic.layout.symbols if row[0].name == name)
+            return schematic.mapFromScene(point(((a[0] + b[0]) / 2, (a[1] + b[1]) / 2)))
+
+        ctrl = Qt.KeyboardModifier.ControlModifier
+        viewport = schematic.viewport()
+        for name in ("RA", chip, "RB", "RB"):
+            QTest.mouseClick(viewport, Qt.MouseButton.LeftButton, ctrl, center(name))
+        self.assertEqual(schematic.selected_symbols, {"RA", chip})
+        self.assertFalse(schematic.expanded)
+        self.assertEqual(len(schematic.selection_items), 2)
+
+        start = center(chip)
+        end = start + QPoint(0, round(3 * schematic.transform().m11() * SCALE))
+        QTest.mousePress(viewport, Qt.MouseButton.LeftButton, ctrl, start)
+        QTest.mouseMove(viewport, end)
+        self.wait_for_drag_preview(schematic, end)
+        preview = schematic.layout
+        shift = tuple(a - b for a, b in zip(preview.positions[chip], original.positions[chip]))
+        self.assertNotEqual(shift, (0, 0))
+        for a, b, offset in zip(preview.positions["RA"], original.positions["RA"], shift):
+            self.assertAlmostEqual(a - b, offset)
+        self.assertEqual(preview.positions["RB"], original.positions["RB"])
+        self.assertTrue(preserves_nets(schematic.levels[None, "auto"], preview))
+        QTest.mouseRelease(viewport, Qt.MouseButton.LeftButton, ctrl, end)
+        self.assertIs(schematic.layout, preview)
+        self.assertEqual(win.editor.toPlainText(), source)
+        self.assertFalse(win.editor.document().isModified())
+        QTest.keyClick(schematic, Qt.Key.Key_Z, ctrl)
+        self.assertIs(schematic.layout, original)
+
+        schematic.clear_selection()
+        locations = [center(name) for name in ("RA", chip)]
+        start = QPoint(min(pos.x() for pos in locations) - 20, 3)
+        end = QPoint(max(pos.x() for pos in locations) + 8,
+                     max(pos.y() for pos in locations) + 12)
+        QTest.mousePress(viewport, Qt.MouseButton.LeftButton, ctrl, start)
+        QTest.mouseMove(viewport, end)
+        self.assertTrue(schematic.selection_box.isVisible())
+        QTest.mouseRelease(viewport, Qt.MouseButton.LeftButton, ctrl, end)
+        self.assertFalse(schematic.selection_box.isVisible())
+        self.assertTrue({"RA", chip}.issubset(schematic.selected_symbols))
+
+    def test_chip_library_browses_previews_and_completes_imported_chips(self):
+        from circuitlab.linked import CHIP_LIBRARY
+
+        win = self.window
+        win.show_chip_library()
+        self.assertEqual(Path(win.file_model.rootPath()), CHIP_LIBRARY)
+        self.assertTrue(win.open_path(CHIP_LIBRARY / "logic" / "74HC00.ckt"))
+        self.assertTrue(win.schematic.packages)
+        self.assertIsNone(win.solution)
+        self.assertFalse(win.editor.document().isModified())
+        win.open_path(EXAMPLES / "chip_library_nand.ckt")
+        self.assertEqual(win.editor.method_signatures()["sn74hc00"][0], "chip")
+        self.assertTrue(win.schematic.packages)
+        self.assertIsNotNone(win.solution.network)
 
     def test_clicking_the_same_wire_again_clears_its_highlight(self):
         win = self.window
@@ -268,7 +641,12 @@ class ApplicationTest(unittest.TestCase):
         )
         with patch("circuitlab.schematic.QMenu") as menu:
             schematic.contextMenuEvent(event)
-            dict(call.args for call in menu.return_value.addAction.call_args_list)["Rotate clockwise"]()
+            actions = dict(call.args for call in menu.return_value.addAction.call_args_list)
+            self.assertEqual(list(actions)[:2], ["Rotate clockwise", "Rotate counterclockwise"])
+            actions["Rotate counterclockwise"]()
+            self.assertEqual(schematic.layout.ground_rotations[(x, y)], 3)
+            schematic.undo_placement()
+            actions["Rotate clockwise"]()
         self.assertEqual(schematic.layout.ground_rotations[(x, y)], 1)
         a, b = original.wires["0"][-1]
         pin = a if b == (x, y) else b
@@ -301,7 +679,13 @@ class ApplicationTest(unittest.TestCase):
             QTest.mouseRelease(schematic.viewport(), Qt.MouseButton.LeftButton, pos=end)
             self.assertNotEqual(schematic.layout.wires, original.wires)
             schematic.rotate_ground((None, "routed"), schematic.layout.grounds[-1])
+            key = ("component", "RA")
+            caption = next(item for item in schematic.scene().items() if item.data(4) == key)
+            start = schematic.mapFromScene(caption.sceneBoundingRect().center())
+            QTest.mousePress(schematic.viewport(), Qt.MouseButton.LeftButton, pos=start)
+            QTest.mouseRelease(schematic.viewport(), Qt.MouseButton.LeftButton, pos=start + QPoint(12, -18))
             saved = schematic.layout
+            self.assertIn(key, saved.label_offsets)
             self.assertTrue(win.isWindowModified())
             self.assertTrue(win.save())
             self.assertFalse(win.isWindowModified())
@@ -679,9 +1063,13 @@ class ApplicationTest(unittest.TestCase):
         )
         with patch("circuitlab.schematic.QMenu") as menu:
             schematic.contextMenuEvent(menu_event)
-            label, action = menu.return_value.addAction.call_args.args
-            self.assertEqual(label, "Rotate clockwise")
-            action()
+            actions = dict(call.args for call in menu.return_value.addAction.call_args_list)
+            self.assertEqual(list(actions), ["Rotate clockwise", "Rotate counterclockwise"])
+            actions["Rotate counterclockwise"]()
+            self.assertEqual(schematic.layout.rotations["RA"], 3)
+            self.assertTrue(preserves_nets(schematic.levels[None, "auto"], schematic.layout))
+            schematic.undo_placement()
+            actions["Rotate clockwise"]()
         self.assertEqual(schematic.layout.rotations["RA"], 1)
         self.assertTrue(preserves_nets(schematic.levels[None, "auto"], schematic.layout))
         self.assertEqual(win.editor.toPlainText(), source)

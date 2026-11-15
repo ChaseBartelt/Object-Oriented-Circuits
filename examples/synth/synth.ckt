@@ -1,0 +1,13 @@
+# Step sequencer synth. Render schematic, then run speaker in Results at 40 us.
+include("modules/timing.ckt");
+include("modules/sequencer.ckt");
+include("modules/audio.ckt");
+
+connector(supply, mid, beat, tone, envelope, mix, speaker);
+VCC(5) between(supply, 0);
+
+main {
+    SynthTiming(0, beat, bass, lead);
+    SynthSequencer(supply, 0, beat, pitch, accent, step0, step5);
+    SynthAudio(supply, 0, pitch, bass, lead, accent, mid, tone, envelope, mix, speaker);
+}

@@ -19,7 +19,9 @@ In VS Code, select the project's `.venv` interpreter, open `circuitlab/__main__.
 Open existing `.ckt` or `.txt` files with **File → Open**. Click **Compile / Solve** or press **Ctrl+Enter**. The divider example gives **4 V** at `out`. Click a diagnostic to jump to its line. Drag the divider to resize the editor and preview. Use **Hide preview** to give the editor the full width and **Show preview** to bring back the schematic and results.
 
 - **Schematic** shows the circuit. Click a wire or connector to highlight the whole node. Click a component label for its voltage and current. Junction dots show connections and gaps show unconnected crossings. Use **Fit**, the zoom buttons, or the mouse wheel to explore the drawing.
-- Drag components, packages, grounds, and labeled connectors to move them. Drag a horizontal wire up or down or a vertical wire left or right. Hold **Shift** while moving a symbol for diagonal leads. Right-click a part or ground and choose **Rotate clockwise** to turn it 90°. Press **Ctrl+Z** in the schematic to undo a placement edit. **Reset placement** restores the automatic layout.
+- Drag components, packages, grounds, and labeled connectors to move them. Drag a horizontal wire up or down or a vertical wire left or right. Hold **Shift** while moving a symbol for diagonal leads. Right-click a part or ground and choose **Rotate clockwise** or **Rotate counterclockwise** to turn it 90°. Press **Ctrl+Z** in the schematic to undo a placement edit. **Reset placement** restores the automatic layout.
+- **Ctrl+click** components and packages to toggle their selection, or hold **Ctrl** and drag from empty space to draw a selection box. Drag any selected item to move the group. Click empty space to clear the selection.
+- Open **View → Gate Layouts** or right-click a built-in gate and choose **Edit shared gate layout**. Drag parts, wire segments, and pin labels or their endpoint circles. Select **Apply to all** to save the internals for that gate type and input count. Existing circuit-specific placements take priority. Use **Restore automatic → Apply to all** to remove a shared layout.
 - **Save** stores drawing edits alongside the circuit in a `.layout.json` file. Keep it beside the circuit file when moving the project. Hover over a wire argument to see its path in a square popup with the hovered net in blue. Hover over a gate or chip name for its symbol or package pinout.
 - **Results** and **Analysis window** display the same quantities, equations, and values. Search by quantity. Labels display spaces in place of underscores, while circuit code uses the original identifiers.
 - **Render schematic** draws a parseable circuit when the solver cannot calculate its voltages and currents.
@@ -68,6 +70,14 @@ R1(3k) between(signal, 0);
 
 Select the including file to solve, render, or export the combined circuit. Open tabs supply their current text, including unsaved edits. Each included file can define and use its own methods. File connectors link component-based circuits for simulation and SPICE export.
 
+### Chip library
+
+Open **View → Chip Library** to browse the package definitions. Copy the `include("@chips/...");` line from the [chip catalog](circuitlab/libraries/chips/README.md) and call the chip in `main`. Arguments are in physical pin order, starting at pin 1. Hover over an imported chip call for the pin diagram or use autocomplete inside `main`. Open `examples/chip_library_nand.ckt` for a runnable example.
+
+An included file containing only `chip`, `gate`, or `circuit` definitions supplies reusable methods to the caller. The `@chips/` prefix works in saved and untitled circuits. Use ordinary relative paths for your own definition files. Calls instantiate separate copies with local internal nets. See the catalog for supported behavior and any package-specific limits.
+
+Open `examples/synth/synth.ckt` for a step sequencer that selects two notes, adds an accent envelope and filters the output. Its [project guide](examples/synth/README.md) lists the signals to probe and the chip demos.
+
 ## Export to LTspice
 
 Click **Export to SPICE** in the toolbar or File menu. Save the `.cir` file, open it in LTspice, and click **Run**. Export uses the current editor text and analysis mode, including unsaved edits.
@@ -115,6 +125,8 @@ Open `examples/bjt_switch.ckt` for a common-emitter NPN switch. Use `transQ1(bas
 Choose **Compile / Solve** for a DC operating point with generic NPN and PNP transistors. The built-in Ebers–Moll model uses fixed room-temperature parameters. Use SPICE for named models, BJT AC or port analysis, and circuits that do not converge.
 
 The **Results** tab can step circuits with DC sources in time. Select a node, set the time step, and click **Run**. **Pause** freezes the display and **Resume** continues from the current simulation time. For `examples/bjt_oscillator.ckt`, select `c1`, set the initial capacitor to `C1` and its voltage to **1 V**, then run. For `examples/timer555.ckt`, leave reset low for a DC operating point. To see it oscillate, change `VReset(0)` to `VReset(5)`, render, then run `out` at the default 10 µs step. The solver automatically retries difficult switching edges with smaller internal steps.
+
+For clocks and test signals, use `VClock(pulse(0, 5, 1m, 10u, 10u, 400u, 1m)) between(clk, 0);`. Arguments are low and high voltage, delay, rise time, fall time, high duration, and period. Your DC operating point uses the initial voltage. **Results → Run** steps the pulse, and SPICE export writes a `PULSE` source with a transient analysis command.
 
 Omit the fifth argument to get a generic SPICE model of the selected polarity. To use a specific part, write `transQ1(b, c, e, npn, 2N3904);` and make the matching model available to the simulator. If needed, add a manufacturer `.model` card or `.include` to the netlist or as a SPICE directive in the LTspice schematic. The name alone carries no device parameters.
 

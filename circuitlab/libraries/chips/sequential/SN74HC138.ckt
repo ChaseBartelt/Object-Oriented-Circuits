@@ -1,0 +1,19 @@
+# SN74HC138 | 16-pin package | pin 1 first.
+# Active-low 3-to-8 decoder at nominal 5 V.
+# Datasheet: https://www.ti.com/lit/ds/symlink/sn74hc138.pdf
+
+chip SN74HC138(a, b, c, g2a_n, g2b_n, g1, y7_n, gnd, y6_n, y5_n, y4_n, y3_n, y2_n, y1_n, y0_n, vcc) {
+    not(vcc, gnd, a, na);
+    not(vcc, gnd, b, nb);
+    not(vcc, gnd, c, nc);
+    nor(vcc, gnd, g2a_n, g2b_n, enables_low);
+    and(vcc, gnd, g1, enables_low, enabled);
+    nand(vcc, gnd, enabled, na, nb, nc, y0_n);
+    nand(vcc, gnd, enabled, a, nb, nc, y1_n);
+    nand(vcc, gnd, enabled, na, b, nc, y2_n);
+    nand(vcc, gnd, enabled, a, b, nc, y3_n);
+    nand(vcc, gnd, enabled, na, nb, c, y4_n);
+    nand(vcc, gnd, enabled, a, nb, c, y5_n);
+    nand(vcc, gnd, enabled, na, b, c, y6_n);
+    nand(vcc, gnd, enabled, a, b, c, y7_n);
+}

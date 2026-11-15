@@ -1,0 +1,34 @@
+# SN74HC595 | 16-pin package | pin 1 first.
+# 5 V shift and storage registers with resistive high impedance. Clear and clock the latch to initialize.
+# Datasheet: https://www.ti.com/lit/ds/symlink/sn74hc595.pdf
+
+include("../shared/flipFlop.ckt");
+
+chip SN74HC595(qb, qc, qd, qe, qf, qg, qh, gnd, qh_serial, clear_n, shift_clock, latch_clock, oe_n, serial_in, qa, vcc) {
+    not(vcc, gnd, oe_n, enabled);
+    oocDFlipFlop(vcc, gnd, serial_in, shift_clock, vcc, clear_n, sa, nsa);
+    oocDFlipFlop(vcc, gnd, sa, latch_clock, vcc, vcc, la, nla);
+    switch1(enabled, gnd, la, qa, 2.5, 20, 1G);
+    oocDFlipFlop(vcc, gnd, sa, shift_clock, vcc, clear_n, sb, nsb);
+    oocDFlipFlop(vcc, gnd, sb, latch_clock, vcc, vcc, lb, nlb);
+    switch2(enabled, gnd, lb, qb, 2.5, 20, 1G);
+    oocDFlipFlop(vcc, gnd, sb, shift_clock, vcc, clear_n, sc, nsc);
+    oocDFlipFlop(vcc, gnd, sc, latch_clock, vcc, vcc, lc, nlc);
+    switch3(enabled, gnd, lc, qc, 2.5, 20, 1G);
+    oocDFlipFlop(vcc, gnd, sc, shift_clock, vcc, clear_n, sd, nsd);
+    oocDFlipFlop(vcc, gnd, sd, latch_clock, vcc, vcc, ld, nld);
+    switch4(enabled, gnd, ld, qd, 2.5, 20, 1G);
+    oocDFlipFlop(vcc, gnd, sd, shift_clock, vcc, clear_n, se, nse);
+    oocDFlipFlop(vcc, gnd, se, latch_clock, vcc, vcc, le, nle);
+    switch5(enabled, gnd, le, qe, 2.5, 20, 1G);
+    oocDFlipFlop(vcc, gnd, se, shift_clock, vcc, clear_n, sf, nsf);
+    oocDFlipFlop(vcc, gnd, sf, latch_clock, vcc, vcc, lf, nlf);
+    switch6(enabled, gnd, lf, qf, 2.5, 20, 1G);
+    oocDFlipFlop(vcc, gnd, sf, shift_clock, vcc, clear_n, sg, nsg);
+    oocDFlipFlop(vcc, gnd, sg, latch_clock, vcc, vcc, lg, nlg);
+    switch7(enabled, gnd, lg, qg, 2.5, 20, 1G);
+    oocDFlipFlop(vcc, gnd, sg, shift_clock, vcc, clear_n, sh, nsh);
+    oocDFlipFlop(vcc, gnd, sh, latch_clock, vcc, vcc, lh, nlh);
+    switch8(enabled, gnd, lh, qh, 2.5, 20, 1G);
+    buf(vcc, gnd, sh, qh_serial);
+}

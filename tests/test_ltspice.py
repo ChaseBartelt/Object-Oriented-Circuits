@@ -5,9 +5,12 @@ from pathlib import Path
 
 from circuitlab.compiler import compile_circuit
 from circuitlab.hood import hood_levels
+from circuitlab.layout import wire_axis
 from circuitlab.ltspice import export_hierarchy, export_schematic
+from circuitlab.numbers import scalar
+from circuitlab.placement import read_placement, restore_layout
 from circuitlab.report import component_labels
-from circuitlab.routing import schematic_layout
+from circuitlab.routing import move_symbol, schematic_layout
 from circuitlab.spice import spice_circuit
 
 EXAMPLES = Path(__file__).resolve().parents[1] / "examples"
@@ -68,6 +71,47 @@ def read_connections(text, extra_pins=None):
 
 
 class LtspiceSchematicTest(unittest.TestCase):
+    def test_saved_555_layout_keeps_wires_and_symbol_rotations(self):
+        path = EXAMPLES / "timer555.ckt"
+        circuit = compile_circuit(path.read_text(encoding="utf-8-sig"))
+        top = next(hood_levels(circuit, set()))[1]
+        mode, records = read_placement(path)
+        layout = restore_layout(records[None, mode], top, ())
+        self.assertTrue(layout.rotations)
+
+        sheet, files, used_labels = export_hierarchy(circuit, layout)
+        self.assertFalse(used_labels)
+        self.assertIn("\nWIRE ", sheet)
+        self.assertRegex(sheet, r"SYMBOL voltage \S+ \S+ R90")
+        self.assertRegex(sheet, r"SYMBOL cap \S+ \S+ R0")
+        offsets = {
+            name[:-4]: tuple(tuple(map(int, row.split()[1:3])) for row in text.splitlines()
+                             if row.startswith("PIN "))
+            for name, text in files.items() if name.endswith(".asy")
+        }
+        actual = read_connections(sheet, offsets)
+        self.assertEqual(actual["VCC"][0], ("supply", "0"))
+        self.assertEqual(actual["VReset"][0], ("reset_n", "0"))
+        self.assertEqual(actual["RA"][0], ("supply", "discharge"))
+        self.assertEqual(actual["RB"][0], ("discharge", "timing"))
+        self.assertEqual(actual["CT"][0], ("timing", "0"))
+        self.assertEqual(actual["RA"][1]["Value"], "10k")
+        self.assertEqual(actual["CT"][1]["Value"], "100n")
+        self.assertEqual(actual["X_timer555"][0],
+                         ("0", "timing", "out", "reset_n", "control", "timing", "discharge", "supply"))
+
+    def test_diagonal_leads_remain_wired_after_export(self):
+        circuit = compile_circuit("V1(5) between(in, 0);\nR1(1k) between(in, out);\nR2(1k) between(out, 0);")
+        layout = schematic_layout(circuit, component_labels(circuit), "auto")
+        moved = move_symbol(circuit, layout, "R1", (1, 2), diagonal=True)
+        self.assertTrue(any(wire_axis(edge) is None for edges in moved.wires.values() for edge in edges))
+
+        text, used_labels = export_schematic(circuit, moved)
+        self.assertFalse(used_labels)
+        wires = [tuple(map(int, row.split()[1:])) for row in text.splitlines() if row.startswith("WIRE ")]
+        self.assertTrue(any(x != u and y != v for x, y, u, v in wires))
+        self.assertEqual(read_connections(text)["R1"][0], ("in", "out"))
+
     def test_555_exports_as_a_native_hierarchy_with_eight_connected_pins(self):
         circuit = compile_circuit((EXAMPLES / "timer555.ckt").read_text(encoding="utf-8-sig"))
         top = next(hood_levels(circuit, set()))[1]
@@ -171,7 +215,11 @@ class LtspiceSchematicTest(unittest.TestCase):
                 else (part.p, part.n)
             )
             self.assertEqual(pins, tuple(spice.nodes[net] for net in nets))
-            self.assertEqual(attributes["Value"], expected.value)
+            if expected.kind in {"R", "C", "L"}:
+                unit = {"R": "ohm", "C": "F", "L": "H"}[expected.kind]
+                self.assertEqual(scalar(attributes["Value"], unit), float(expected.value))
+            else:
+                self.assertEqual(attributes["Value"], expected.value)
             if expected.kind in "VI" and expected.extra:
                 self.assertEqual(attributes["Value2"], expected.extra.strip())
             if expected.kind == "L":

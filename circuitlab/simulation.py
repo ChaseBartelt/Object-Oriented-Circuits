@@ -80,9 +80,9 @@ class NodalBackend:
 
     def solve(self, circuit, *, ac, frequency=None, port=None):
         parts = circuit.components
-        if any(part.kind == "Q" for part in parts):
+        if any(part.kind in {"Q", "S"} for part in parts):
             if ac or port or circuit.mode != "dc":
-                raise CircuitError("Use DC for the built-in BJT operating point. Use SPICE for BJT AC or port analysis.",
+                raise CircuitError("Use DC for the built-in nonlinear operating point. Use SPICE for AC or port analysis.",
                                    code="UnsupportedComponent")
             from .nonlinear import TimeDomain
 

@@ -1,0 +1,18 @@
+# Change VAddress (0 or 5) and VBank (0 or 5). CD4051 branch is for schematic/SPICE export.
+include("@chips/sequential/74HC138.ckt");
+include("@chips/sequential/74HC157.ckt");
+include("@chips/switches/CD4051.ckt");
+include("@chips/switches/CD4053.ckt");
+VCC(5) between(supply, 0);
+VAddress(5) between(addr, 0);
+VBank(0) between(bank, 0);
+VNoteA(1) between(note_a, 0);
+VNoteB(4) between(note_b, 0);
+RBus(100k) between(bus, 0);
+RBank(100k) between(bank_out, 0);
+main {
+    SN74HC138(addr, 0, 0, 0, 0, supply, y7_n, 0, y6_n, y5_n, y4_n, y3_n, y2_n, y1_n, y0_n, supply);
+    SN74HC157(bank, addr, y0_n, gate_out, 0, 0, mux2, 0, mux3, 0, 0, mux4, 0, 0, 0, supply);
+    CD4051(0, 0, bus, 0, 0, 0, 0, 0, 0, 0, addr, note_a, note_b, 0, 0, supply);
+    CD4053(0, 0, 0, common3, 0, 0, 0, 0, 0, 0, bank, note_b, note_a, bank_out, common2, supply);
+}

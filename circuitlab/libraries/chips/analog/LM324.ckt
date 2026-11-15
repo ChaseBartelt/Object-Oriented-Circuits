@@ -1,0 +1,10 @@
+# LM324 | 14-pin package | pin 1 first.
+# Ideal op-amp channels. Supply, rail limits, offset and bandwidth are omitted.
+# Datasheet: https://www.ti.com/lit/ds/symlink/lm324.pdf
+
+chip LM324(out1, minus1, plus1, vplus, plus2, minus2, out2, out3, minus3, plus3, vminus, plus4, minus4, out4) {
+    op1(plus1, minus1, out1);
+    op2(plus2, minus2, out2);
+    op3(plus3, minus3, out3);
+    op4(plus4, minus4, out4);
+}

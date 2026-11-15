@@ -1,0 +1,8 @@
+# TL431 | TO-92 LP | pin 1 first.
+# Shunt approximation calibrated near 2.495 V at 2.5 mA with 2 uA reference current.
+# Datasheet: https://www.ti.com/lit/ds/symlink/tl431.pdf
+
+chip TL431(cathode, anode, ref) {
+    IRef(2u) between(ref, anode);
+    switch1(ref, anode, cathode, anode, 2.61, 10, 1G);
+}

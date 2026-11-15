@@ -1,0 +1,19 @@
+# Schematic reference for seven expansion chips.
+# Use Render schematic. Library entries in this file have physical pinouts only.
+include("@chips/timers/CD4046B.ckt");
+include("@chips/timers/XR2206.ckt");
+include("@chips/audio/LM13700.ckt");
+include("@chips/audio/AD633.ckt");
+include("@chips/audio/PT2399.ckt");
+include("@chips/converters/ADS1115.ckt");
+include("@chips/converters/MCP4921.ckt");
+
+main {
+    CD4046B(phase_pulse, phase_error, pll_ref, pll_out, 0, c1a, c1b, 0, loop_filter, r1, r2, demod, phase_edge, pll_input, zener, vdd);
+    XR2206(am_input, function_out, multiply_out, vdd, tc1, tc2, tr1, tr2, fsk, bias, sync, 0, wave1, wave2, sym1, sym2);
+    LM13700(ota_bias1, diode1, pre_effects, ota_minus1, ota1, vminus, ota1, vca_out, buffer2, ota2, vdd, ota2, ota_minus2, modulation, diode2, ota_bias2);
+    AD633(vca_out, 0, modulation, 0, vminus, 0, ring_out, vdd);
+    PT2399(vdd, delay_bias, 0, 0, delay_clock, delay_time, cc1, cc0, op1out, op1in, op2in, op2out, lpf2in, wet, lpf1out, ring_out);
+    ADS1115(0, ready, 0, pre_effects, vca_out, ring_out, wet, vdd, sda, scl);
+    MCP4921(vdd, cs_n, spi_clk, mosi, ldac_n, ref, 0, modulation);
+}

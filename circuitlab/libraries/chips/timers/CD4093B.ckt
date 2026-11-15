@@ -1,0 +1,20 @@
+# CD4093B | 14-pin package | pin 1 first.
+# Schmitt NAND behavior from regenerative input stages. Thresholds and timing are approximate.
+# Datasheet: https://www.ti.com/lit/ds/symlink/cd4093b.pdf
+
+include("../shared/schmitt.ckt");
+
+chip CD4093B(a1, b1, y1, y2, a2, b2, gnd, a3, b3, y3, y4, a4, b4, vcc) {
+    oocSchmittInvert(vcc, gnd, a1, na1);
+    oocSchmittInvert(vcc, gnd, b1, nb1);
+    or(vcc, gnd, na1, nb1, y1);
+    oocSchmittInvert(vcc, gnd, a2, na2);
+    oocSchmittInvert(vcc, gnd, b2, nb2);
+    or(vcc, gnd, na2, nb2, y2);
+    oocSchmittInvert(vcc, gnd, a3, na3);
+    oocSchmittInvert(vcc, gnd, b3, nb3);
+    or(vcc, gnd, na3, nb3, y3);
+    oocSchmittInvert(vcc, gnd, a4, na4);
+    oocSchmittInvert(vcc, gnd, b4, nb4);
+    or(vcc, gnd, na4, nb4, y4);
+}

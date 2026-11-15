@@ -1,0 +1,10 @@
+# SN74HC74 | 14-pin package | pin 1 first.
+# 5 V positive-edge D flip-flops with asynchronous preset and clear. Initialize with clear.
+# Datasheet: https://www.ti.com/lit/ds/symlink/sn74hc74.pdf
+
+include("../shared/flipFlop.ckt");
+
+chip SN74HC74(clear1_n, d1, clk1, preset1_n, q1, q1_n, gnd, q2_n, q2, preset2_n, clk2, d2, clear2_n, vcc) {
+    oocDFlipFlop(vcc, gnd, d1, clk1, preset1_n, clear1_n, q1, q1_n);
+    oocDFlipFlop(vcc, gnd, d2, clk2, preset2_n, clear2_n, q2, q2_n);
+}

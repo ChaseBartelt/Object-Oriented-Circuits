@@ -58,6 +58,11 @@ def symbol_pins(part, a, b, top):
         yield part.p, (b[0], b[1] + BJT_PIN_OFFSET)
         yield part.n, (b[0], b[1] - BJT_PIN_OFFSET)
         yield part.base, a
+    elif part.kind == "S":
+        yield part.in_plus, (a[0], a[1] + 0.6)
+        yield part.in_minus, (a[0], a[1] - 0.6)
+        yield part.p, (b[0], b[1] + 0.6)
+        yield part.n, (b[0], b[1] - 0.6)
     else:
         yield part.p, a
         yield part.n, b
@@ -79,6 +84,7 @@ class Layout:
     boundary: dict = field(default_factory=dict)
     rotations: dict = field(default_factory=dict)
     ground_rotations: dict = field(default_factory=dict)
+    label_offsets: dict = field(default_factory=dict)
 
     @property
     def uses_packages(self):
@@ -130,14 +136,14 @@ def component_pins(parts, flipped=(), reversed_parts=()):
     pins = [
         (i, e.p, e.kind != "O" and i not in reversed_parts, 0.0)
         for i, e in enumerate(parts)
-        if e.kind not in {"Q", "H"}
+        if e.kind not in {"Q", "H", "S"}
     ]
     pins += [
         (i, e.in_plus, True, -0.35 if i in flipped else 0.35)
         if e.kind == "O"
         else (i, e.n, i in reversed_parts, 0.0)
         for i, e in enumerate(parts)
-        if e.kind not in {"Q", "H"}
+        if e.kind not in {"Q", "H", "S"}
     ]
     pins += [
         (i, e.in_minus, True, 0.35 if i in flipped else -0.35)
@@ -153,6 +159,11 @@ def component_pins(parts, flipped=(), reversed_parts=()):
                 (i, part.n, False, -BJT_PIN_OFFSET),
                 (i, part.base, True, 0.0),
             ))
+        elif part.kind == "S":
+            a, b = (0, 0), (4.3, 0)
+            pins.extend(
+                (i, net, x == a[0], y) for net, (x, y) in symbol_pins(part, a, b, "+")
+            )
     return pins
 
 

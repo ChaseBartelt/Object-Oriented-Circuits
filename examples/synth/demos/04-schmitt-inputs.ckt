@@ -1,0 +1,10 @@
+# Two Schmitt-trigger packages square up the same slow input.
+# The rising ramp demonstrates the high-going trip threshold.
+include("@chips/timers/CD40106B.ckt");
+include("@chips/timers/CD4093B.ckt");
+VCC(5) between(supply, 0);
+Vin(pulse(0, 5, 1m, 2m, 2m, 500m, 600m)) between(slow, 0);
+main {
+    CD40106B(slow, inv_out, 0, inv2, 0, inv3, 0, inv4, 0, inv5, 0, inv6, 0, supply);
+    CD4093B(slow, supply, nand_out, nand2, 0, 0, 0, 0, 0, nand3, nand4, 0, 0, supply);
+}

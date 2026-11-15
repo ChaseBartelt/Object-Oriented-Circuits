@@ -1,0 +1,9 @@
+# Clock and audio sources with finite edges.
+chip SynthTiming(gnd, beat, bass, lead) {
+    VTempo(pulse(0, 5, 80m, 100u, 100u, 15m, 100m)) between(raw_beat, gnd);
+    # A small RC load gives the counter clock a repeatable, damped edge.
+    RClock(1k) between(raw_beat, beat);
+    CClock(47n) between(beat, gnd);
+    VBass(pulse(0, 5, 0, 10u, 10u, 1.127m, 2.273m)) between(bass, gnd);
+    VLead(pulse(0, 5, 0, 10u, 10u, 842u, 1.702m)) between(lead, gnd);
+}

@@ -1,0 +1,10 @@
+# Ripple counter. Inspect the clock and divided outputs q1/q2/q3.
+include("@chips/sequential/74HC4040.ckt");
+VCC(5) between(supply, 0);
+VReset(pulse(5, 0, 500u, 100u, 100u, 18m, 20m)) between(reset, 0);
+VClock(pulse(0, 5, 1m, 50u, 50u, 500u, 2m)) between(raw_clock, 0);
+RClock(1k) between(raw_clock, clk);
+CClock(47n) between(clk, 0);
+main {
+    SN74HC4040(q12, q6, q5, q7, q4, q3, q2, 0, q1, clk, reset, q9, q8, q10, q11, supply);
+}

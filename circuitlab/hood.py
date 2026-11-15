@@ -26,7 +26,7 @@ def hood_levels(circuit, expanded):
         name = f"{METHOD_PREFIX}{index}"
         children.append(name)
         groups[name] = (ancestor, method, [])
-        if name in expanded:
+        if name in expanded and method.model_available:
             levels[name] = []
 
     for part in circuit.components:
@@ -54,7 +54,7 @@ def hood_levels(circuit, expanded):
         inside = usage[name]
         usage[parent].update(inside)
         contents = levels.get(name, members)
-        if not contents and not method.body and name not in expanded:
+        if not contents and not method.body and method.model_available and name not in expanded:
             continue
         pins = tuple((pin, circuit.resolve_wire(net)) for pin, net in method.pins)
         exposed = {net for _, net in pins}

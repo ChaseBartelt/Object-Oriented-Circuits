@@ -32,6 +32,7 @@ def solve_input(source, mode="auto", *, backend: SimulationBackend | None = None
 
 def analyze(circuit, backend=None):
     """Dispatch to quantity rules or the network backend as appropriate."""
+    circuit.require_models()
     circuit = replace(
         circuit, known=dict(circuit.known), equations=dict(circuit.equations)
     )

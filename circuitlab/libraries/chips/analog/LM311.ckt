@@ -1,0 +1,9 @@
+# LM311 | 8-pin package | pin 1 first.
+# Open-collector comparator with accessible emitter. Balance and strobe pins are passive.
+# Datasheet: https://www.ti.com/lit/ds/symlink/lm311.pdf
+
+include("../shared/collectorComparator.ckt");
+
+chip LM311(emitter, plus, minus, vminus, balance, strobe, collector, vplus) {
+    oocCollectorComparator(vplus, vminus, plus, minus, collector, emitter);
+}

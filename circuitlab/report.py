@@ -198,6 +198,9 @@ def result_rows(result):
             if p.kind == "Q":
                 add(name + " model", "Generic Ebers–Moll", p.transistor_type.upper(), provided=True)
                 continue
+            if p.kind == "S":
+                add(name + " threshold", "V(control) - V(reference)", p.threshold, "V", provided=True)
+                continue
             if p.kind == "O":
                 add(
                     prefix + name + " model",
@@ -377,7 +380,7 @@ def component_labels(circuit):
     for p in circuit.components:
         name = p.label or p.name
         label = [name.replace("_", " ")]
-        if p.kind in {"O", "H"}:
+        if p.kind in {"O", "H", "S"}:
             labels[p.name] = label
             continue
         if p.kind == "Q":
@@ -387,7 +390,9 @@ def component_labels(circuit):
             labels[p.name] = label
             continue
         unit = UNITS[p.kind]
-        if p.equation == "V = I x 0 = 0":
+        if p.pulse is not None:
+            label.append(f"{format_value(p.pulse.low, 'V')} to {format_value(p.pulse.high, 'V')}")
+        elif p.equation == "V = I x 0 = 0":
             label.append("short")
         elif p.kind not in "VI" or circuit.mode == "dc":
             label.append(format_value(p.value, unit))

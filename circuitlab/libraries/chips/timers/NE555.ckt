@@ -1,0 +1,29 @@
+# NE555 | 8-pin package | pin 1 first.
+# Discrete 555 approximation. Oscillation fixture verified at 5 V.
+# Datasheet: https://www.ti.com/lit/ds/symlink/ne555.pdf
+
+include("../shared/differential.ckt");
+include("../shared/timerLatch.ckt");
+
+chip NE555(gnd, trig, out, reset_n, ctrl, thres, disch, vcc) {
+    RTop(5k) between(vcc, ctrl);
+    RMid(5k) between(ctrl, lower_ref);
+    RBot(5k) between(lower_ref, gnd);
+
+    oocDifferential(vcc, gnd, lower_ref, trig, trigger_hit);
+    oocDifferential(vcc, gnd, thres, ctrl, threshold_hit);
+
+    # Reset overrides trigger. Trigger overrides threshold.
+    not(vcc, gnd, reset_n, reset_active);
+    nor(vcc, gnd, trigger_hit, trigger_idle);
+    nor(vcc, gnd, reset_active, trigger_idle, set_req);
+    not(vcc, gnd, threshold_hit, threshold_idle);
+    nor(vcc, gnd, threshold_idle, trigger_hit, threshold_clear);
+    nor(vcc, gnd, reset_active, threshold_clear, clear_idle);
+    not(vcc, gnd, clear_idle, clear_req);
+    oocTimerLatch(vcc, gnd, set_req, clear_req, q, qbar);
+
+    not(vcc, gnd, qbar, out);
+    RBase(22k) between(qbar, discharge_base);
+    transQDischarge(discharge_base, disch, gnd, npn);
+}
