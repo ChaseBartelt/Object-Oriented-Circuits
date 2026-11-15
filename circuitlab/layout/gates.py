@@ -11,7 +11,7 @@ from circuitlab.layout.hierarchy import METHOD_PREFIX, hood_levels
 from circuitlab.layout.geometry import BJT_PIN_OFFSET, PACKAGE_WIDTH, Layout, add_wire, ground_at, place_symbol
 from circuitlab.layout.checks import preserves_nets
 from circuitlab.layout.persistence import pack_layout, restore_layout
-from circuitlab.layout.routing import _mark_crossings
+from circuitlab.layout.checks import mark_crossings as _mark_crossings
 from circuitlab.layout.wire_edit import replace_route
 
 

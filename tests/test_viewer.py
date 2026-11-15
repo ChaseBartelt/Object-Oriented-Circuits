@@ -175,3 +175,21 @@ window.close()
         self.assertEqual(details[name].label_offsets["component", part.name], (2.5, 1.25))
         self.assertEqual(pack_layout(details[name]), pack_layout(edited))
         self.assertNotIn(name, schematic.expanded)
+
+    def test_export_refresh_replaces_running_scope_when_linked_source_changes(self):
+        definition = self.path.with_name("block.ckt")
+        source = "chip block(a,y,gnd) { R1(1k) between(a,y); R2(1k) between(y,gnd); }\n"
+        definition.write_text(source)
+        self.path.write_text('include("block.ckt");\nV1(5) between(a,0);\nmain { block(a,out,0); }\n')
+        self.window.open_path(self.path)
+        self.window.scope.toggle()
+        self.assertIsNotNone(self.window.scope.simulation)
+        self.assertTrue(self.window.scope.timer.isActive())
+        definition.write_text(source.replace("R1(1k)", "R1(2k)"))
+        with patch("circuitlab.viewer.exports.QFileDialog.getSaveFileName", return_value=("", "")):
+            self.assertFalse(self.window.export_ltspice())
+        scope = self.window.scope
+        self.assertIs(scope.circuit, self.window.schematic.circuit)
+        self.assertEqual(next(part.value for part in scope.circuit.components if part.name == "R1_block_1"), 2000)
+        self.assertIsNone(scope.simulation)
+        self.assertFalse(scope.timer.isActive())

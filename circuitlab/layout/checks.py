@@ -3,7 +3,7 @@
 from collections import Counter, defaultdict
 from itertools import combinations
 
-from circuitlab.layout.geometry import wire_axis
+from circuitlab.layout.geometry import along, wire_axis
 
 
 def intersection(first, second):
@@ -97,3 +97,71 @@ def preserves_nets(circuit, drawing):
         net == other or not segments_intersect(first, second)
         for (net, first), (other, second) in combinations(visible, 2)
     )
+
+
+def mark_crossings(drawing):
+    """Mark junctions for the same net and visual gaps for distinct nets."""
+    horizontal, vertical, diagonal = [], [], []
+    for net, segments in drawing.wires.items():
+        for a, b in segments:
+            axis = wire_axis((a, b))
+            (diagonal if axis is None else (horizontal, vertical)[axis]).append((net, a, b))
+    contacts = []
+    for net, a, b in vertical:
+        x = a[0]
+        low, high = sorted((a[1], b[1]))
+        for other, c, d in horizontal:
+            left, right = sorted((c[0], d[0]))
+            y = c[1]
+            if left < x < right and low < y < high:
+                if net == other:
+                    drawing.junctions.setdefault(net, []).append((x, y))
+                else:
+                    drawing.crossings.setdefault((net, a, b), []).append(y)
+                    contacts.append((net, other))
+
+    straight = horizontal + vertical
+    for index, (net, a, b) in enumerate(diagonal):
+        for other, c, d in straight + diagonal[:index]:
+            crossing = intersection((a, b), (c, d))
+            if crossing is None:
+                continue
+            first, second = crossing
+            if 0 < first < 1 and 0 < second < 1:
+                if net == other:
+                    drawing.junctions.setdefault(net, []).append(along(a, b, first))
+                else:
+                    drawing.crossings.setdefault((net, a, b), []).append(first)
+                    contacts.append((net, other))
+
+    # Prefer a clear span of the trunk for its label.
+    for net, (center, y) in drawing.labels.items():
+        if not drawing.wires.get(net) or ("net", net) in drawing.label_offsets:
+            continue
+        a, b = drawing.wires[net][0]
+        left, right = sorted((a[0], b[0]))
+        stops = sorted(
+            {
+                left,
+                right,
+                *(
+                    c[0]
+                    for _, c, d in vertical
+                    if left < c[0] < right and c[1] <= y + 0.75 and d[1] >= y
+                ),
+            }
+        )
+        candidates = [
+            (start + end) / 2
+            for start, end in zip(stops, stops[1:])
+            if end - start >= len(net) * 0.32 + 0.35
+        ]
+        if candidates:
+            drawing.labels[net] = (min(candidates, key=lambda x: abs(x - center)), y)
+        elif len(stops) > 2:
+            start, end = max(
+                zip(stops, stops[1:]), key=lambda interval: interval[1] - interval[0]
+            )
+            drawing.labels[net] = ((start + end) / 2, y)
+
+    return contacts

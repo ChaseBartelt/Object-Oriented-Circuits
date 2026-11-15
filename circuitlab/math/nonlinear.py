@@ -7,6 +7,7 @@ import numpy as np
 from scipy import linalg
 
 from circuitlab.model.graph import CircuitError, ground_references
+from circuitlab.math.results import Network
 
 # Generic room-temperature Ebers–Moll parameters.
 SATURATION_CURRENT = 1e-15
@@ -287,8 +288,6 @@ class TimeDomain:
         return voltage
 
     def operating_point(self):
-        from circuitlab.math.linear import Network
-
         voltage = self.advance()
         branch_v = self.incidence @ voltage
         currents = self.direct_current + self.conductance * branch_v

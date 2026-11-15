@@ -19,11 +19,8 @@ from circuitlab.layout.hierarchy import METHOD_PREFIX, hood_levels
 from circuitlab.layout.geometry import BJT_PIN_OFFSET, package_pins, rotate_point
 from circuitlab.layout.persistence import pack_layout, restore_layout
 from circuitlab.math.report import component_labels
-from circuitlab.layout.routing import (
-    fast_layout, ground_attachment, ground_wire_alignments, move_boundary, move_connector, move_ground,
-    move_symbol, move_symbols, move_wire, schematic_layout, split_wire, symbol_terminal_offsets,
-    symbol_wire_alignments,
-)
+from circuitlab.layout.routing import fast_layout, schematic_layout
+from circuitlab.layout.editing import ground_attachment, ground_wire_alignments, move_boundary, move_connector, move_ground, move_symbol, move_symbols, move_wire, split_wire, symbol_terminal_offsets, symbol_wire_alignments
 from circuitlab.layout.wiring import labeled
 
 INK = QColor("#192633")

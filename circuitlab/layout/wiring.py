@@ -5,17 +5,8 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass
 from itertools import groupby
 
-from circuitlab.layout.geometry import (
-    Layout,
-    add_wire,
-    component_pins,
-    grid_symbol,
-    ground_at,
-    input_source_indices,
-    placement_order,
-    series_runs,
-    source_cells,
-)
+from circuitlab.layout.geometry import Layout, add_wire, component_pins, grid_symbol, ground_at, input_source_indices, placement_order
+from circuitlab.layout.automatic import series_runs, source_cells
 
 
 def connector_names(nets):

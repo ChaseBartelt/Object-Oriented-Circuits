@@ -439,6 +439,7 @@ class ViewerWindow(QMainWindow):
             if self.schematic.layout is None or includes_files(self.session.source):
                 circuit = self.session.render(self.mode.currentData())
                 self.schematic.draw(circuit, self.pins)
+                self.scope.set_circuit(circuit)
                 self.views.setCurrentIndex(0)
             circuit, drawing = self.schematic.circuit, self.schematic.layout
             if drawing is None:

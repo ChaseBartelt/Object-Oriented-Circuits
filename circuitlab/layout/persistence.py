@@ -5,7 +5,7 @@ import math
 
 from circuitlab.layout.geometry import Layout
 from circuitlab.layout.checks import preserves_nets
-from circuitlab.layout.routing import _mark_crossings
+from circuitlab.layout.checks import mark_crossings as _mark_crossings
 from circuitlab.layout.wire_edit import replace_route
 
 

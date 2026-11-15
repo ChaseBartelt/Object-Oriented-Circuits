@@ -3,7 +3,8 @@
 from dataclasses import replace
 from pathlib import Path
 
-from circuitlab.language.compiler import Compiler, compile_document, compile_program, elaborate_document
+from circuitlab.language.builder import Compiler, compile_program
+from circuitlab.language.document import compile_document, elaborate_document
 from circuitlab.model.graph import CircuitError
 from circuitlab.math.numbers import set_known
 from circuitlab.language.syntax import INCLUDE, NET_METHODS, OVERRIDE, SECTION, analysis_mode, has_chip, source_rows
