@@ -9,6 +9,36 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class LaunchTest(unittest.TestCase):
+    def test_editor_window_exits_with_the_ide_pipe_still_open(self):
+        script = """
+import os
+os.environ['QT_QPA_PLATFORM'] = 'offscreen'
+from PySide6.QtCore import QTimer
+from circuitlab import gui
+original = gui.MainWindow.show
+def show(window):
+    original(window)
+    QTimer.singleShot(250, window.close)
+gui.MainWindow.show = show
+raise SystemExit(gui.main())
+"""
+        process = subprocess.Popen(
+            [sys.executable, "-X", "utf8", "-c", script, "--editor",
+             str(ROOT / "examples" / "circuit_method.ckt")],
+            cwd=ROOT, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+        try:
+            # Unlike communicate(), wait() leaves stdin open, just as VS Code does.
+            code = process.wait(timeout=40)
+            self.assertEqual(code, 0, process.stderr.read().decode("utf-8", errors="replace"))
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.wait()
+            process.stdin.close()
+            process.stdout.close()
+            process.stderr.close()
+
     def test_launch_as_module_or_file(self):
         for command, cwd in (
             (("-m", "circuitlab"), ROOT),

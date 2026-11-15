@@ -281,6 +281,7 @@ class MainWindow(QMainWindow):
         self.placement_dirty = False
         self.circuit_text = ""
         self.documents = {}
+        self.external_editor = False
         self.resize(1280, 780)
         self.setStyleSheet(STYLESHEET)
         central = QWidget()
@@ -364,6 +365,44 @@ class MainWindow(QMainWindow):
             "Save the current circuit as an LTspice netlist (.cir)."
         )
         return toolbar
+
+    def use_external_editor(self):
+        """Use this window for visualization while the IDE owns source editing."""
+        self.external_editor = True
+        self.split.widget(0).hide()
+        self.picker.hide()
+        self.preview_button.hide()
+        self.views.show()
+        # Keep compiler diagnostics accessible without showing the source panel.
+        self.centralWidget().layout().insertWidget(2, self.issues)
+        self.issues.show()
+
+    def refresh_from_editor(self, filename):
+        return self.open_from_editor(filename, activate=False)
+
+    def open_from_editor(self, filename, *, activate=True):
+        """Reload a requested tab without discarding unsaved source or placement."""
+        path = Path(filename).resolve()
+        if activate:
+            if self.isMinimized():
+                self.showNormal()
+            self.show()
+            self.raise_()
+            self.activateWindow()
+        for state in self.documents.values():
+            existing = self.path if state.editor is self.editor else state.path
+            if existing == path:
+                dirty = state.editor.document().isModified() or (
+                    self.placement_dirty if state.editor is self.editor else state.placement_dirty
+                )
+                if not activate and dirty:
+                    self.status.setText("Auto-refresh paused: save your OOC changes, then save in VS Code again.")
+                    return False
+                self.editor_tabs.setCurrentWidget(state.editor)
+                if not self.confirm_edits():
+                    return False
+                return self.open_path(path, reload=True)
+        return self.open_path(path)
 
     def toggle_preview(self):
         hidden = self.views.isHidden()
@@ -639,6 +678,8 @@ class MainWindow(QMainWindow):
         return analysis_mode(self.editor.toPlainText())
 
     def read_linked_source(self, path):
+        if self.external_editor:
+            return path.read_text(encoding="utf-8-sig")
         for editor, state in self.documents.items():
             if (self.path if editor is self.editor else state.path) == path:
                 return editor.toPlainText()
@@ -1360,10 +1401,21 @@ def main():
         description="Edit, compile, and analyze an Electric Circuits file."
     )
     parser.add_argument("file", nargs="?", help="Circuit source file")
+    parser.add_argument("--editor", action="store_true",
+                        help="Show schematic/results and accept IDE reload requests on stdin")
     args = parser.parse_args()
     app = QApplication([sys.argv[0]])
     window = MainWindow()
+    if args.editor:
+        from .editor_bridge import EditorBridge
+
+        window.use_external_editor()
+        bridge = EditorBridge(window)
+        bridge.requested.connect(window.open_from_editor, Qt.ConnectionType.QueuedConnection)
+        bridge.refreshed.connect(window.refresh_from_editor, Qt.ConnectionType.QueuedConnection)
     if args.file:
         window.open_path(args.file)
     window.show()
+    if args.editor:
+        bridge.start(sys.stdin)
     return app.exec()

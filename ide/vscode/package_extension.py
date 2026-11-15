@@ -2,6 +2,9 @@
 
 import argparse
 import json
+import hashlib
+import os
+from tempfile import NamedTemporaryFile
 from pathlib import Path, PurePosixPath
 from xml.etree import ElementTree as ET
 from zipfile import ZIP_DEFLATED, ZipFile
@@ -11,6 +14,19 @@ EXTENSION = Path(__file__).resolve().parent
 REPO = EXTENSION.parents[1]
 VSIX_SCHEMA = "http://schemas.microsoft.com/developer/vsx-schema/2011"
 CONTENT_SCHEMA = "http://schemas.openxmlformats.org/package/2006/content-types"
+RUNTIME_FILES = ("runtime.js", "structure.js", "hover-client.js")
+
+
+def runtime_bundle(package, files):
+    # Anything outside the replaceable runtime is a conservative reload boundary.
+    registration = {key: value for key, value in package.items() if key != "version"}
+    stable = {name: hashlib.sha256(data).hexdigest() for name, data in files.items()
+              if name not in {*RUNTIME_FILES, "package.json", "README.md", "LICENSE"}}
+    digest = hashlib.sha256(json.dumps([registration, stable], sort_keys=True).encode()).hexdigest()
+    return json.dumps({
+        "api": 1, "version": package["version"], "compatibility": digest,
+        "files": {name: files[name].decode("utf-8") for name in RUNTIME_FILES},
+    }, ensure_ascii=False).encode("utf-8")
 
 
 def vsix_manifest(package):
@@ -76,6 +92,10 @@ def build(output):
         "README.md": EXTENSION / "README.md",
         "LICENSE": REPO / "LICENSE",
         "extension.js": EXTENSION / "extension.js",
+        "runtime.js": EXTENSION / "runtime.js",
+        "live-runtime.js": EXTENSION / "live-runtime.js",
+        "hover-client.js": EXTENSION / "hover-client.js",
+        "local-updates.js": EXTENSION / "local-updates.js",
         "structure.js": EXTENSION / "structure.js",
         "language-configuration.json": EXTENSION / "language-configuration.json",
         "syntaxes/OOC.json": REPO / "ide/visual-studio/Syntaxes/OOC.json",
@@ -87,6 +107,7 @@ def build(output):
         files[path.as_posix()] = EXTENSION / path
 
     files = {name: path.read_bytes() for name, path in files.items()}
+    files["runtime-bundle.json"] = runtime_bundle(package, files)
     output.parent.mkdir(parents=True, exist_ok=True)
     with ZipFile(output, "w", compression=ZIP_DEFLATED) as archive:
         archive.writestr("[Content_Types].xml", content_types())
@@ -95,11 +116,45 @@ def build(output):
             archive.writestr(f"extension/{name}", data)
 
 
+def atomic_write(path, data):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with NamedTemporaryFile(dir=path.parent, delete=False) as stream:
+        temporary = Path(stream.name)
+        stream.write(data)
+    try:
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def publish(output, directory=None):
+    """Advertise only complete packages; running editors poll this local feed."""
+    directory = directory or EXTENSION / "dist"
+    data = output.read_bytes()
+    with ZipFile(output) as archive:
+        package = json.loads(archive.read("extension/package.json"))
+        bundle = archive.read("extension/runtime-bundle.json")
+    version = package["version"]
+    filename = f"ooc-language-{version}.vsix"
+    atomic_write(directory / filename, data)
+    runtime_name = f"ooc-runtime-{version}.json"
+    atomic_write(directory / runtime_name, bundle)
+    release = {
+        "id": f'{package["publisher"]}.{package["name"]}',
+        "version": version,
+        "file": filename,
+        "sha256": hashlib.sha256(data).hexdigest(),
+        "runtime": {"file": runtime_name, "sha256": hashlib.sha256(bundle).hexdigest()},
+    }
+    atomic_write(directory / "latest.json", (json.dumps(release, indent=2) + "\n").encode("utf-8"))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("output", type=Path, help="Where to write the .vsix package")
     output = parser.parse_args().output
     build(output)
+    publish(output)
     print(output.resolve())
 
 

@@ -2,18 +2,52 @@
 
 Install the OOC `.vsix` in VS Code using **Extensions → … → Install from VSIX**. Open a `.ckt` file directly in the editor. The language mode in the status bar will read **Object-Oriented Circuits**.
 
+## Automatic local updates
+
+OOC checks your trusted local checkout every 30 seconds for a newer completed extension package. The source is **OOC: Project Root**, the checkout containing the active file, or an OOC workspace folder. After a new release is built, it installs automatically. You no longer need to browse for a VSIX after the initial installation of 0.5.0.
+
+Starting with 0.6.0, compatible feature updates also **apply live without reloading VS Code**. Hover previews, navigation, existing commands and save-refresh handlers are replaced in place. Your schematic process, last-run circuit and unsaved layout remain connected. Hover workers restart on demand. Invalid JavaScript is rejected before replacement; activation errors restore the previous runtime.
+
+Upgrading from 0.5.0 needs one reload to start the new loader. Changes to that loader, registered commands/settings, language configuration, snippets or TextMate grammar still offer **Reload Window**. Those are outside the live runtime. Reload when ready; your editor is never forcibly restarted, and other extensions are not restarted.
+
+Use **OOC: Check for Local Updates** to check immediately, or disable **OOC: Auto Update** in Settings. Restricted workspaces do not install updates. This updates from the local checkout; it does not fetch GitHub changes or publish to the Marketplace. Python changes in that checkout already take effect in newly launched OOC processes; restart existing schematic/hover processes after changing their Python code.
+
 ## Try the divider
 
 Open `examples/circuit_method.ckt` in the OOC checkout. **Outline** shows the battery, `divider` circuit and `main`. Fold their bodies in the editor or use **F12** on the `divider(...)` call to jump to the declaration. F12 also opens an `include(...)` path when the target is available locally.
 
 The language mode provides highlighting, bracket matching, indentation, and **Ctrl+/** line comments. Type `ooc-divider` and accept the snippet to insert that example into an empty `.ckt` file. Snippets also cover circuit methods, built-in control flow and digital chips.
 
+## Open the schematic
+
+Open a `.ckt` file and click the **play button** at the top right, or choose **OOC: Run Circuit / Open Schematic** from **Ctrl+Shift+P**. This saves the active file and opens it in the OOC desktop window, which compiles the circuit and draws its schematic. The window includes Results, analysis, interactive layout, and export controls. Errors from circuit analysis are shown there; a circuit that can be rendered may still have solver errors.
+
+Save included files before running. The play button reuses the window for that OOC checkout and reloads the saved circuit, updating the schematic and results. Opening another circuit uses the same window. Closing the window lets the next Run start a fresh one. Unsaved layout or source changes in OOC prompt before reloading.
+
+When launched from VS Code, OOC hides its source editor and Add a quantity controls; schematic, results, diagnostics, analysis and exports remain available. Launching OOC normally still shows its editor. The connection lasts for the VS Code session; after reloading VS Code, close the old OOC window before running again. This extension requires the matching updated OOC checkout with `--editor` support.
+
+### Refresh on save
+
+Click Run once to open the schematic. Saving a `.ckt` or `.txt` file in the same OOC project then refreshes the last circuit you ran, including changes to saved include files. Save All events are combined into one refresh. The window stays in the background while you type. Closing it stops automatic updates until you click Run again. Turn off **OOC: Refresh On Save** to disable this behavior.
+
+Unsaved source or layout changes in OOC pause automatic refresh; save those changes in OOC, then save in VS Code again. This protects your layout from being discarded without interrupting editing with a dialog.
+
+### Hover previews
+
+Hover over a gate or chip name to see its reference symbol or declared pinout. Hover over a wire argument such as `middle` in `R3(1k) between(middle, split);` to see its name and a small connected-path schematic with that wire highlighted. These are OOC model references, not manufacturer photographs. Wire paths are representative traces, not simulated current flow.
+
+Previews use the current editor text and saved include files, and do not alter the main schematic. They run in a separate, reusable offscreen process. A syntax error or uninstantiated method may provide wire information without an image. Large traces provide text instead of an unreadably small diagram. VS Code controls tooltip placement. Both features require a trusted local workspace and the updated OOC checkout. Turn off **OOC: Hover Previews** to disable image previews.
+
 ## Check or solve
 
-Save the circuit and its included files. Open the Command Palette with **Ctrl+Shift+P** for **OOC: Check Circuit** or **OOC: Solve Circuit**. The play button on a saved `.ckt` editor also runs Solve. Results appear in the **OOC** output channel, with diagnostics from the compiler shown in **Problems**.
+Save included files. Open the Command Palette with **Ctrl+Shift+P** for **OOC: Check Circuit** or **OOC: Solve Circuit**. These commands save the active circuit and show text results in the **OOC** output channel, with diagnostics from the compiler shown in **Problems**.
 
 The commands use the OOC checkout's Python environment. If you edit a circuit in another folder, set **OOC: Project Root** to the OOC checkout location. Set **OOC: Python Path** if you use a Python executable outside the checkout's `.venv`. Reading, highlighting, folding and Outline work without the Python environment. Interactive schematics and waveforms are available in the OOC desktop app.
 
 ## Build the extension from source
 
-From the OOC repository root, run `python ide/vscode/package_extension.py ooc-language-0.1.0.vsix`. The package uses the shared OOC TextMate grammar and contains no editor runtime dependencies. The compiler commands use the existing project dependencies.
+For each extension release, increase `version` in `ide/vscode/package.json`, then run `python ide/vscode/package_extension.py ooc-language-0.6.0.vsix` (use the new version in the filename). The builder places the versioned package, runtime bundle and checksum manifest in the ignored `ide/vscode/dist/` directory. It publishes the manifest only after all artifacts are complete. Running editors pick up the newer version automatically. Raw source edits are not installed until packaged, and rebuilding the same version does not trigger an update.
+
+`runtime.js`, `structure.js` and `hover-client.js` form the replaceable runtime. The builder fingerprints the remaining packaged implementation and editor registrations. A matching fingerprint permits live replacement; a difference requires a reload. Keep loader changes separate when a release should apply live. Source development must use a built/staged package because `runtime-bundle.json` is generated into the VSIX.
+
+The package uses the shared OOC TextMate grammar and contains no editor runtime dependencies. The compiler commands use the existing project dependencies.
