@@ -14,7 +14,9 @@ py -m venv .venv
 
 On macOS or Linux, use `python3 -m venv .venv` and `.venv/bin/python` for the last two commands. Run the module without a file to open a blank editor.
 
-In VS Code, select the project's `.venv` interpreter, open `circuitlab/__main__.py`, and click **Run Python File**. The terminal command above opens a specific example directly.
+In VS Code, install the [OOC language extension](ide/vscode/README.md) to edit `.ckt` files directly with syntax highlighting, Outline, folding, and commands for the OOC compiler. To launch the desktop app from VS Code, select the project's `.venv` interpreter and run `circuitlab/__main__.py`.
+
+In Visual Studio on Windows, use the [OOC editor setup](ide/visual-studio/README.md) to edit `.ckt` files with syntax highlighting and run OOC Check or OOC Solve from the Tools menu.
 
 Open existing `.ckt` or `.txt` files with **File → Open**. Click **Compile / Solve** or press **Ctrl+Enter**. The divider example gives **4 V** at `out`. Click a diagnostic to jump to its line. Drag the divider to resize the editor and preview. Use **Hide preview** to give the editor the full width and **Show preview** to bring back the schematic and results.
 
