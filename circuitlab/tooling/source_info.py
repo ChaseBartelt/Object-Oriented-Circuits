@@ -16,6 +16,15 @@ from circuitlab.language.syntax import (
 
 
 IDENTIFIER = re.compile(r"[A-Za-z][A-Za-z0-9_]*")
+TIMED_BLOCK = re.compile(r"(?:^|(?<=[;{}]))\s*(clock|every)\s*\([^()]*\)\s*(?=\{)")
+
+
+def timed_block_at(code, column):
+    """Distinguish HDL block headers from ordinary electrical method calls."""
+    for match in TIMED_BLOCK.finditer(code):
+        if match.start(1) <= column < match.end():
+            return match[1]
+    return None
 
 
 def methods(source):
@@ -112,6 +121,21 @@ class SourceInfo:
             return ""
         text, column = location
         code = text.partition("#")[0]
+        timed = timed_block_at(code, column)
+        if timed == "clock":
+            return (
+                "clock(input_pin, frequency) { ... }\n"
+                "Update state on each rising edge of the input clock. The frequency "
+                "annotation describes that external clock for Hz increments and every timers; "
+                "it does not generate a clock. Assignments read the previous state."
+            )
+        if timed == "every":
+            return (
+                "every(interval) { ... }\n"
+                "Run these updates periodically inside a clock block with a declared frequency. "
+                "The compiler creates a counter; the first update follows one full interval. "
+                "For example, toggling a state every(500ms) gives a one-second on/off cycle."
+            )
         if CONNECTOR.fullmatch(code.strip()) and column <= code.lower().index("connector") + 9:
             return "connector(pin, ...)\nShare these nets by name with files in the same build."
         if INCLUDE.fullmatch(code.strip()):
@@ -163,6 +187,8 @@ class SourceInfo:
             return None
         text, column = location
         code = text.partition("#")[0]
+        if timed_block_at(code, column):
+            return None
         start = max(code.rfind(mark, 0, column) for mark in ";{}") + 1
         statement = re.split(r"[;{}]", code[start:], maxsplit=1)[0]
         column -= start + len(statement) - len(statement.lstrip())
@@ -195,6 +221,8 @@ class SourceInfo:
             return None
         text, column = location
         code = text.partition("#")[0]
+        if timed_block_at(code, column):
+            return None
         start = max(code.rfind(mark, 0, column) for mark in ";{}") + 1
         code, column = re.split(r"[;{}]", code[start:], maxsplit=1)[0], column - start
         match = re.fullmatch(

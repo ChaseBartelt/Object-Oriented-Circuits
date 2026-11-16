@@ -36,7 +36,7 @@ class CircuitHighlighter(QSyntaxHighlighter):
             re.compile(
                 r"\b(?:series|parallel|circuit|chip|gate|between|battery|opamp|transistor|"
                 r"end|main|return|measure|wire|ground|model|port|input|output|connector|include|"
-                r"for|while|do|if|else|let|int|bool|true|false|break|continue)\b",
+                r"for|while|do|if|else|clock|every|const|let|int|bool|true|false|break|continue)\b",
                 re.I,
             ),
             "#92bfff",

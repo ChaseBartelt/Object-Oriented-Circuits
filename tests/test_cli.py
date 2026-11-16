@@ -63,3 +63,22 @@ class CliTest(unittest.TestCase):
         self.assertIn("Check passed (digital chip).", checked.stdout)
         self.assertNotEqual(solved.returncode, 0)
         self.assertIn("Digital chips use the Verilog compiler.", solved.stderr)
+
+    def test_digital_states_can_be_checked_but_not_electrically_solved(self):
+        with TemporaryDirectory() as folder:
+            path = Path(folder) / "state bits.ckt"
+            path.write_text("""chip StateBits(out) {
+                out = output;
+                phase[32];
+                preset[8] = 100;
+                led_state;
+                flag = 1;
+                out = phase[31] | preset[6] | led_state | flag;
+            }""", encoding="utf-8")
+            checked = self.run_cli("check", path)
+            solved = self.run_cli("solve", path)
+        self.assertEqual(checked.returncode, 0, checked.stderr)
+        self.assertIn("Check passed (digital chip).", checked.stdout)
+        self.assertNotEqual(solved.returncode, 0)
+        self.assertIn("Digital chips use the Verilog compiler.", solved.stderr)
+        self.assertNotIn("Results (", solved.stdout)

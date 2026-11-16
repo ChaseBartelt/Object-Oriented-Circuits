@@ -33,6 +33,7 @@ Open existing `.ckt` or `.txt` files with **File → Open**. Click **Compile / S
 - **Save layout** stores drawing edits inside the `.ckt` file in a managed `# @ooc-layout-begin` / `# @ooc-layout-end` comment block. Carry the `.ckt` file when moving the project. Existing `.ckt.layout.json` files still load and are copied into comments on save; the old JSON is retained as a backup. Embedded layouts take priority when both exist. In VS Code, hover over a wire argument to see a representative connected path with the hovered net in blue, or over a gate/chip name for its reference symbol or declared package pinout.
 - **Results** and **Analysis window** display the same quantities, equations, and values. Search by quantity. Labels display spaces in place of underscores, while circuit code uses the original identifiers.
 - **Render schematic** draws a parseable circuit when the solver cannot calculate its voltages and currents.
+- **FPGA…** opens the DE10-Lite `HYBRID01` workflow: **Build from OOC**, **Refresh cables**, select **USB-Blaster**, then **Program FPGA**. The viewer builds its currently loaded saved file with Quartus and displays progress in a log. **Open build folder** opens generated files and reports. Source changes invalidate the build; saving never programs hardware automatically. Quartus with MAX 10 support and the USB-Blaster driver must be installed separately. This profile uses the `HYBRID01` chip name, the onboard 50 MHz clock, any subset of SW0–SW9 and LEDR0–LEDR9, and optional `AUDIO_OUT`; it programs a volatile `.sof`, not power-on flash. See the [board guide](fpga/de10_lite/README.md).
 
 ### Optional desktop editor
 
@@ -280,9 +281,98 @@ chip NandGate(a, b, y) {
 
 Declare each pin from the header as `input` or `output`. The grouped declaration `a, b = input;` is equivalent to `a = input; b = input;`. Header order sets Verilog port order. Each output gets one assignment.
 
-Pins are one bit wide. Logic expressions support `!` (NOT), `&` (AND), `^` (XOR), `|` (OR), parentheses, and `0` and `1`. The operators are listed in order of precedence. A file can contain multiple chip definitions, each exported as a Verilog module. This version supports standalone combinational chips. Chip instances, clocks, and registers are future extensions.
+Ports remain one bit wide. Logic expressions support `!` (NOT), `&` (AND), `^` (XOR), `|` (OR), parentheses, and `0` and `1`. The operators are listed in order of precedence. A file can contain multiple chip definitions, each exported as a Verilog module.
+
+Internal state can be declared separately from the ports. A bare name declares one unsigned bit; `[width]` declares an unsigned vector with a literal width from 1 through 4096. Both default to zero:
+
+```text
+phase[32];
+blink_counter[25];
+led_state;
+sw_meta;
+sw_sync;
+```
+
+An optional initializer replaces that zero: `phase[32] = 100;` or `flag = 1;`. Initializers are unsigned decimal integers, may contain underscores such as `1_024`, and must fit the declared width. Declare a state name once and leave it out of the chip's port list. These declarations emit initialized Verilog `reg` declarations. State advances only when assigned inside a `clock` block.
+
+Read a vector bit with a literal zero-based index, such as `phase[31]`, in an output's logic expression. A bare scalar such as `flag` is read by name and cannot be indexed. Explicit `[1]` still declares a vector, so `one_bit[1];` is read as `one_bit[0]`. Whole vectors are not operands in the one-bit logic expressions.
+
+Open [`examples/digital/state_declarations.ckt`](examples/digital/state_declarations.ckt) for an exportable example with zero defaults, nonzero initializers, and bit reads. Its state stays at its initialized values: names such as `phase` and `blink_counter` do not count or advance automatically. Chip instances remain unsupported in the digital exporter. Hardware support for declaration initializers depends on the FPGA target and synthesis tools; exporting Verilog does not establish board compatibility.
 
 Chips with `input` and `output` declarations export to Verilog. Chips and gates built from electrical components export to SPICE.
+
+### Clocked digital logic
+
+[`examples/digital/HYBRID01.ckt`](examples/digital/HYBRID01.ckt) implements the complete 50 MHz switch-controlled 440/880 Hz phase accumulator and blinking LED example in OOC. Use the digital Verilog exporter; the electrical solver does not simulate clocked HDL.
+
+The [DE10-Lite project and programming guide](fpga/de10_lite/README.md) supplies
+HYBRID01's board pin assignments, 50 MHz timing constraint, the viewer's
+**FPGA…** build/program workflow, and a PowerShell build alternative. Both
+export the OOC source and run Quartus. Board configuration
+lives separately from the language source; saving a `.ckt` does not program hardware.
+
+The DE10-Lite build automatically synchronizes each declared SW0–SW9 input
+through its own two 50 MHz clock stages. Connect switches to LEDs directly,
+such as `LEDR0 = SW0;` through `LEDR9 = SW9;`, without manual registers or a
+clock block. The profile requires `HYBRID01` and its `MAX10_CLK1_50` input;
+choose at least one switch and one output from SW0–SW9, LEDR0–LEDR9, and optional
+`AUDIO_OUT`. Existing four-port oscillator programs remain supported. Validated
+`sw_meta`/`sw_sync` logic is retained without adding another pair when SW0 is the
+only declared switch. For multiple switches, remove that manual SW0 chain and
+read the switch inputs directly; mixing manual SW0 synchronization with other
+switches is rejected.
+Synchronization is independent per switch: it does not debounce switches,
+transfer their values as an atomic ten-bit bus, or generate clocks. Generic
+**File → Export Verilog** stays literal and board-neutral. Open
+[`examples/digital/de10_switch_led.ckt`](examples/digital/de10_switch_led.ckt)
+for the full ten-pair example, or see the
+[board guide and optional `-Source` build argument](fpga/de10_lite/README.md).
+
+For a phase accumulator, write the desired frequency directly and supply the input clock rate once on the block:
+
+```text
+clock(MAX10_CLK1_50, 50MHz) {
+    if (sw_sync == 0) {
+        phase += 440Hz;
+    } else {
+        phase += 880Hz;
+    }
+}
+```
+
+With `phase[32];`, these increments compile to 37796 and 75591. The compiler calculates `round(frequency * 2^width / update_frequency)` using exact rational arithmetic, rounding ties upward. Read the phase vector's highest bit for the requested square wave. Actual frequency is quantized to the nearest representable step. `Hz`, `kHz`, `MHz`, and `GHz` accept decimal values and underscore digit separators. The rate annotation describes the external clock; it does not generate a clock or create FPGA timing constraints.
+
+Frequency literals are supported specifically in `phase += frequency;` (or `phase = phase + frequency;`) updates of a vector at least two bits wide. The enclosing clock block must specify its input frequency. Zero Hz holds phase; positive frequencies that round to zero, frequencies above half the phase update rate, and conflicting rates for the same clock pin are rejected. Ordinary `clock(clk)` blocks and integer arithmetic remain supported.
+
+```text
+chip Blink(clk, y) {
+    clk = input;
+    y = output;
+    led;
+    clock(clk, 50MHz) {
+        every(500ms) {
+            led = !led;
+        }
+    }
+    y = led;
+}
+```
+
+`every(500ms)` automatically creates an initialized counter sized for the interval. At 50 MHz it runs its body on rising edges 25,000,000, 50,000,000, and so on: the LED toggles twice per second, completing one full on/off cycle per second. Other statements in the clock block continue to run on every edge; `every` does not delay or stop the clock.
+
+Intervals accept `s`, `ms`, `us` (also `µs`/`μs`), and `ns`, with decimals and underscore digit separators. They round to the nearest whole number of input clock cycles, with ties rounded upward. Intervals shorter than one clock period and missing clock frequencies are rejected. Place each `every(...)` directly inside its `clock(...)` block; nested or conditional timers are not supported. Conditions inside an `every` body are supported and do not pause its timer. Multiple `every` blocks have independent counters. An interval of one clock period executes every edge without a counter. Assignments still use the previous state, and the last executed assignment to a state wins.
+
+Inside `every(...)`, Hz increments use the effective update rate: input clock frequency divided by the rounded interval cycle count. For example, at an 8 Hz clock, `every(500ms) { phase += 1Hz; }` advances an 8-bit phase by 128 every four edges. A request above half that effective update rate is rejected. Conditional branches can further gate updates; while disabled, phase holds and the output no longer runs continuously at the requested frequency.
+
+- `clock(input_pin) { ... }` runs on each rising edge. Every expression reads the state from before that edge; updates take effect together. Thus `sw_meta = SW0; sw_sync = sw_meta;` describes two stages of synchronization, not two immediate software assignments.
+- Inside clock blocks, `state += expression;` is shorthand for `state = state + (expression);`. It also accepts frequency increments such as `phase += 440Hz;`. Both forms read the previous state; repeated `+=` assignments on one edge do not accumulate sequentially.
+- Unassigned state holds its value. If a state is assigned more than once on an executed path, the last assignment wins. A state may be driven by only one clock block.
+- `const NAME[width] = value;` declares an unsigned constant; omit `[width]` for a one-bit constant. Constants require a decimal initializer that fits the width.
+- Clock expressions support decimal literals, constants, signals, constant bit reads, parentheses, `+`, `-`, `==`, `!=`, `<`, `<=`, `>`, `>=`, `!`, `&`, `^`, `|`, `&&`, and `||`. Arithmetic and bitwise results have the larger operand width; overflow wraps at that width. Unsized decimal literals use the minimum unsigned width. Assignments truncate or zero-extend to the destination. Comparisons and logical operators produce one bit. `!` means logical NOT (zero becomes one).
+- `if (...) { ... }`, `else if (...) { ... }`, and `else { ... }` select updates inside a clock block. These are runtime hardware branches, separate from electrical compile-time control flow. Multiplication, division, signed arithmetic, slices, runtime loops, falling-edge blocks, and reset declarations are not implemented.
+- Ports and combinational output assignments retain their existing one-bit syntax. Internal vectors are unsigned; `phase[32]` declares 32 bits and `phase[31]` reads its most significant bit.
+
+The exporter uses initialized registers and nonblocking Verilog assignments. Provide the actual board's pin assignments, I/O standards, and clock timing constraints in your FPGA project. A two-stage switch synchronizer does not debounce the switch. Tests compare HYBRID01 state updates against its VHDL behavior using a test-only evaluator of the emitted subset; this is not a substitute for an independent HDL simulation, synthesis, or board validation.
 
 ## Compact circuit examples
 
@@ -309,7 +399,7 @@ For a quick check, use `examples/circuit_method.ckt` and look for **3.75 V** at 
 | Schematic placement and wiring | [`layout/geometry.py`](circuitlab/layout/geometry.py) defines drawing data/pins, [`layout/automatic.py`](circuitlab/layout/automatic.py) places known circuit shapes, [`layout/routing.py`](circuitlab/layout/routing.py) routes arbitrary graphs, and [`layout/editing.py`](circuitlab/layout/editing.py) handles interactive movement. |
 | Viewer and original editor | [`viewer/window.py`](circuitlab/viewer/window.py) is the lightweight viewer; [`viewer/legacy.py`](circuitlab/viewer/legacy.py) is the optional editor; [`tooling/session.py`](circuitlab/tooling/session.py) owns source/compilation state without Qt. |
 | LTspice export | [`exporters/spice.py`](circuitlab/exporters/spice.py) writes netlists; [`exporters/ltspice.py`](circuitlab/exporters/ltspice.py) writes native sheets and hierarchy companions. |
-| Digital chip export | [`exporters/verilog.py`](circuitlab/exporters/verilog.py) validates standalone combinational chips and emits Verilog. |
+| Digital chip export | [`exporters/verilog.py`](circuitlab/exporters/verilog.py) validates one-bit combinational outputs, unsigned state, constants, and rising-edge clock blocks, then emits Verilog. Expression parsing and clocked branches live in [`exporters/clocked.py`](circuitlab/exporters/clocked.py). |
 
 Both the solver and renderer consume the compiled `Circuit`. Keep electrical connections in that graph. The layout tracks each wire by its net so a visual crossing cannot become an electrical junction. `layout/legacy.py` retains the historical geometry used by MATLAB comparison tests. Root-level compatibility modules keep older imports working; new implementation belongs in the organized packages.
 

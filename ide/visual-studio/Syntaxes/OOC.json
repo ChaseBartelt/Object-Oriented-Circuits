@@ -97,8 +97,9 @@
     },
     "control": {
       "patterns": [
+        { "name": "storage.type.ooc", "match": "\\bconst\\b" },
         {
-          "begin": "(?i)\\b(?:(else)\\s+)?(if|for|while)\\s*(\\()(?=[^#\\r\\n]*\\)\\s*[;{])",
+          "begin": "(?i)\\b(?:(else)\\s+)?(if|for|while|clock|every)\\s*(\\()(?=[^#\\r\\n]*\\)\\s*[;{])",
           "end": "(\\))|(?=#)|$",
           "beginCaptures": {
             "1": { "name": "keyword.control.ooc" },
@@ -163,10 +164,7 @@
           "name": "constant.language.boolean.ooc",
           "match": "(?i)\\b(?:true|false)\\b"
         },
-        {
-          "name": "constant.numeric.ooc",
-          "match": "\\b[0-9]+\\b"
-        },
+        { "include": "#numbers" },
         {
           "name": "keyword.operator.ooc",
           "match": "\\+\\+|--|&&|\\|\\||==|!=|<=|>=|[+*/%=!-]|[<>]"
@@ -242,7 +240,7 @@
       ]
     },
     "numbers": {
-      "match": "(?<![A-Za-z0-9_.])([+−-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?[ij]?)(?:[ \\t]*([pnuµμmkMG]?(?:V(?:rms|pk|pp)?|A(?:rms|pk|pp)?|ohms?|Ω|F|H|Hz|s|W|J|C|VA|var|Nm|rad/s|deg|°)|[pnuµμmkMG]|%))?(?=cos\\s*\\(|[^A-Za-z0-9_.]|$)",
+      "match": "(?<![A-Za-z0-9_.])([+−-]?(?:[0-9]+(?:_[0-9]+)*(?:\\.[0-9]*(?:_[0-9]+)*)?|\\.[0-9]+(?:_[0-9]+)*)(?:[eE][+-]?[0-9]+)?[ij]?)(?:[ \\t]*([pnuµμmkMG]?(?:V(?:rms|pk|pp)?|A(?:rms|pk|pp)?|ohms?|Ω|F|H|Hz|s|W|J|C|VA|var|Nm|rad/s|deg|°)|[pnuµμmkMG]|%))?(?=cos\\s*\\(|[^A-Za-z0-9_.]|$)",
       "captures": {
         "1": { "name": "constant.numeric.ooc" },
         "2": { "name": "constant.other.unit.ooc" }

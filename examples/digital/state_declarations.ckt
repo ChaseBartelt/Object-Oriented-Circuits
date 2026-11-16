@@ -1,0 +1,24 @@
+# Verilog export: initialized state and one-bit output expressions.
+# No clock block is present here, so these states stay at their initial values.
+chip StateDeclarations(a, y, msb, counter_bit, led, synced, preset_bit, enabled, bit0) {
+    a = input;
+    y, msb, counter_bit, led, synced, preset_bit, enabled, bit0 = output;
+
+    phase[32];
+    blink_counter[25];
+    led_state;
+    sw_meta;
+    sw_sync;
+    preset[32] = 1_024;
+    flag = 1;
+    one_bit[1];
+
+    y = a & !sw_meta;
+    msb = phase[31];
+    counter_bit = blink_counter[24];
+    led = led_state;
+    synced = sw_sync;
+    preset_bit = preset[10];
+    enabled = flag;
+    bit0 = one_bit[0];
+}

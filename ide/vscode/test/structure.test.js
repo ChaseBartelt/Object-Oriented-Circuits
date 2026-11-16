@@ -10,6 +10,17 @@ function labels(nodes) {
     return nodes.map(({ kind, name }) => [kind, name]);
 }
 
+test("HYBRID01 clock and branches appear inside the chip outline", () => {
+    const source = fs.readFileSync(path.join(__dirname, "../../../examples/digital/HYBRID01.ckt"), "utf8");
+    const nodes = parseStructure(source);
+    assert.deepEqual(labels(nodes), [["chip", "HYBRID01"]]);
+    assert.deepEqual(labels(nodes[0].children), [["clock", "clock"]]);
+    assert.deepEqual(labels(nodes[0].children[0].children), [
+        ["if", "if"], ["else", "else"], ["every", "every"],
+    ]);
+    checkSelection(source, nodes);
+});
+
 function checkSelection(source, nodes) {
     for (const node of nodes) {
         assert.equal(source.slice(node.selectionStart, node.selectionEnd), node.name);

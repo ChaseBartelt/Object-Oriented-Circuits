@@ -7,7 +7,7 @@ const DECLARATION = /^(circuit|chip|gate|series|parallel)[ \t]+([A-Za-z_][A-Za-z
 const DEVICE_BLOCK = /^(battery|transistor)[ \t]+([A-Za-z](?:[A-Za-z0-9_]|\$\{[^}]*\})*)$/id;
 const MAIN = /^(main)(?:[ \t]*\([ \t]*\))?$/id;
 const INLINE = /^(series|parallel)(?:[ \t]*\(.*\))?$/id;
-const BRANCH = /^(else[ \t]+if|if|for|while)[ \t]*\(.*\)$/id;
+const BRANCH = /^(else[ \t]+if|if|for|while|clock|every)[ \t]*\(.*\)$/id;
 const KEYWORD_BLOCK = /^(else|do)$/id;
 const LEGACY = /\([ \t]*(?:(end)[ \t]+)?(?:(series|parallel)|(battery)(?:[ \t]+([^()=#\r\n]+?))?|(opamp)(?:[ \t]+([A-Za-z][A-Za-z0-9_]*))?)[ \t]*\)/idy;
 const INCLUDE = /^include[ \t]*\([ \t]*"([^"\r\n]+)"[ \t]*\)$/id;

@@ -58,6 +58,7 @@ class ViewerWindow(QMainWindow):
         button("Save layout", self.save, controls)
         button("Analysis window", self.show_analysis, controls)
         button("Export to SPICE", self.export_netlist, controls)
+        button("FPGA…", self.show_fpga, controls)
         controls.addStretch()
         panel.addLayout(controls)
         self.views = QTabWidget()
@@ -234,6 +235,8 @@ class ViewerWindow(QMainWindow):
         dialog.deleteLater()
 
     def compile_source(self):
+        if getattr(self, "fpga_window", None):
+            self.fpga_window.refresh_source()
         self.scope.set_circuit(None)
         self.schematic.clear(preserve_placement=True)
         self.session.compile(self.mode.currentData())
@@ -460,6 +463,15 @@ class ViewerWindow(QMainWindow):
             next_step="Add it to your FPGA project.",
         )
 
+    def show_fpga(self):
+        from circuitlab.viewer.fpga import FpgaDialog
+        if not getattr(self, "fpga_window", None):
+            self.fpga_window = FpgaDialog(self, lambda: (self.path, self.session.source))
+        self.fpga_window.refresh_source()
+        self.fpga_window.show()
+        self.fpga_window.raise_()
+        self.fpga_window.activateWindow()
+
     def export_ltspice(self):
         used_labels = False
         block_files = {}
@@ -498,6 +510,10 @@ class ViewerWindow(QMainWindow):
         return exported
 
     def closeEvent(self, event):
+        if getattr(self, "fpga_window", None) and self.fpga_window.busy:
+            self.status.setText("Wait for the FPGA operation to finish before closing the viewer.")
+            event.ignore()
+            return
         if not self.confirm_edits():
             event.ignore()
             return

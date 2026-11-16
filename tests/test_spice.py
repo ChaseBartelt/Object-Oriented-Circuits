@@ -6,6 +6,8 @@ from pathlib import Path
 
 from circuitlab.model.graph import CircuitError
 from circuitlab.exporters.spice import export_spice
+from circuitlab.exporters.verilog import export_verilog
+from circuitlab.language.syntax import has_chip
 
 EXAMPLES = Path(__file__).resolve().parents[1] / "examples"
 
@@ -126,8 +128,13 @@ class SpiceExportTest(unittest.TestCase):
         with self.assertRaisesRegex(CircuitError, "Enter a frequency"):
             export_spice("V1 in 0 1 Vrms\nC1 in 0 1u")
 
-    def test_bundled_examples_export(self):
+    def test_bundled_examples_use_the_correct_exporter(self):
         for path in EXAMPLES.glob("*.ckt"):
             with self.subTest(example=path.name):
-                netlist = export_spice(path.read_text(encoding="utf-8-sig"))
-                self.assertTrue(netlist.endswith(".end\n"))
+                source = path.read_text(encoding="utf-8-sig")
+                if has_chip(source):
+                    self.assertTrue(export_verilog(source).endswith("endmodule\n"))
+                    with self.assertRaisesRegex(CircuitError, "Export Verilog"):
+                        export_spice(source)
+                else:
+                    self.assertTrue(export_spice(source).endswith(".end\n"))

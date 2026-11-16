@@ -1,0 +1,32 @@
+# Terasic DE10-Lite, MAX 10 10M50DAF484C7G.
+# Pin references: Terasic DE10-Lite User Manual (June 2020), Tables 3-2/4/5/7.
+set_global_assignment -name FAMILY "MAX 10"
+set_global_assignment -name DEVICE 10M50DAF484C7G
+set_global_assignment -name TOP_LEVEL_ENTITY HYBRID01
+set_global_assignment -name VERILOG_FILE build/HYBRID01.v
+set_global_assignment -name SDC_FILE HYBRID01.sdc
+set_global_assignment -name PROJECT_OUTPUT_DIRECTORY build/output_files
+set_global_assignment -name NUM_PARALLEL_PROCESSORS 2
+set_global_assignment -name RESERVE_ALL_UNUSED_PINS "AS INPUT TRI-STATED"
+
+set_location_assignment PIN_P11 -to MAX10_CLK1_50
+set_location_assignment PIN_C10 -to SW0
+set_location_assignment PIN_A8 -to LEDR0
+# GPIO0: JP1 physical pin 1 (not header pin 10).
+set_location_assignment PIN_V10 -to AUDIO_OUT
+set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to MAX10_CLK1_50
+set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to SW0
+set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to LEDR0
+set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to AUDIO_OUT
+set_instance_assignment -name CURRENT_STRENGTH_NEW "4MA" -to AUDIO_OUT
+set_instance_assignment -name CURRENT_STRENGTH_NEW "8MA" -to LEDR0
+
+# Preserve and identify both stages of the asynchronous slide-switch synchronizer.
+set_instance_assignment -name PRESERVE_REGISTER ON -to sw_meta
+set_instance_assignment -name PRESERVE_REGISTER ON -to sw_sync
+set_instance_assignment -name SYNCHRONIZER_IDENTIFICATION "FORCED IF ASYNCHRONOUS" -to sw_meta
+set_instance_assignment -name SYNCHRONIZER_IDENTIFICATION "FORCED IF ASYNCHRONOUS" -to sw_sync
+set_global_assignment -name OPTIMIZE_FOR_METASTABILITY ON
+
+set_global_assignment -name LAST_QUARTUS_VERSION "25.1std.0 Lite Edition"
+set_global_assignment -name RESERVE_ALL_UNUSED_PINS_NO_OUTPUT_GND "AS INPUT TRI-STATED"

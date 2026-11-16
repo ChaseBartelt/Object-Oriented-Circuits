@@ -1,6 +1,8 @@
 """Editor recognition remains useful without importing a graphical editor."""
 
 from pathlib import Path
+import json
+import re
 import subprocess
 import sys
 import unittest
@@ -9,6 +11,39 @@ from circuitlab.tooling.source_info import SourceInfo, accepts_calls, gate_input
 
 
 class SourceInfoTest(unittest.TestCase):
+    def test_clock_and_timer_headers_are_not_electrical_wire_connections(self):
+        for source, token, help_text in (
+            ('clock(clk, 50MHz) {', '50MHz', 'external clock'),
+            ('clock(clk, 50MHz) {', 'clk', 'rising edge'),
+            ('clock(clk, 50MHz) { every(500ms) {', '500ms', 'first update'),
+        ):
+            with self.subTest(source=source, token=token):
+                info = SourceInfo(source)
+                column = source.index(token)
+                self.assertIsNone(info.wire_at(0, column))
+                self.assertIsNone(info.device_at(0, column))
+                self.assertIn(help_text, info.hover_help(0, column))
+        for name in ('clock', 'every'):
+            source = f'circuit {name}(a,b) {{ R1(1k) between(a,b); }}\n{name}(input, out);'
+            info = SourceInfo(source)
+            self.assertEqual(info.wire_at(1, len(name) + 1), (2, name, 0, 'input'))
+            self.assertIn('Call this circuit', info.hover_help(1, 1))
+
+    def test_shared_grammar_recognizes_units_and_underscores_in_expressions(self):
+        path = Path(__file__).resolve().parents[1] / 'ide/visual-studio/Syntaxes/OOC.json'
+        grammar = json.loads(path.read_text(encoding='utf-8'))['repository']
+        self.assertIn({'include': '#numbers'}, grammar['expression']['patterns'])
+        number = re.compile(grammar['numbers']['match'])
+        for literal, value, unit in (
+            ('50MHz', '50', 'MHz'), ('500ms', '500', 'ms'),
+            ('24_999_999', '24_999_999', None), ('50_000kHz', '50_000', 'kHz'),
+            ('1.25us', '1.25', 'us'), ('10k', '10', 'k'), ('1e-3', '1e-3', None),
+        ):
+            with self.subTest(literal=literal):
+                match = number.fullmatch(literal)
+                self.assertIsNotNone(match)
+                self.assertEqual(match.groups(), (value, unit))
+
     def test_import_and_lookup_do_not_load_qt(self):
         script = """
 import sys

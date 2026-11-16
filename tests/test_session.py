@@ -66,6 +66,30 @@ assert 'circuitlab.viewer.editor' not in sys.modules
         self.assertEqual(session.drawing.instances[0].name, "invert")
         self.assertIn("assign y = !a;", session.verilog())
 
+    def test_internal_states_remain_digital_in_preview_and_export(self):
+        session = CircuitSession(source="""chip StateBits(a, y, z) {
+            a = input;
+            y, z = output;
+            phase[32] = 100;
+            led_state;
+            flag = 1;
+            y = a ^ phase[6];
+            z = !led_state & flag;
+        }""")
+        session.compile()
+        self.assertTrue(session.preview_only)
+        self.assertFalse(session.issues)
+        self.assertIsNone(session.solution)
+        self.assertFalse(session.drawing.components)
+        self.assertEqual(session.drawing.instances[0].pins, (("a", "a"), ("y", "y"), ("z", "z")))
+        verilog = session.verilog()
+        self.assertIn("reg [31:0] phase = 32'd100;", verilog)
+        self.assertIn("reg led_state = 1'b0;", verilog)
+        self.assertIn("reg flag = 1'b1;", verilog)
+        self.assertIn("assign y = a ^ phase[6];", verilog)
+        self.assertIn("assign z = !led_state & flag;", verilog)
+        self.assertNotRegex(verilog, r"\b(always|posedge|negedge)\b")
+
     def test_library_alias_and_pinout_file_preview_without_editor(self):
         for relative, expected in (("logic/74HC00.ckt", "SN74HC00"), ("converters/ADS1115.ckt", "ADS1115")):
             with self.subTest(relative=relative):

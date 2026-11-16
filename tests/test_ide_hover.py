@@ -61,6 +61,21 @@ assert not any(isinstance(widget, QPlainTextEdit) for widget in app.allWidgets()
         self.assert_png(chip)
         self.assertIn("example(vcc, a, y, gnd)", chip["text"])
 
+    def test_digital_timing_hover_explains_literals_without_an_electrical_trace(self):
+        source = '''chip Blink(clk,y) {
+            clk=input; y=output; led;
+            clock(clk,50MHz) { every(500ms) { led=!led; } }
+            y=led;
+        }'''
+        with patch('circuitlab.tooling.hover.compile_circuit') as compile_electrical:
+            for token, description in (('50MHz', 'external clock'), ('500ms', 'counter')):
+                result = self.preview(source, token)
+                self.assertIn(description, result['text'])
+                self.assertNotIn('Wire:', result['text'])
+                self.assertNotIn('Preview unavailable', result['text'])
+                self.assertNotIn('image', result)
+            compile_electrical.assert_not_called()
+
     def test_wire_preview_highlights_the_selected_net_and_excludes_parallel_branch(self):
         source = """V1(5) between(start, 0);
 R1(1k) between(start, middle);
