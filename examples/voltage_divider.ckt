@@ -6,7 +6,7 @@ series top {
 }
 
 series bottom {
-    R2 = 1k;
+    R2 = 10k;
 }
 
 main {
