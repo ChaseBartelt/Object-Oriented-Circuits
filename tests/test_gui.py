@@ -1,6 +1,7 @@
 """Exercise the normal editor, solve, render, and file workflows through Qt."""
 
 import json
+import math
 import os
 import shutil
 import unittest
@@ -22,12 +23,13 @@ from circuitlab.layout.gates import GateLayouts, default_gate_layout, gate_previ
 from circuitlab.viewer.legacy import GateLayoutDialog, MainWindow
 from circuitlab.layout.geometry import symbol_pins
 from circuitlab.layout.checks import preserves_nets
-from circuitlab.layout.persistence import pack_layout, placement_path
+from circuitlab.layout.persistence import pack_layout, placement_path, strip_placement, layout_payload
 from circuitlab.math.report import component_labels
 from circuitlab.layout.checks import mark_crossings as _mark_crossings
 from circuitlab.layout.routing import fast_layout
 from circuitlab.layout.editing import move_ground, move_symbol
 from circuitlab.viewer.schematic import SCALE, point
+from circuitlab.viewer.snapping import grid_step, snap_radius
 from circuitlab.exporters.spice import export_spice
 
 EXAMPLES = Path(__file__).resolve().parents[1] / "examples"
@@ -45,7 +47,8 @@ class ApplicationTest(unittest.TestCase):
         examples = Path(self.examples_dir.name)
         shutil.copytree(EXAMPLES, examples, dirs_exist_ok=True,
                         ignore=shutil.ignore_patterns("*.layout.json"))
-        shutil.copytree(FIXTURES, examples / "fixtures", dirs_exist_ok=True)
+        shutil.copytree(FIXTURES, examples / "fixtures", dirs_exist_ok=True,
+                        ignore=shutil.ignore_patterns("*.layout.json"))
         self.window = MainWindow()
         open_path = self.window.open_path
 
@@ -362,7 +365,7 @@ main { nand(supply, 0, input_a, input_b, out); }
         base = next(pos for wire, pos in symbol_pins(*transistor) if wire == net)
         lead = next(pos for wire, pos in symbol_pins(*resistor) if wire == net)
         start = preview.mapFromScene(point(tuple((x + y) / 2 for x, y in zip(a, b))))
-        end = start + preview.mapFromScene(point(base)) - preview.mapFromScene(point(lead)) + QPoint(8, 10)
+        end = start + preview.mapFromScene(point(base)) - preview.mapFromScene(point(lead)) + QPoint(1, 1)
         self.assertTrue(original.wires[net])
         viewport = preview.viewport()
         QTest.mousePress(viewport, Qt.MouseButton.LeftButton, pos=start)
@@ -423,7 +426,7 @@ main { nand(supply, 0, input_a, input_b, out); }
 
     def test_drag_moves_package_and_resistor_without_editing_the_circuit(self):
         win = self.window
-        win.open_path(EXAMPLES / "timer555.ckt")
+        win.open_path(FIXTURES / "refactor" / "timer555.ckt")
         schematic = win.schematic
         source = win.editor.toPlainText()
         netlist = export_spice(source)
@@ -458,7 +461,7 @@ main { nand(supply, 0, input_a, input_b, out); }
 
     def test_ctrl_click_selects_parts_for_one_live_and_undoable_drag(self):
         win = self.window
-        win.open_path(EXAMPLES / "timer555.ckt")
+        win.open_path(FIXTURES / "refactor" / "timer555.ckt")
         schematic = win.schematic
         source = win.editor.toPlainText()
         original = schematic.layout
@@ -524,7 +527,7 @@ main { nand(supply, 0, input_a, input_b, out); }
 
     def test_clicking_the_same_wire_again_clears_its_highlight(self):
         win = self.window
-        win.open_path(EXAMPLES / "timer555.ckt")
+        win.open_path(FIXTURES / "refactor" / "timer555.ckt")
         schematic = win.schematic
         path = schematic.paths["supply"]
         normal_pen = path.pen()
@@ -543,7 +546,7 @@ main { nand(supply, 0, input_a, input_b, out); }
         win = self.window
         for example in ("timer555.ckt", "voltage_divider.ckt"):
             with self.subTest(example=example):
-                win.open_path(EXAMPLES / example)
+                win.open_path((FIXTURES / "refactor" if example == "timer555.ckt" else EXAMPLES) / example)
                 schematic = win.schematic
                 source = win.editor.toPlainText()
                 original = schematic.layout
@@ -571,7 +574,7 @@ main { nand(supply, 0, input_a, input_b, out); }
 
     def test_ground_drag_snaps_directly_below_its_source_pin(self):
         win = self.window
-        win.open_path(EXAMPLES / "timer555.ckt")
+        win.open_path(FIXTURES / "refactor" / "timer555.ckt")
         schematic = win.schematic
         key = None, "auto"
         original, circuit = schematic.layout, schematic.levels[key]
@@ -581,7 +584,7 @@ main { nand(supply, 0, input_a, input_b, out); }
         schematic.redraw(schematic.saved_pins)
         x, y = schematic.layout.grounds[1]
         start = schematic.mapFromScene(point((x, y - 0.42)))
-        end = start + QPoint(-6, 12)
+        end = start + QPoint(round((pin[0] - x) * schematic.transform().m11() * SCALE) + 1, 12)
 
         QTest.mousePress(schematic.viewport(), Qt.MouseButton.LeftButton, pos=start)
         QTest.mouseMove(schematic.viewport(), end)
@@ -597,7 +600,7 @@ main { nand(supply, 0, input_a, input_b, out); }
 
     def test_split_move_and_join_connectors_then_undo(self):
         win = self.window
-        win.open_path(EXAMPLES / "timer555.ckt")
+        win.open_path(FIXTURES / "refactor" / "timer555.ckt")
         schematic = win.schematic
         original = schematic.layout
         a, b = max(original.wires["supply"], key=lambda edge: abs(edge[1][0] - edge[0][0]))
@@ -610,6 +613,10 @@ main { nand(supply, 0, input_a, input_b, out); }
             dict(call.args for call in menu.return_value.addAction.call_args_list)["Split"]()
         split = schematic.layout
         i, j = len(split.connectors) - 2, len(split.connectors) - 1
+        step = grid_step(schematic.transform().m11() * SCALE)
+        for index in (i, j):
+            for value in split.connectors[index][1]:
+                self.assertAlmostEqual(value / step, round(value / step))
         net, left, name, *_ = split.connectors[i]
         self.assertEqual((net, name), ("supply", split.connectors[j][2]))
         circuit = schematic.levels[None, "auto"]
@@ -637,7 +644,7 @@ main { nand(supply, 0, input_a, input_b, out); }
 
     def test_rotated_ground_snaps_to_the_package_pin(self):
         win = self.window
-        win.open_path(EXAMPLES / "timer555.ckt")
+        win.open_path(FIXTURES / "refactor" / "timer555.ckt")
         schematic = win.schematic
         original = schematic.layout
         x, y = original.grounds[-1]
@@ -654,7 +661,7 @@ main { nand(supply, 0, input_a, input_b, out); }
             schematic.undo_placement()
             actions["Rotate clockwise"]()
         self.assertEqual(schematic.layout.ground_rotations[(x, y)], 1)
-        a, b = original.wires["0"][-1]
+        a, b = next(edge for edge in original.wires["0"] if (x, y) in edge)
         pin = a if b == (x, y) else b
         start = schematic.mapFromScene(point((x - 0.42, y)))
         end = start + schematic.mapFromScene(point(pin)) - schematic.mapFromScene(point((x, y)))
@@ -672,7 +679,7 @@ main { nand(supply, 0, input_a, input_b, out); }
         win = self.window
         with TemporaryDirectory() as directory:
             path = Path(directory) / "timer555.ckt"
-            source = (EXAMPLES / "timer555.ckt").read_bytes()
+            source = (FIXTURES / "refactor" / "timer555.ckt").read_bytes()
             path.write_bytes(source)
             win.open_path(path)
             win.wire_style.setCurrentIndex(win.wire_style.findData("routed"))
@@ -680,7 +687,7 @@ main { nand(supply, 0, input_a, input_b, out); }
             original = schematic.layout
             a, b = max(original.wires["supply"], key=lambda edge: abs(edge[1][0] - edge[0][0]))
             start = schematic.mapFromScene(point(((a[0] + b[0]) / 2, a[1])))
-            end = start - QPoint(0, round(schematic.transform().m11() * SCALE))
+            end = start - QPoint(0, round(0.5 * schematic.transform().m11() * SCALE))
             QTest.mousePress(schematic.viewport(), Qt.MouseButton.LeftButton, pos=start)
             QTest.mouseRelease(schematic.viewport(), Qt.MouseButton.LeftButton, pos=end)
             self.assertNotEqual(schematic.layout.wires, original.wires)
@@ -695,8 +702,12 @@ main { nand(supply, 0, input_a, input_b, out); }
             self.assertTrue(win.isWindowModified())
             self.assertTrue(win.save())
             self.assertFalse(win.isWindowModified())
-            self.assertEqual(path.read_bytes(), source)
-            self.assertTrue(placement_path(path).is_file())
+            self.assertIs(schematic.layout, saved)
+            self.assertTrue(schematic.undo_history)
+            self.assertEqual(strip_placement(path.read_bytes().decode("utf-8-sig")), source.decode("utf-8-sig"))
+            self.assertIsNotNone(layout_payload(path.read_text(encoding="utf-8-sig")))
+            self.assertFalse(placement_path(path).exists())
+            self.assertEqual(win.editor.toPlainText(), path.read_text(encoding="utf-8-sig"))
 
             reopened = MainWindow()
             try:
@@ -844,7 +855,7 @@ main { nand(supply, 0, input_a, input_b, out); }
 
     def test_ctrl_z_undoes_wire_moves_only_when_schematic_has_focus(self):
         win = self.window
-        win.open_path(EXAMPLES / "timer555.ckt")
+        win.open_path(FIXTURES / "refactor" / "timer555.ckt")
         schematic = win.schematic
         win.activateWindow()
         self.app.processEvents()
@@ -857,7 +868,9 @@ main { nand(supply, 0, input_a, input_b, out); }
                 key=lambda edge: dist(*edge),
             )
             start = schematic.mapFromScene(point(((a[0] + b[0]) / 2, a[1])))
-            end = start + QPoint(0, -round(schematic.transform().m11() * SCALE))
+            # Two different, clear grid rows; +1 would land on discharge's rail.
+            distance = 0.25 if _ == 0 else 0.5
+            end = start + QPoint(0, -round(distance * schematic.transform().m11() * SCALE))
             QTest.mousePress(schematic.viewport(), Qt.MouseButton.LeftButton, pos=start)
             QTest.mouseRelease(schematic.viewport(), Qt.MouseButton.LeftButton, pos=end)
             self.assertIsNot(schematic.layout, layouts[-1])
@@ -883,7 +896,7 @@ main { nand(supply, 0, input_a, input_b, out); }
 
     def test_wire_drag_snaps_and_holds_a_jog_flat_in_the_preview(self):
         win = self.window
-        win.open_path(EXAMPLES / "timer555.ckt")
+        win.open_path(FIXTURES / "refactor" / "timer555.ckt")
         schematic = win.schematic
         original = schematic.layout
         source_pin = original.positions["VCC"]
@@ -902,7 +915,9 @@ main { nand(supply, 0, input_a, input_b, out); }
         self.assertNotEqual(jog[0][1], y)
         start = schematic.mapFromScene(point((x, jog[0][1])))
         level = schematic.mapFromScene(point((x, y)))
-        near_level = level + QPoint(0, 23)
+        pixels = schematic.transform().m11() * SCALE
+        acquire, release = snap_radius(pixels, grid_step(pixels))
+        near_level = level + QPoint(0, max(1, int(acquire * pixels / 2)))
 
         QTest.mousePress(schematic.viewport(), Qt.MouseButton.LeftButton, pos=start)
         QTest.mouseMove(schematic.viewport(), near_level)
@@ -912,12 +927,12 @@ main { nand(supply, 0, input_a, input_b, out); }
             p[1] == q[1] == y and p[0] < x < q[0] for p, q in preview.wires["supply"]
         ))
 
-        still_snapped = level - QPoint(0, 37)
+        still_snapped = level - QPoint(0, max(1, int(release * pixels - 1)))
         QTest.mouseMove(schematic.viewport(), still_snapped)
         self.wait_for_drag_preview(schematic, still_snapped)
         self.assertIs(schematic.layout, preview)
 
-        beyond_snap = level - QPoint(0, 50)
+        beyond_snap = level - QPoint(0, math.ceil(release * pixels) + 4)
         QTest.mouseMove(schematic.viewport(), beyond_snap)
         self.wait_for_drag_preview(schematic, beyond_snap)
         self.assertIsNone(schematic.drag.snapped_offset)
@@ -936,7 +951,7 @@ main { nand(supply, 0, input_a, input_b, out); }
 
     def test_resistor_drag_snaps_its_pin_level_with_a_branched_wire(self):
         win = self.window
-        win.open_path(EXAMPLES / "timer555.ckt")
+        win.open_path(FIXTURES / "refactor" / "timer555.ckt")
         schematic = win.schematic
         key = None, "auto"
         circuit, original = schematic.levels[key], schematic.layout
@@ -964,7 +979,7 @@ main { nand(supply, 0, input_a, input_b, out); }
                 )
                 start = schematic.mapFromScene(point(((a[0] + b[0]) / 2, a[1])))
                 direction = 1 if shift > 0 else -1
-                end = start + QPoint(0, 6 * direction)
+                end = start + QPoint(0, round(shift * schematic.transform().m11() * SCALE) - direction)
 
                 QTest.mousePress(schematic.viewport(), Qt.MouseButton.LeftButton, pos=start)
                 QTest.mouseMove(schematic.viewport(), end)
@@ -982,7 +997,7 @@ main { nand(supply, 0, input_a, input_b, out); }
 
     def test_wire_drag_previews_a_perpendicular_slide_without_editing_source(self):
         win = self.window
-        win.open_path(EXAMPLES / "timer555.ckt")
+        win.open_path(FIXTURES / "refactor" / "timer555.ckt")
         schematic = win.schematic
         source = win.editor.toPlainText()
         original = schematic.layout
@@ -997,7 +1012,7 @@ main { nand(supply, 0, input_a, input_b, out); }
                 )
                 middle = ((a[0] + b[0]) / 2, (a[1] + b[1]) / 2)
                 start = schematic.mapFromScene(point(middle))
-                scale = round(schematic.transform().m11() * SCALE)
+                scale = round(0.5 * schematic.transform().m11() * SCALE)
                 end = start + QPoint(scale if vertical else 0, 0 if vertical else -scale)
                 QTest.mousePress(schematic.viewport(), Qt.MouseButton.LeftButton, pos=start)
                 self.assertEqual(schematic.drag.kind, "wire")
@@ -1009,7 +1024,7 @@ main { nand(supply, 0, input_a, input_b, out); }
                 self.assertNotEqual(preview.wires["supply"], original.wires["supply"])
                 axis = 0 if vertical else 1
                 self.assertTrue(any(
-                    p[axis] == q[axis] and 0.8 < p[axis] - a[axis] < 1.2
+                    p[axis] == q[axis] and 0.35 < p[axis] - a[axis] < 0.65
                     for p, q in preview.wires["supply"]
                 ))
                 QTest.mouseRelease(schematic.viewport(), Qt.MouseButton.LeftButton, pos=end)
@@ -1020,7 +1035,7 @@ main { nand(supply, 0, input_a, input_b, out); }
 
     def test_shift_drag_can_use_shorter_diagonal_leads(self):
         win = self.window
-        win.open_path(EXAMPLES / "timer555.ckt")
+        win.open_path(FIXTURES / "refactor" / "timer555.ckt")
         schematic = win.schematic
         original = schematic.layout
         _, a, b, _ = next(symbol for symbol in original.symbols if symbol[0].name == "RA")
@@ -1041,7 +1056,7 @@ main { nand(supply, 0, input_a, input_b, out); }
 
     def test_move_toward_a_wire_bend_shortens_the_route(self):
         win = self.window
-        win.open_path(EXAMPLES / "timer555.ckt")
+        win.open_path(FIXTURES / "refactor" / "timer555.ckt")
         schematic = win.schematic
         original = schematic.layout
         _, a, b, _ = next(symbol for symbol in original.symbols if symbol[0].name == "RA")
@@ -1058,7 +1073,7 @@ main { nand(supply, 0, input_a, input_b, out); }
 
     def test_right_click_rotates_part_and_keeps_its_pin_connections(self):
         win = self.window
-        win.open_path(EXAMPLES / "timer555.ckt")
+        win.open_path(FIXTURES / "refactor" / "timer555.ckt")
         schematic = win.schematic
         source = win.editor.toPlainText()
         original = schematic.layout
@@ -1070,7 +1085,7 @@ main { nand(supply, 0, input_a, input_b, out); }
         with patch("circuitlab.viewer.schematic.QMenu") as menu:
             schematic.contextMenuEvent(menu_event)
             actions = dict(call.args for call in menu.return_value.addAction.call_args_list)
-            self.assertEqual(list(actions), ["Rotate clockwise", "Rotate counterclockwise"])
+            self.assertEqual(list(actions), ["Edit value…", "Rotate clockwise", "Rotate counterclockwise", "Optimize wiring"])
             actions["Rotate counterclockwise"]()
             self.assertEqual(schematic.layout.rotations["RA"], 3)
             self.assertTrue(preserves_nets(schematic.levels[None, "auto"], schematic.layout))
@@ -1194,7 +1209,7 @@ main { nand(supply, 0, input_a, input_b, out); }
 
     def test_packages_expand_and_collapse_on_the_same_schematic(self):
         win = self.window
-        win.open_path(EXAMPLES / "timer555.ckt")
+        win.open_path(FIXTURES / "refactor" / "timer555.ckt")
         schematic = win.schematic
 
         def click_package(label, action="Open", name=None):
@@ -1251,7 +1266,7 @@ main { nand(supply, 0, input_a, input_b, out); }
 
     def test_ltspice_export_saves_the_555_block_files_beside_the_main_sheet(self):
         win = self.window
-        win.open_path(EXAMPLES / "timer555.ckt")
+        win.open_path(FIXTURES / "refactor" / "timer555.ckt")
         drawing = win.schematic.layout
         with TemporaryDirectory() as directory:
             path = Path(directory) / "timer555.asc"
@@ -1333,7 +1348,7 @@ main { nand(supply, 0, input_a, input_b, out); }
 
     def test_mixer_uses_routed_nets_and_mixed_solution(self):
         win = self.window
-        win.open_path(EXAMPLES / "three_band_mixer.ckt")
+        win.open_path(FIXTURES / "three_band_mixer.ckt")
         self.assertEqual(len(win.solution.circuit.components), 63)
         self.assertEqual(set(win.schematic.paths), set(win.solution.circuit.nodes))
         self.assertEqual(win.solution.circuit.mode, "mixed")
@@ -1400,7 +1415,7 @@ main { nand(supply, 0, input_a, input_b, out); }
 
     def test_pin_placement_rename_search_and_reopen(self):
         win = self.window
-        win.open_path(EXAMPLES / "three_way_crossover.ckt")
+        win.open_path(FIXTURES / "three_way_crossover.ckt")
         pos = win.schematic.mapFromScene(point(win.schematic.anchors["midOut"]))
         QTest.mouseClick(win.pin_button, Qt.MouseButton.LeftButton)
         with patch(
@@ -1445,7 +1460,7 @@ main { nand(supply, 0, input_a, input_b, out); }
 
     def test_mixed_pin_has_dc_ac_and_waveform_results(self):
         win = self.window
-        win.open_path(EXAMPLES / "three_band_mixer.ckt")
+        win.open_path(FIXTURES / "three_band_mixer.ckt")
         win.write_pin("outP", "Speaker P")
         labels = {row[0] for row in win.results.rows}
         self.assertIn("Speaker P · DC voltage", labels)

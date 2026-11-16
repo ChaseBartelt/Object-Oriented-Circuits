@@ -2,6 +2,7 @@
 
 import argparse
 import sys
+import json
 
 
 def main(argv=None):
@@ -22,6 +23,8 @@ def main(argv=None):
         bridge = EditorBridge(window)
         bridge.requested.connect(window.open_from_editor, Qt.ConnectionType.QueuedConnection)
         bridge.refreshed.connect(window.refresh_from_editor, Qt.ConnectionType.QueuedConnection)
+        bridge.edited.connect(window.source_tools.result, Qt.ConnectionType.QueuedConnection)
+        window.source_tools.sender = lambda request: print(json.dumps(request), flush=True)
     else:
         from circuitlab.viewer.legacy import MainWindow
         window = MainWindow()

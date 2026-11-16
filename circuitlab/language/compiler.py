@@ -10,7 +10,7 @@ def compile_circuit(source, mode="auto", *, render_only=False, path=None, read_s
     if not isinstance(source, str):
         source = "\n".join(source)
     if path is not None or any(
-        (match := INCLUDE.fullmatch(row)) and match[1].startswith("@chips/")
+        INCLUDE.fullmatch(row)
         for row, _, _ in source_rows(source)
     ):
         return compile_linked(source, path, mode, render_only=render_only, read_source=read_source)

@@ -1,0 +1,24 @@
+# AC: input -> band0/band1/band2 near 503/1007/2013 Hz; out is their inverted mean.
+# Each tank has Q ~ 3.16. Reduce its loss resistor for a narrower peak; ideal op amps.
+V1(1 Vrms) between(input, 0);
+f = 1k
+
+circuit resonator(coil, capacitor, loss, input, output) {
+    coil between(input, link);
+    capacitor between(link, ring);
+    loss between(ring, 0);
+    op1(ring, output, output);
+}
+
+main {
+    resonator(L(100m), C(1u), R(100), input, band0);
+    resonator(L(100m), C(250n), R(200), input, band1);
+    resonator(L(100m), C(62.5n), R(400), input, band2);
+    for (int i = 0; i < 3; i++) {
+        RMix${i}(30k) between(band${i}, sum);
+        measure = V band${i} 0;
+    }
+    RFeedback(10k) between(sum, out);
+    op1(0, sum, out);
+    measure = V out 0;
+}

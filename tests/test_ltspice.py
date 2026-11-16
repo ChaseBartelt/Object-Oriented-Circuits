@@ -15,6 +15,7 @@ from circuitlab.layout.editing import move_symbol
 from circuitlab.exporters.spice import spice_circuit
 
 EXAMPLES = Path(__file__).resolve().parents[1] / "examples"
+FIXTURES = Path(__file__).parent / "fixtures"
 PIN_OFFSETS = {
     "res": ((16, 16), (16, 96)),
     "cap": ((16, 0), (16, 64)),
@@ -73,7 +74,7 @@ def read_connections(text, extra_pins=None):
 
 class LtspiceSchematicTest(unittest.TestCase):
     def test_saved_555_layout_keeps_wires_and_symbol_rotations(self):
-        path = EXAMPLES / "timer555.ckt"
+        path = Path(__file__).parent / "fixtures" / "refactor" / "timer555.ckt"
         circuit = compile_circuit(path.read_text(encoding="utf-8-sig"))
         top = next(hood_levels(circuit, set()))[1]
         mode, records = read_placement(path)
@@ -114,7 +115,7 @@ class LtspiceSchematicTest(unittest.TestCase):
         self.assertEqual(read_connections(text)["R1"][0], ("in", "out"))
 
     def test_555_exports_as_a_native_hierarchy_with_eight_connected_pins(self):
-        circuit = compile_circuit((EXAMPLES / "timer555.ckt").read_text(encoding="utf-8-sig"))
+        circuit = compile_circuit((FIXTURES / "refactor" / "timer555.ckt").read_text(encoding="utf-8-sig"))
         top = next(hood_levels(circuit, set()))[1]
         layout = schematic_layout(top, component_labels(top), "auto")
         sheet, files, used_labels = export_hierarchy(circuit, layout)
@@ -250,13 +251,13 @@ class LtspiceSchematicTest(unittest.TestCase):
 
     def test_ac_and_crowded_circuits_preserve_every_terminal(self):
         for example in (
-            "rc_lowpass.ckt",
-            "three_way_crossover.ckt",
-            "three_band_mixer.ckt",
+            EXAMPLES / "rc_lowpass.ckt",
+            EXAMPLES / "three_way_crossover.ckt",
+            FIXTURES / "three_band_mixer.ckt",
         ):
             with self.subTest(example=example):
                 circuit = compile_circuit(
-                    (EXAMPLES / example).read_text(encoding="utf-8-sig")
+                    example.read_text(encoding="utf-8-sig")
                 )
                 text, _ = self.check_export(circuit, "auto")
                 self.assertIn("!.ac list ", text)

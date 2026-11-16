@@ -1,5 +1,5 @@
 const { execFile, spawn } = require("node:child_process");
-const { existsSync, readFileSync, realpathSync } = require("node:fs");
+const { existsSync, readFileSync, readdirSync, realpathSync } = require("node:fs");
 const path = require("node:path");
 const vscode = require("vscode");
 const { analyzeSource } = require("./structure");
@@ -92,20 +92,40 @@ function installedRuntime() {
 }
 
 function includeTarget(document, filename) {
-    if (document.uri.scheme !== "file" || path.isAbsolute(filename) || /^[A-Za-z]:/.test(filename)
-        || ![".ckt", ".txt"].includes(path.extname(filename).toLowerCase())) {
+    filename = filename.replace(/\\/g, "/");
+    const shortName = /^[A-Za-z0-9_][A-Za-z0-9_-]*$/.test(filename);
+    if (path.isAbsolute(filename) || /^[A-Za-z]:/.test(filename)
+        || (!shortName && ![".ckt", ".txt"].includes(path.extname(filename).toLowerCase()))) {
         return undefined;
     }
-    if (filename.startsWith("@chips/") || filename.startsWith("@chips\\")) {
+    if (shortName || filename.startsWith("@chips/")) {
         const root = checkoutRoot(document);
         const library = root ? path.join(root, "circuitlab", "libraries", "chips") : installedRuntime()?.library;
         if (!library) {
             return undefined;
         }
+        if (shortName) {
+            const matches = new Set();
+            const search = (directory) => {
+                for (const entry of readdirSync(directory, { withFileTypes: true })) {
+                    const file = path.join(directory, entry.name);
+                    if (entry.isDirectory() && !entry.isSymbolicLink()) search(file);
+                    else if (entry.isFile() && path.extname(entry.name).toLowerCase() === ".ckt"
+                        && path.basename(entry.name, path.extname(entry.name)).toLowerCase() === filename.toLowerCase()) {
+                        const resolved = realpathSync(file);
+                        const relative = path.relative(realpathSync(library), resolved);
+                        if (relative && !path.isAbsolute(relative) && relative !== ".." && !relative.startsWith(".." + path.sep)) matches.add(resolved);
+                    }
+                }
+            };
+            try { search(library); } catch { return undefined; }
+            return matches.size === 1 ? [...matches][0] : undefined;
+        }
         const target = path.resolve(library, filename.slice("@chips/".length));
         const relative = path.relative(library, target);
         return relative === ".." || relative.startsWith(".." + path.sep) ? undefined : target;
     }
+    if (document.uri.scheme !== "file") return undefined;
     return path.resolve(path.dirname(document.uri.fsPath), filename);
 }
 
@@ -151,6 +171,56 @@ function runtime(document) {
     return { python, cwd: root || folder || path.dirname(document.uri.fsPath) };
 }
 
+const schematicSaving = new WeakSet();
+
+async function applySchematicEdit(request) {
+    if (!vscode.workspace.isTrusted) throw new Error('Trust this workspace before editing its circuit.');
+    if (typeof request.path !== 'string' || !path.isAbsolute(request.path)
+        || typeof request.before !== 'string' || typeof request.after !== 'string') {
+        throw new Error('Invalid schematic source edit.');
+    }
+    const document = await vscode.workspace.openTextDocument(vscode.Uri.file(request.path));
+    const normalize = (text) => text.replace(/\r\n/g, '\n');
+    if (document.isDirty || normalize(document.getText()) !== normalize(request.before)) {
+        throw new Error('The source has changed or has unsaved edits. Save in VS Code, refresh the schematic, then try again.');
+    }
+    const edit = new vscode.WorkspaceEdit();
+    edit.replace(document.uri, new vscode.Range(document.positionAt(0), document.positionAt(document.getText().length)), request.after);
+    if (!await vscode.workspace.applyEdit(edit)) throw new Error('VS Code refused the source edit.');
+    // The viewer refreshes on acknowledgment. Sending it another save/reload
+    // message can discard the drawing history it has just restored with Undo.
+    schematicSaving.add(document);
+    try {
+        if (!await document.save()) throw new Error('The edit is in VS Code but could not be saved. Save it there, then refresh the schematic.');
+    } finally {
+        schematicSaving.delete(document);
+    }
+}
+
+function attachSchematicEdits(child, output) {
+    if (!child.stdout) return;
+    child.stdout.removeAllListeners('data');
+    const decoder = new (require('node:string_decoder').StringDecoder)('utf8');
+    let pendingOutput = '';
+    child.stdout.on("data", (data) => {
+        pendingOutput += decoder.write(data);
+        let newline;
+        while ((newline = pendingOutput.indexOf('\n')) >= 0) {
+            const line = pendingOutput.slice(0, newline);
+            pendingOutput = pendingOutput.slice(newline + 1);
+            let request;
+            try { request = JSON.parse(line); } catch { output.append(line + '\n'); continue; }
+            if (!request || request.type !== 'ooc-source-edit') { output.append(line + '\n'); continue; }
+            applySchematicEdit(request).then(
+                () => ({ type: 'ooc-source-edit-result', id: request.id, ok: true }),
+                (error) => ({ type: 'ooc-source-edit-result', id: request.id, ok: false, error: error.message }),
+            ).then((reply) => {
+                if (!child.stdin.destroyed) child.stdin.write(JSON.stringify(reply) + '\n', 'utf8', () => {});
+            });
+        }
+    });
+}
+
 function openSchematic(python, cwd, file, output, windows, automatic = false) {
     const key = JSON.stringify([python, cwd]);
     const existing = windows.get(key);
@@ -179,7 +249,7 @@ function openSchematic(python, cwd, file, output, windows, automatic = false) {
         const forget = () => { if (windows.get(key) === child) windows.delete(key); };
         // A closed pipe must not become an unhandled Node error.
         child.stdin.on("error", forget);
-        child.stdout.on("data", (data) => output.append(data.toString()));
+        attachSchematicEdits(child, output);
         child.stderr.on("data", (data) => output.append(data.toString()));
         child.once("spawn", () => {
             output.appendLine(`Opening schematic: ${file}`);
@@ -221,6 +291,7 @@ function activate(context, shared = {}) {
     }
 
     const output = shared.output || vscode.window.createOutputChannel("OOC");
+    for (const child of schematicWindows.values()) attachSchematicEdits(child, output);
     const diagnostics = vscode.languages.createDiagnosticCollection("ooc");
     let latestRun = 0;
     async function runCircuit(action) {
@@ -291,7 +362,7 @@ function activate(context, shared = {}) {
             for (const client of hoverClients.values()) client.dispose();
         } },
         vscode.workspace.onDidSaveTextDocument((document) => {
-            if (saving.has(document) || !vscode.workspace.isTrusted || document.uri.scheme !== "file"
+            if (saving.has(document) || schematicSaving.has(document) || !vscode.workspace.isTrusted || document.uri.scheme !== "file"
                 || ![".ckt", ".txt"].includes(path.extname(document.uri.fsPath).toLowerCase())
                 || !vscode.workspace.getConfiguration("ooc", document.uri).get("refreshOnSave", true)) return;
             const { python, cwd } = runtime(document);
@@ -372,4 +443,4 @@ function activate(context, shared = {}) {
     );
 }
 
-module.exports = { activate, checkoutRoot, installedRuntime, includeTarget, runtime };
+module.exports = { activate, checkoutRoot, installedRuntime, includeTarget, runtime, applySchematicEdit };

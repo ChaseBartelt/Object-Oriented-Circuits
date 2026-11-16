@@ -138,12 +138,12 @@ def replace_route(layout, net, edges):
         layout.labels.pop(net, None)
 
 
-def wire_slide_candidates(original, net, edge, distance, *, snap=0):
+def wire_slide_candidates(original, net, edge, distance, *, snap=0, pointer=None):
     """Try snapped positions before the raw pointer position."""
     edge = tuple(sorted(map(clean_point, edge)))
     a, b = edge
     axis = wire_axis(edge)
-    if a == b or axis is None or not distance:
+    if a == b or axis is None:
         yield original, None
         return
     anchors = route_anchors(original, net)
@@ -173,16 +173,17 @@ def wire_slide_candidates(original, net, edge, distance, *, snap=0):
             and (not on_run or not segments_intersect((q, q), edge))
         )
 
-    # Prefer the alignment that removes the most jogs within reach.
+    # Follow the nearest row first; remove more jogs only to break a tie.
+    pointer = distance if pointer is None else pointer
     offsets = sorted(
-        (offset for offset in snap_offsets if abs(offset - distance) <= snap),
-        key=lambda offset: (-snap_offsets[offset], abs(offset - distance), offset),
+        (offset for offset in snap_offsets if abs(offset - pointer) <= snap),
+        key=lambda offset: (abs(offset - pointer), -snap_offsets[offset], offset),
     )
     for offset in offsets:
         drawing = _shift_run(original, net, edge, axis, offset, edges, attached)
         if drawing is not original:
             yield drawing, offset
-    yield _shift_run(original, net, edge, axis, distance, edges, attached), None
+    yield _shift_run(original, net, edge, axis, distance, edges, attached) if distance else original, None
 
 
 def _shift_run(original, net, edge, axis, distance, edges, attached):

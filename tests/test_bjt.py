@@ -15,11 +15,12 @@ from circuitlab.exporters.spice import export_spice
 from test_ltspice import read_connections
 
 EXAMPLE = Path(__file__).resolve().parents[1] / "examples" / "bjt_switch.ckt"
+TIMER = Path(__file__).parent / "fixtures" / "refactor" / "timer555.ckt"
 
 
 class BjtTest(unittest.TestCase):
     def test_timer555_operating_point_with_reset_held_low(self):
-        source = EXAMPLE.with_name("timer555.ckt").read_text(encoding="utf-8")
+        source = TIMER.read_text(encoding="utf-8")
         network = solve_input(source).network
         nodes = dict(zip(network.nodes, network.voltage))
         self.assertAlmostEqual(nodes["reset_n"], 0)
@@ -27,7 +28,7 @@ class BjtTest(unittest.TestCase):
         self.assertAlmostEqual(nodes["timing"], nodes["discharge"], places=7)
 
     def test_timer555_runs_through_switching_edges_with_reset_released(self):
-        source = EXAMPLE.with_name("timer555.ckt").read_text(encoding="utf-8")
+        source = TIMER.read_text(encoding="utf-8")
         circuit = compile_circuit(source.replace("VReset(0)", "VReset(5)"))
         simulation = TimeDomain(circuit, 10e-6)
         out = simulation.nodes.index("out")

@@ -115,7 +115,7 @@ class SourceInfo:
         if CONNECTOR.fullmatch(code.strip()) and column <= code.lower().index("connector") + 9:
             return "connector(pin, ...)\nShare these nets by name with files in the same build."
         if INCLUDE.fullmatch(code.strip()):
-            return 'include("file.ckt")\nLoad a relative file or use @chips/ for the bundled library.'
+            return 'include("74HC00")\nLoad a bundled chip by name, or use a relative .ckt or .txt file path.'
         if code.strip().casefold() == "@override":
             return (
                 "Put @Override above a built-in gate definition. Calls with the same "

@@ -1,6 +1,9 @@
 """Shared schematic layouts for built-in gates."""
 
 import json
+from pathlib import Path
+import tempfile
+import os
 from collections import defaultdict
 from dataclasses import replace
 from functools import lru_cache
@@ -258,6 +261,9 @@ def _place_input_rows(drawing, input_rows, *, resistor_x, row_left, row_y, row_p
         row_y -= row_pitch
 
 
+BUNDLED_LAYOUTS = Path(__file__).resolve().parents[1] / "libraries" / "layouts" / "defaults.json"
+
+
 class GateLayouts:
     """Store the user's gate layouts separately from saved circuit layouts."""
 
@@ -271,10 +277,49 @@ class GateLayouts:
         return f"gate-layouts/{group}/{gate}/{inputs}"
 
     def has_saved(self, key):
-        return self.settings.contains(self.path(key))
+        return bool(self.raw(key))
+
+    def bundled(self):
+        try:
+            data = json.loads(BUNDLED_LAYOUTS.read_text(encoding="utf-8"))
+            return data["layouts"] if isinstance(data, dict) and data.get("version") == 1 and isinstance(data.get("layouts"), dict) else {}
+        except (OSError, ValueError, KeyError, TypeError):
+            return {}
+
+    def raw(self, key):
+        raw = self.settings.value(self.path(key)) or self.bundled().get(self.path(key))
+        return json.dumps(raw) if isinstance(raw, dict) else raw
+
+    def publish(self, path=BUNDLED_LAYOUTS):
+        """Write active shared defaults atomically for source control/distribution."""
+        records = self.bundled()
+        for name in self.settings.allKeys():
+            if name.startswith(("gate-layouts/v1/", "device-layouts/v1/")):
+                records[name] = self.settings.value(name)
+        for name in list(records):
+            automatic = name.replace("/v1/", "/automatic/v1/", 1)
+            if self.settings.value(automatic, False, type=bool):
+                del records[name]
+        # Decode before writing, so malformed personal settings cannot replace
+        # a valid file. Structured JSON keeps source-control diffs readable.
+        records = {name: json.loads(record) if isinstance(record, str) else record
+                   for name, record in records.items()}
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = None
+        try:
+            with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent, delete=False) as stream:
+                tmp = stream.name
+                json.dump({"version": 1, "layouts": records}, stream, indent=2, sort_keys=True)
+                stream.write("\n")
+            os.replace(tmp, path)
+        finally:
+            if tmp and os.path.exists(tmp):
+                os.unlink(tmp)
+        return len(records)
 
     def saved(self, key):
-        raw = self.settings.value(self.path(key))
+        raw = self.raw(key)
         if raw:
             try:
                 circuit, boundary = gate_preview(*key)
@@ -316,15 +361,20 @@ class GateLayouts:
         return rebind_layout(layout, template, view, instance.pins, boundary)
 
 
-def rebind_layout(layout, template, view, pins, boundary):
+def rebind_layout(layout, template, view, pins, boundary, *, template_pins=None):
     """Map a reusable layout onto the resolved parts and nets of one instance."""
     if len(template.components) != len(view.components):
         return None
     ports_by_name = {pin: view.resolve_wire(net) for pin, net in pins}
-    nets = dict(ports_by_name)
+    nets = {}
+    for pin, net in template_pins or ((pin, pin) for pin in ports_by_name):
+        original = template.resolve_wire(net)
+        actual = ports_by_name[pin]
+        if nets.setdefault(original, actual) != actual:
+            return None
     parts = {}
     for before, after in zip(template.components, view.components):
-        if before.kind != after.kind:
+        if before.kind != after.kind or len(before.terminal_nets) != len(after.terminal_nets):
             return None
         parts[before.name] = after
         for original, actual in zip(before.terminal_nets, after.terminal_nets):

@@ -3,9 +3,12 @@
 from itertools import product
 from pathlib import Path
 import unittest
+from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 from circuitlab.math.analysis import analyze
 from circuitlab.language.compiler import compile_circuit
+from circuitlab.language.linked import CHIP_LIBRARY, include_path, read_includes
 from circuitlab.model.graph import CircuitError
 from circuitlab.layout.hierarchy import hood_levels
 from circuitlab.layout.checks import preserves_nets
@@ -16,10 +19,66 @@ from circuitlab.exporters.spice import export_spice
 
 
 class ChipLibraryTest(unittest.TestCase):
+    def test_every_bundled_chip_resolves_by_short_name(self):
+        files = list(CHIP_LIBRARY.rglob("*.ckt"))
+        self.assertEqual(len(files), 59)
+        for file in files:
+            with self.subTest(chip=file.stem):
+                self.assertEqual(include_path(file.stem), file.resolve())
+                self.assertEqual(include_path(file.stem.swapcase()), file.resolve())
+
+    def test_short_and_explicit_imports_share_definitions_and_spice_output(self):
+        source = (Path(__file__).resolve().parents[1] / "examples/chip_library_nand.ckt").read_text()
+        short = source.replace('include("74HC00");', 'include("74HC00");\ninclude("@chips/logic/74HC00.ckt");')
+        explicit = source.replace('include("74HC00");', 'include("@chips/logic/74HC00.ckt");')
+        self.assertEqual(export_spice(short), export_spice(explicit))
+        for path in (None, Path.cwd() / "example.ckt"):
+            with self.subTest(path=path):
+                circuit = compile_circuit(short, path=path)
+                self.assertEqual(len([inst for inst in circuit.instances if inst.parent is None]), 1)
+                view = next(hood_levels(circuit, set()))[1]
+                self.assertTrue(preserves_nets(view, fast_layout(view, component_labels(view))))
+
+    def test_short_names_do_not_change_explicit_local_file_resolution(self):
+        with TemporaryDirectory() as directory:
+            entry = Path(directory) / "main.ckt"
+            local = entry.with_name("74HC00.ckt")
+            local.write_text("circuit Local(a,b) { R1(1k) between(a,b); }", encoding="utf-8")
+            self.assertEqual(include_path("74HC00", entry), CHIP_LIBRARY / "logic/74HC00.ckt")
+            self.assertEqual(include_path("74HC00.ckt", entry), local)
+            files, _ = read_includes('include("74HC00.ckt");', entry)
+            self.assertIn("circuit Local", files[local])
+
+    def test_missing_and_ambiguous_chip_names_report_the_include_location(self):
+        entry = Path.cwd() / "main.ckt"
+        with self.assertRaisesRegex(CircuitError, 'Unknown chip "NotAChip"') as failure:
+            compile_circuit('# header\ninclude("NotAChip");', path=entry)
+        self.assertEqual((failure.exception.path, failure.exception.line), (entry, 2))
+        with TemporaryDirectory() as directory, patch("circuitlab.language.linked.CHIP_LIBRARY", Path(directory)):
+            for category in ("logic", "timers"):
+                target = Path(directory) / category / "Demo.ckt"
+                target.parent.mkdir()
+                target.write_text("circuit Demo(a,b) { R1(1k) between(a,b); }", encoding="utf-8")
+            with self.assertRaisesRegex(CircuitError, 'Ambiguous chip name "Demo"') as failure:
+                compile_circuit('include("Demo");', path=entry)
+            self.assertEqual((failure.exception.path, failure.exception.line), (entry, 1))
+            self.assertIn("@chips/logic/Demo.ckt", failure.exception.message)
+            self.assertEqual(include_path("@chips/logic/Demo.ckt"), Path(directory) / "logic/Demo.ckt")
+
+    def test_short_imports_preserve_cycle_and_library_boundary_checks(self):
+        with TemporaryDirectory() as directory, patch("circuitlab.language.linked.CHIP_LIBRARY", Path(directory)):
+            (Path(directory) / "Demo.ckt").write_text('include("Demo");', encoding="utf-8")
+            with self.assertRaisesRegex(CircuitError, "Include cycle"):
+                compile_circuit('include("Demo");')
+            with self.assertRaisesRegex(CircuitError, "inside the chip library"):
+                compile_circuit('include("@chips/../outside.ckt");')
+        with self.assertRaisesRegex(CircuitError, "Save this circuit"):
+            compile_circuit('include("local.ckt");')
+
     def test_nand_called_from_twice_included_library(self):
         for a, b in product((0, 5), repeat=2):
             with self.subTest(a=a, b=b):
-                source = f"""include("@chips/logic/74HC00.ckt");
+                source = f"""include("74HC00");
 include("@chips/logic/SN74HC00.ckt");
 V1(5) between(vcc, 0);
 V2({a}) between(a, 0);

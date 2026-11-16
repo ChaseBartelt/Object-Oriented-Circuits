@@ -5,10 +5,12 @@ import sys
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication
+from circuitlab.language.linked import read_includes
 from circuitlab.tooling.hover import HoverRenderer
 
 
@@ -76,11 +78,20 @@ R4(1k) between(split, 0);
         child = self.path.with_name("chip.ckt")
         child.write_text("chip demo(vcc,a,y,gnd) { R1(1k) between(a,y); }", encoding="utf-8")
         source = 'include("chip.ckt");\ndemo(supply,input,out,0);'
-        result = self.preview(source, "demo(")
+        with patch("circuitlab.tooling.hover.read_includes", wraps=read_includes) as read:
+            result = self.preview(source, "demo(")
+            self.assert_png(result)
+            self.assertIn("demo(vcc, a, y, gnd)", result["text"])
+            self.assertEqual(read.call_count, 1)
+            child.write_text("chip demo(power,in1,out1,ground) { R1(1k) between(in1,out1); }", encoding="utf-8")
+            self.assertIn("demo(power, in1, out1, ground)", self.preview(source, "demo(")["text"])
+            self.assertEqual(read.call_count, 2)
+
+    def test_short_chip_import_provides_its_pinout_preview(self):
+        source = (Path(__file__).resolve().parents[1] / "examples/chip_library_nand.ckt").read_text()
+        result = self.preview(source, "SN74HC00(")
         self.assert_png(result)
-        self.assertIn("demo(vcc, a, y, gnd)", result["text"])
-        child.write_text("chip demo(power,in1,out1,ground) { R1(1k) between(in1,out1); }", encoding="utf-8")
-        self.assertIn("demo(power, in1, out1, ground)", self.preview(source, "demo(")["text"])
+        self.assertIn("SN74HC00(", result["text"])
 
     def test_grouped_gate_input_highlights_the_correct_wire(self):
         source = (

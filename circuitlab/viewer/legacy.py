@@ -1,15 +1,12 @@
 """Native editor, schematic preview, and analysis results."""
 
-import argparse
 import re
-import sys
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from PySide6.QtCore import QDir, QIODevice, QPoint, QSaveFile, QSettings, QSignalBlocker, Qt
+from PySide6.QtCore import QDir, QPoint, QSettings, QSignalBlocker, Qt
 from PySide6.QtGui import QColor, QKeySequence, QTextCursor
 from PySide6.QtWidgets import (
-    QAbstractItemView,
     QApplication,
     QComboBox,
     QDialog,
@@ -17,20 +14,14 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QFileSystemModel,
     QHBoxLayout,
-    QHeaderView,
     QInputDialog,
     QLabel,
-    QLineEdit,
     QListWidget,
     QListWidgetItem,
     QMainWindow,
     QMessageBox,
-    QPushButton,
-    QSpinBox,
     QSplitter,
     QStyle,
-    QTableWidget,
-    QTableWidgetItem,
     QTabWidget,
     QToolButton,
     QTreeView,
@@ -43,14 +34,15 @@ from circuitlab.language.compiler import compile_circuit
 from circuitlab.language.syntax import analysis_mode
 from circuitlab.viewer.device_reference import DeviceReference
 from circuitlab.viewer.editor import CircuitEditor
-from circuitlab.layout.gates import GateLayouts, default_gate_layout, gate_preview
-from circuitlab.language.gates import GATE_HELP, gate_accepts
+from circuitlab.layout.devices import DeviceLayouts
+from circuitlab.viewer.device_layouts import DeviceLayoutDialog
+from circuitlab.viewer.source_editing import SourceTools
 from circuitlab.model.graph import Circuit, CircuitError, MethodInstance
 from circuitlab.language.linked import CHIP_LIBRARY, imported_definitions, read_includes
 from circuitlab.exporters.ltspice import export_hierarchy, export_schematic
 from circuitlab.math.numbers import format_value
 from circuitlab.tooling.pins import apply_pin_overrides, circuit_text, pin_comment, pin_entries, read_pins
-from circuitlab.layout.persistence import placement_path, read_pin_overrides, read_placement, write_placement
+from circuitlab.layout.persistence import embed_placement, placement_path, read_pin_overrides, read_placement
 from circuitlab.math.quantities import QUANTITIES
 from circuitlab.math.report import component_labels, pin_rows, result_rows
 from circuitlab.layout.routing import fast_layout
@@ -60,7 +52,7 @@ from circuitlab.exporters.spice import export_spice
 from circuitlab.language.syntax import INCLUDE, MAIN, has_chip, source_rows
 from circuitlab.tooling.trace import wire_trace
 from circuitlab.exporters.verilog import compile_chips, export_verilog
-from circuitlab.viewer.widgets import MODES, STYLESHEET, button, search_text, GateLayoutDialog, Results, write_bytes
+from circuitlab.viewer.widgets import MODES, STYLESHEET, button, grid_button, search_text, GateLayoutDialog, Results, write_bytes
 from circuitlab.viewer.exports import export_file, hierarchy_layouts, write_companions
 
 MIXED_TEMPLATES = {
@@ -146,6 +138,7 @@ class MainWindow(QMainWindow):
         self.trace_popup.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
         self.trace_popup.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         self.trace_view = SchematicView()
+        self.trace_view.set_grid_enabled(False)
         self.trace_view.setInteractive(False)
         self.trace_view.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         popup_layout = QVBoxLayout(self.trace_popup)
@@ -416,7 +409,8 @@ class MainWindow(QMainWindow):
         controls = QHBoxLayout()
         controls.setContentsMargins(4, 4, 4, 0)
         settings = QSettings("Electric Circuits", "Object-Oriented Circuits")
-        self.schematic = SchematicView(GateLayouts(settings))
+        self.schematic = SchematicView(DeviceLayouts(settings))
+        self.schematic.device_layout_requested.connect(self.edit_device_layouts)
         self.schematic.gate_layout_requested.connect(
             lambda name, inputs: self.edit_gate_layouts((name, inputs))
         )
@@ -459,6 +453,7 @@ class MainWindow(QMainWindow):
             "Place a named probe on a wire, connector, or component terminal."
         )
         button("Zoom in", lambda: self.schematic.zoom(1.4), controls)
+        grid_button(self.schematic, controls)
         button("Zoom out", lambda: self.schematic.zoom(1 / 1.4), controls)
         button("Fit", self.schematic.fit, controls)
         button("Export LTspice .asc", self.export_ltspice, controls).setToolTip(
@@ -466,6 +461,7 @@ class MainWindow(QMainWindow):
         )
         controls.addStretch()
         canvas.addLayout(controls)
+        self.source_tools = SourceTools(self, canvas)
         canvas.addWidget(self.schematic)
         return page
 
@@ -488,6 +484,8 @@ class MainWindow(QMainWindow):
         view = self.menuBar().addMenu("&View")
         view.addAction(self.explorer.toggleViewAction())
         view.addAction("Chip Library", self.show_chip_library)
+        view.addAction("Chip & Circuit Layouts…", lambda: self.edit_device_layouts())
+        view.addAction("Optimize wiring", self.schematic.optimize_wiring)
         view.addAction("Gate Layoutsâ€¦", lambda: self.edit_gate_layouts())
         compile_action = (
             self.menuBar()
@@ -521,6 +519,11 @@ class MainWindow(QMainWindow):
 
     def edit_gate_layouts(self, initial=None):
         dialog = GateLayoutDialog(self, self.schematic.gate_layouts, initial)
+        dialog.exec()
+        dialog.deleteLater()
+
+    def edit_device_layouts(self, initial=None):
+        dialog = DeviceLayoutDialog(self, self.schematic.gate_layouts, initial)
         dialog.exec()
         dialog.deleteLater()
 
@@ -1108,28 +1111,42 @@ class MainWindow(QMainWindow):
         source = self.editor.toPlainText()
         old = self.disk_bytes or b""
         if not self.editor.document().isModified() and self.disk_bytes is not None:
-            data = self.disk_bytes
+            source = self.disk_bytes.decode("utf-8-sig")
         else:
             if b"\r\n" in old:
                 source = source.replace("\n", "\r\n")
             elif b"\r" in old:
                 source = source.replace("\n", "\r")
-            data = source.encode(
-                "utf-8-sig" if old.startswith(b"\xef\xbb\xbf") else "utf-8"
-            )
+        placements = self.schematic.placements()
+        if (placements or self.pin_overrides or "@ooc-layout-" in source
+                or placement_path(self.path or path).exists()):
+            try:
+                source = embed_placement(source, self.schematic.layout_mode, placements,
+                                         pin_overrides=self.pin_overrides)
+            except (ValueError, TypeError) as error:
+                QMessageBox.warning(self, "Save schematic layout", str(error))
+                return False
+        data = source.encode("utf-8-sig" if old.startswith(b"\xef\xbb\xbf") else "utf-8")
         if not write_bytes(self, path, data, "Save circuit"):
             return False
         self.path, self.disk_bytes = path, data
+        editor_source = source.replace("\r\n", "\n").replace("\r", "\n")
+        if editor_source != self.editor.toPlainText():
+            # Metadata-only saves retain the rendered scene and existing undo
+            # history. A QTextCursor edit preserves text undo unlike setPlainText.
+            position = self.editor.textCursor().position()
+            with QSignalBlocker(self.editor), QSignalBlocker(self.editor.document()):
+                cursor = self.editor.textCursor()
+                cursor.beginEditBlock()
+                cursor.select(QTextCursor.SelectionType.Document)
+                cursor.insertText(editor_source)
+                cursor.endEditBlock()
+                cursor.setPosition(min(position, len(editor_source)))
+                self.editor.setTextCursor(cursor)
+            self.circuit_text = circuit_text(editor_source)
+        self.source_tools.identity = self.source_tools.current_identity()
         self.editor.document().setModified(False)
         self.update_title()
-        placements = self.schematic.placements()
-        sidecar = placement_path(path)
-        if placements or self.pin_overrides or sidecar.exists():
-            layout_data = write_placement(
-                self.schematic.layout_mode, placements, pin_overrides=self.pin_overrides,
-            )
-            if not write_bytes(self, sidecar, layout_data, "Save schematic layout"):
-                return False
         self.placement_dirty = False
         self.update_modified()
         if self.folder is None:

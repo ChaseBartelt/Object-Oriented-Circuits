@@ -1,0 +1,23 @@
+# AC: input -> phase90, phase180, notch. Two unity-gain phase cells cancel near 995 Hz.
+# Tune both cells together: center = 1/(2*pi*R*C). Ideal op amps; no supply rails modeled.
+V1(1 Vrms) between(input, 0);
+f = 1k
+
+circuit phase(resistor, capacitor, input, output) {
+    resistor between(input, lag);
+    capacitor between(lag, 0);
+    Ri(10k) between(input, feedback);
+    Rf(10k) between(output, feedback);
+    op1(lag, feedback, output);
+}
+
+main {
+    phase(R(16k), C(10n), input, phase90);
+    phase(R(16k), C(10n), phase90, phase180);
+    RDry(10k) between(input, blend);
+    RWet(10k) between(phase180, blend);
+    op1(blend, notch, notch);
+    measure = V phase90 0;
+    measure = V phase180 0;
+    measure = V notch 0;
+}

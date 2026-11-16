@@ -4,7 +4,7 @@ from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from threading import Event
 
-from PySide6.QtCore import QPointF, QRectF, QTimer, Qt
+from PySide6.QtCore import QPointF, QRectF, QTimer
 from PySide6.QtGui import QColor, QPainter, QPainterPath
 from PySide6.QtWidgets import (
     QComboBox, QDoubleSpinBox, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget,

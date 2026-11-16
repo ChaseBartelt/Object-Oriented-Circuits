@@ -2,10 +2,12 @@
 
 In Electric Circuits, open **View → Chip Library** to browse the source and physical pin lists. Each entry shows the pin order for the package used by the model. Check the datasheet linked at the top of each file for other packages.
 
+To arrange reusable schematics, open **View → Chip & Circuit Layouts**. Select a chip or shared circuit, move its parts/wires/labels, and click **Apply to all instances**. Every declaration has its own saved default. Clicking a nested block opens its own editor. Built-in gates use **View → Gate Layouts**. Circuit-specific saved layouts take priority; changing defaults does not change electrical source or values. Pinout-only chips have no modeled internals to arrange.
+
 Copy the import into the circuit you are writing, then call the chip inside `main`. The arguments follow the order in the chip's header, from pin 1 onward. Give unused outputs separate net names. Tie unused inputs to a defined voltage. Hover over the call for the pin diagram.
 
 ```text
-include("@chips/logic/74HC00.ckt");
+include("74HC00");
 
 VCC(5) between(supply, 0);
 VA(5) between(a, 0);
@@ -33,6 +35,6 @@ Most models are intended for nominal 5 V digital or small-signal demonstrations.
 | `power` | LM317, TL431, ULN2003A | |
 | `converters` | | ADS1115, MCP4921 |
 
-Import a part with `include("@chips/<folder>/<part>.ckt");`. TI 74HC files can also be imported without the `SN` filename prefix. Calls use the `SN74HC…` name. Internal methods shared by several packages live in `shared` and load automatically.
+Import a part with `include("74HC00");`, `include("NE555");`, or another chip filename without its extension. Names are case-insensitive and search all categories automatically. The files live under `circuitlab/libraries/chips/<folder>/<part>.ckt`. Existing `include("@chips/<folder>/<part>.ckt");` paths still work and can disambiguate duplicate short names. TI 74HC files can also be imported without the `SN` filename prefix. Calls use the `SN74HC…` name. Internal methods shared by several packages live in `shared` and load automatically.
 
 A pinout reference can be placed and wired on the schematic. Simulation and SPICE export report the chip by name when a circuit calls a part that is waiting for a model. These packages use electrical chip definitions. Verilog export uses the language's separate digital chip declarations.

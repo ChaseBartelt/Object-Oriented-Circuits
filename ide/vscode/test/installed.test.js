@@ -50,6 +50,32 @@ test('explicit interpreter wins and malformed installed paths are ignored',t=>{
     assert.equal(f.api.installedRuntime(),undefined);
 });
 
+test('short chip names navigate in an installed library without changing local paths',t=>{
+    const f=runtime(t);
+    const library=path.join(f.root,f.record.library);
+    fs.mkdirSync(path.join(library,'logic'));
+    const chip=path.join(library,'logic','74HC00.ckt');
+    fs.writeFileSync(chip,'include("SN74HC00.ckt");');
+    assert.equal(f.api.includeTarget(f.doc,'74hc00'),chip);
+    assert.equal(f.api.includeTarget(f.doc,'@chips/logic/74HC00.ckt'),chip);
+    assert.equal(f.api.includeTarget(f.doc,'74HC00.ckt'),path.join(f.project,'nested','74HC00.ckt'));
+    assert.equal(f.api.includeTarget(f.doc,'MissingChip'),undefined);
+    assert.equal(f.api.includeTarget(f.doc,'@chips/../../outside.ckt'),undefined);
+    fs.mkdirSync(path.join(library,'duplicate'));
+    fs.writeFileSync(path.join(library,'duplicate','74HC00.ckt'),'chip duplicate() {}');
+    assert.equal(f.api.includeTarget(f.doc,'74HC00'),undefined);
+    assert.equal(f.api.includeTarget(f.doc,'@chips/logic/74HC00.ckt'),chip);
+});
+
+test('short chip navigation uses the configured checkout, including untitled documents',t=>{
+    const root=path.resolve(__dirname,'../../..');
+    const f=runtime(t,{projectRoot:root});
+    const chip=path.join(root,'circuitlab','libraries','chips','logic','74HC00.ckt');
+    assert.equal(f.api.includeTarget(f.doc,'74HC00'),chip);
+    assert.equal(f.api.includeTarget({uri:{scheme:'untitled',fsPath:'Untitled-1'}},'74HC00'),chip);
+    assert.equal(f.api.includeTarget({uri:{scheme:'untitled',fsPath:'Untitled-1'}},'local.ckt'),undefined);
+});
+
 function host(t,{trusted=true,enabled=true,choice='Later',fail=false}={}) {
     const calls=[],messages=[],commands=[],logs=[];
     let descriptor={root:'installed',python:'python',version:'1.1.0',extensionVersion:'0.7.0'};

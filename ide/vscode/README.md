@@ -28,7 +28,7 @@ Open a `.ckt` file and click the **play button** at the top right, or choose **O
 
 Save included files before running. The play button reuses the window for that OOC checkout and reloads the saved circuit, updating the schematic and results. Running another circuit uses the same window. Closing the window lets the next Run start a fresh one. Unsaved viewer layout changes prompt before an explicit reload or file switch.
 
-**Save layout** (or **Ctrl+S** in the viewer) writes `<circuit>.ckt.layout.json` and leaves the `.ckt` source untouched, even if VS Code has newer edits. Keep that sidecar with the source when moving a project. Existing saved placements and shared gate-layout settings retain their formats and namespace. New viewer probe names, renames and removals are saved as sidecar overrides; existing `# @pin` comments still work. Double-click a viewer diagnostic to open its file and line in VS Code.
+**Save layout** (or **Ctrl+S** in the viewer) stores geometry and probe captions inside a managed comment block at the end of the `.ckt` file. Attached viewers use a checked VS Code edit and wait for its save acknowledgment; save any unsaved IDE edits first. Existing `.ckt.layout.json` files still load and transfer into comments on save, with the JSON retained as a backup. The embedded layout takes priority. Shared gate-layout settings and existing `# @pin` comments still work. Double-click a viewer diagnostic to open its file and line in VS Code.
 
 The connection lasts for the VS Code session; after reloading VS Code, close the old OOC window before running again. This extension requires an installed OOC runtime or matching development checkout with `--editor` support. The original editor remains available by launching `python -m circuitlab` without `--editor`. After updating Python implementation files, close the old viewer and Run again to load the new code.
 
@@ -49,6 +49,8 @@ Previews use the current editor text and saved include files, and do not alter t
 Save included files. Open the Command Palette with **Ctrl+Shift+P** for **OOC: Check Circuit** or **OOC: Solve Circuit**. These commands save the active circuit and show text results in the **OOC** output channel, with diagnostics from the compiler shown in **Problems**.
 
 The commands use the OOC checkout's Python environment. If you edit a circuit in another folder, set **OOC: Project Root** to the OOC checkout location. Set **OOC: Python Path** if you use a Python executable outside the checkout's `.venv`. Reading, highlighting, folding and Outline work without the Python environment. Interactive schematics and waveforms run in the separate OOC viewer.
+
+Bundled chip imports can use just the chip name, such as `include("74HC00");` or `include("NE555");`. F12 on the name opens its file under `circuitlab/libraries/chips`. The compiler and hover previews use the same library. Existing `@chips/` paths and relative `.ckt` / `.txt` imports remain supported.
 
 ## Build the extension from source
 

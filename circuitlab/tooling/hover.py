@@ -42,12 +42,19 @@ class HoverRenderer:
         path = Path(request["file"]).resolve()
         if not isinstance(source, str) or len(source) > 2 * 1024 * 1024:
             return None
+        definitions = None
+
         def imports(text):
-            try:
-                files, dependencies = read_includes(text, path)
-                return imported_definitions(next(iter(files)), files, dependencies).values()
-            except CircuitError:
-                return ()
+            nonlocal definitions
+            # The device picture and help share one snapshot for this request.
+            # A later hover reads included files again, including external edits.
+            if definitions is None:
+                try:
+                    files, dependencies = read_includes(text, path)
+                    definitions = tuple(imported_definitions(next(iter(files)), files, dependencies).values())
+                except CircuitError:
+                    definitions = ()
+            return definitions
 
         info = SourceInfo(source, imports)
         line, column = int(request["line"]), int(request["column"])

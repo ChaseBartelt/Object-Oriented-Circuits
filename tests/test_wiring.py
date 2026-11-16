@@ -218,7 +218,7 @@ class SchematicWiring(unittest.TestCase):
                     self.assertTrue(all(p[0] >= terminal[0] for p in leads))
 
     def setUp(self):
-        source = Path(__file__).parents[1] / "examples" / "three_way_crossover.ckt"
+        source = Path(__file__).parent / "fixtures" / "three_way_crossover.ckt"
         self.circuit = compile_circuit(
             source.read_text(encoding="utf-8"), render_only=True
         )
@@ -551,7 +551,7 @@ class SchematicWiring(unittest.TestCase):
             self.assertLess(positions["Vin"][0][0], positions["Vbias"][0][0])
 
     def test_auto_reduces_congestion_with_matching_connectors(self):
-        source = Path(__file__).parents[1] / "examples" / "three_band_mixer.ckt"
+        source = Path(__file__).parent / "fixtures" / "three_band_mixer.ckt"
         circuit = compile_circuit(source.read_text(encoding="utf-8"), render_only=True)
         labels = component_labels(circuit)
         auto = schematic_layout(circuit, labels, "auto")

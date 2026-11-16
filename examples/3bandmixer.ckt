@@ -1,0 +1,157 @@
+# THREE-BAND ACTIVE MIXER WITH A BRIDGED RLC OUTPUT
+# 63 components, 9 ideal op amps, 3 phased signals, and a DC reference.
+# Select DC + AC, or leave Circuit Preview on Auto.
+
+V1(0.45 V | 1.20 Vpk) between(inA, 0);
+C3(100n) between(inB, inserted_2);
+R6(1k) between(inserted_2, inserted_1);
+V2(0.25 V | 0.60<65 Vpk) between(inserted_1, 0);
+V3(0 V | 0.20<-110 Vpk) between(pilot, 0);
+V4(2.5 V | 0 Vpk) between(ref, 0);
+f = 10k
+
+series inputFeed(a, b) {
+    R1 = 1k;
+    wire = junction;
+    R2 = 330;
+}
+
+parallel inputShunt(a, b) {
+    R1 = 100k;
+    C1 = 150p;
+}
+
+parallel mixFeedback(a, b) {
+    R1 = 4.7k;
+    C1 = 820p;
+}
+
+series lowFeed(a, b) {
+    R1 = 680;
+    L1 = 2.2m;
+}
+
+parallel lowShunt(a, b) {
+    C1 = 100n;
+    R1 = 22k;
+}
+
+series midFeed(a, b) {
+    C1 = 100n;
+    L1 = 2.2m;
+    R1 = 100;
+}
+
+parallel midShunt(a, b) {
+    R1 = 390;
+    C1 = 1n;
+}
+
+series highFeed(a, b) {
+    C1 = 6.8n;
+    R1 = 330;
+}
+
+parallel highShunt(a, b) {
+    R1 = 2.2k;
+    C1 = 150p;
+}
+
+parallel toneFeedback(a, b) {
+    R1 = 10k;
+    C1 = 100p;
+    (series)
+        R2 = 4.7k;
+        C2 = 1n;
+    (end series)
+}
+
+series outputFeed(a, b) {
+    R1 = 2.2;
+    wire = sense;
+    L1 = 10u;
+}
+
+parallel speaker(a, b) {
+    # Voice-coil branch
+    (series)
+        R1 = 6.8;
+        L1 = 330u;
+    (end series)
+
+    # Resonance branch
+    (series)
+        R2 = 18;
+        L2 = 470u;
+        C1 = 560n;
+    (end series)
+
+    # High-frequency damping branch
+    (series)
+        R3 = 10;
+        (parallel)
+            C2 = 100n;
+            R4 = 2.2k;
+        (end parallel)
+    (end series)
+
+    R5 = 100k;
+}
+
+main {
+    # Buffer both inputs.
+    inputFeed(inA, preA);
+    inputFeed(inB, preB);
+    inputShunt(preA, ref);
+    inputShunt(preB, ref);
+    op1(preA, bufA, bufA);
+    op2(preB, bufB, bufB);
+
+    # Mix both channels and inject the phase-shifted pilot.
+    RmixA(15k) between(bufA, sum);
+    RmixB(22k) between(bufB, sum);
+    Rpilot(47k) between(pilot, sum);
+    mixFeedback(sum, mixed);
+    op3(ref, sum, mixed);
+
+    # Split the mix into three frequency paths and buffer each one.
+    lowFeed(mixed, low);
+    lowShunt(low, ref);
+    op4(low, lowBuf, lowBuf);
+
+    midFeed(mixed, mid);
+    midShunt(mid, ref);
+    op5(mid, midBuf, midBuf);
+
+    highFeed(mixed, high);
+    highShunt(high, ref);
+    op6(high, highBuf, highBuf);
+
+    # Recombine the bands with independent weights.
+    Rlow(18k) between(lowBuf, toneSum);
+    Rmid(8.2k) between(midBuf, toneSum);
+    Rhigh(27k) between(highBuf, toneSum);
+    toneFeedback(toneSum, master);
+    op7(ref, toneSum, master);
+
+    # Drive the load from both ends with opposite-phase signals.
+    op8(master, driveP, driveP);
+    Rinv(10k) between(master, bridgeSum);
+    Rfb(10k) between(driveN, bridgeSum);
+    op9(ref, bridgeSum, driveN);
+
+    outputFeed(driveP, outP);
+    outputFeed(driveN, outN);
+    speaker(outP, outN);
+    RbleedP(100k) between(outP, ref);
+    RbleedN(100k) between(outN, ref);
+
+    # Expect about -0.888 V DC and 0.372 V RMS at -23.1 degrees across the load.
+    measure = V mixed ref;
+    measure = V lowBuf ref;
+    measure = V midBuf ref;
+    measure = V highBuf ref;
+    measure = V outP outN;
+    measure = I R1_speaker_1;
+    measure = P R1_speaker_1;
+}

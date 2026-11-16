@@ -17,18 +17,25 @@ function harness({ dirty = false, save = true, trusted = true, failure = false, 
     const file = path.join(root, "examples", "circuit with spaces.ckt");
     const document = {
         languageId: "ooc", uri: { scheme: "file", fsPath: file }, isDirty: dirty,
+        text: 'R1(1k) between(a,b);\n',
+        getText() { return this.text; }, positionAt(offset) { return offset; },
         async save() { calls.push("save"); onSave?.(document); return save; },
     };
     let onSave, hover;
     const hoverRequests = [];
     const output = { append: (s) => logs.push(s), appendLine: (s) => logs.push(s), show() {} };
     const vscode = {
+        Uri: { file: (fsPath) => ({ fsPath }) },
+        Range: class { constructor(start, end) { this.start = start; this.end = end; } },
+        WorkspaceEdit: class { replace(uri, range, text) { this.text = text; } },
         SymbolKind: {},
         window: {
             activeTextEditor: { document }, createOutputChannel: () => output,
             showInformationMessage: (s) => messages.push(s), showErrorMessage: (s) => messages.push(s),
         },
         workspace: {
+            async openTextDocument() { return document; },
+            async applyEdit(edit) { document.text = edit.text; return true; },
             isTrusted: trusted, getConfiguration: () => ({ get: (key) =>
                 key === "projectRoot" ? root : key === "refreshOnSave" ? refresh : "test-python" }),
             getWorkspaceFolder: () => undefined, onDidCloseTextDocument() {},
@@ -70,8 +77,56 @@ function harness({ dirty = false, save = true, trusted = true, failure = false, 
     });
     module.exports.activate({ subscriptions: [] });
     return { run: commands.get("ooc.openSchematic"), calls, messages, logs, child, file, root, writes, document,
-        onSave, hover, hoverRequests };
+        onSave, hover, hoverRequests, applyEdit: module.exports.applySchematicEdit,
+        reconnect: () => module.exports.activate({subscriptions:[]}, {output,
+            schematicWindows:new Map([[JSON.stringify(['test-python',root]),child]])}) };
 }
+
+test('schematic source edits use VS Code document edits and save', async () => {
+    const h = harness({ refresh: false });
+    const after = 'R1(2k) between(a,b);\n';
+    await h.applyEdit({path:h.file, before:h.document.text, after});
+    assert.equal(h.document.text, after);
+    assert.deepEqual(h.calls, ['save']);
+});
+
+test('schematic edits refuse dirty or stale documents', async () => {
+    for (const dirty of [true, false]) {
+        const h = harness({dirty, refresh:false});
+        const original = h.document.text;
+        await assert.rejects(h.applyEdit({path:h.file, before:dirty ? original : 'old text', after:'changed'}), /source has changed/);
+        assert.equal(h.document.text, original);
+        assert.equal(h.calls.length, 0);
+    }
+});
+
+test('chunked viewer edit messages receive acknowledgement', async () => {
+    const h = harness({refresh:false});
+    await h.run();
+    const message = JSON.stringify({type:'ooc-source-edit', id:'edit-7', path:h.file, before:h.document.text, after:'R1(3k) between(a,b);\n'})+'\n';
+    h.child.stdout.emit('data', Buffer.from(message.slice(0, 20)));
+    h.child.stdout.emit('data', Buffer.from(message.slice(20)));
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(h.writes.at(-1).type, 'ooc-source-edit-result');
+    assert.equal(h.writes.at(-1).id, 'edit-7');
+    assert.equal(h.writes.at(-1).ok, true);
+    assert.match(h.document.text, /3k/);
+});
+
+test('live update reconnects an already running old viewer bridge', async () => {
+    const h = harness({refresh:false});
+    await h.run();
+    h.child.stdout.removeAllListeners('data');
+    h.child.stdout.on('data', () => {});
+    h.reconnect();
+    h.reconnect();
+    assert.equal(h.child.stdout.listenerCount('data'), 1);
+    h.child.stdout.emit('data', Buffer.from(JSON.stringify({type:'ooc-source-edit',
+        path:h.file, before:h.document.text, after:'R1(4k) between(a,b);\n'})+'\n'));
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(h.writes.at(-1).ok, true);
+    assert.match(h.document.text, /4k/);
+});
 
 test("Run saves and launches the exact active file without waiting for window close", async () => {
     const h = harness({ dirty: true });
@@ -101,6 +156,32 @@ test("repeated Run and another circuit reuse the window; closing it allows a fre
 });
 
 const settleSave = () => new Promise((resolve) => setTimeout(resolve, 360));
+
+test('schematic edit save is acknowledged without a second automatic reload', async () => {
+    const h = harness();
+    await h.run();
+    h.child.stdout.emit('data', Buffer.from(JSON.stringify({type:'ooc-source-edit', id:'edit-8',
+        path:h.file, before:h.document.text, after:'R1(2k) between(a,b);\n'})+'\n'));
+    await settleSave();
+    assert.equal(h.writes.length, 1);
+    assert.equal(h.writes[0].id, 'edit-8');
+    assert.equal(h.writes[0].ok, true);
+    h.onSave(h.document);
+    await settleSave();
+    assert.equal(h.writes.length, 2);
+    assert.equal(h.writes[1].activate, false);
+});
+
+test('rejected schematic edits acknowledge their own request ID', async () => {
+    const h = harness();
+    await h.run();
+    h.child.stdout.emit('data', Buffer.from(JSON.stringify({type:'ooc-source-edit', id:'edit-9',
+        path:h.file, before:'stale text', after:'R1(2k) between(a,b);\n'})+'\n'));
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(h.writes.at(-1).id, 'edit-9');
+    assert.equal(h.writes.at(-1).ok, false);
+    assert.match(h.document.text, /1k/);
+});
 
 test("saving refreshes the running entry once, including a saved dependency, without focus", async () => {
     const h = harness({ dirty: true });

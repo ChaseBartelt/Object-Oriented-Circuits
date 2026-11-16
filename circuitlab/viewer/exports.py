@@ -30,6 +30,11 @@ def hierarchy_layouts(schematic):
         layout = schematic.manual_layouts.get(key)
         if layout is None and key in schematic.placement_records:
             layout = restore_layout(schematic.placement_records[key], view, boundary)
+        if layout is None and schematic.gate_layouts is not None:
+            instance = circuit.instances[int(name.removeprefix(METHOD_PREFIX))]
+            layout = schematic.gate_layouts.for_instance(
+                instance, view, boundary, use_default=schematic.layout_mode != "labeled",
+            )
         if layout is not None:
             details[name] = layout
     return details

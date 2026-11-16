@@ -1,6 +1,6 @@
 # All four NAND gates, in physical 74HC00 pin order.
 # Ground the unused inputs. Leave each unused output on its own net.
-include("@chips/logic/74HC00.ckt");
+include("74HC00");
 
 VCC(5) between(supply, 0);
 VA(5) between(a, 0);

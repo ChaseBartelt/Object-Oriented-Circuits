@@ -1,6 +1,7 @@
 """Place and route arbitrary circuit graphs with orthogonal wire channels."""
 
 import math
+from itertools import islice
 from collections import defaultdict, deque
 from copy import deepcopy
 from statistics import median_low
@@ -21,6 +22,7 @@ from circuitlab.layout.checks import mark_crossings as _mark_crossings
 from circuitlab.layout.checks import preserves_nets, segments_intersect
 from circuitlab.layout.search import evolve_placements, feedback_pairs, placement_penalty
 from circuitlab.layout.wiring import connector_names, labeled, signal_flow
+from circuitlab.layout.shorten import optimize_layout, wire_length
 
 SYMBOL_WIDTH = 4.3
 LANE_PITCH = 0.46
@@ -35,12 +37,12 @@ def schematic_layout(circuit, labels, mode):
         return fast_layout(circuit, labels)
     conventional = compact(circuit, labels) or signal_flow(circuit)
     if conventional and preserves_nets(circuit, conventional):
-        return conventional
+        return optimize_layout(circuit, conventional)
     layout = connected_layout(circuit, labels, simplify=mode == "auto")
-    return layout if preserves_nets(circuit, layout) else labeled(circuit, labels)
+    return optimize_layout(circuit, layout) if preserves_nets(circuit, layout) else labeled(circuit, labels)
 
 
-def fast_layout(circuit, labels, *, boundary=()):
+def fast_layout(circuit, labels, *, boundary=(), shorten=True):
     """Route a small fixed set of placements and skip iterative refinement."""
     parts = circuit.components
     if not parts:
@@ -77,7 +79,19 @@ def fast_layout(circuit, labels, *, boundary=()):
             if preserves_nets(circuit, layout):
                 best = cost, layout
         if best is not None:
-            return best[1]
+            # A bounded search keeps initial rendering predictable. Never replace
+            # the baseline with longer wiring or a worse congestion score.
+            if shorten and len(parts) <= 64:
+                best_length = wire_length(best[1])
+                for trial in islice(_placement_trials(circuit, pins, runs, order), 4):
+                    cells = source_cells(circuit, trial, center, runs)
+                    drawing = _channel_layout(circuit, labels, pins, set(), reversed_parts,
+                        cells, set(), set(), tight=True, regular=regular, boundary=boundary)
+                    _mark_crossings(drawing)
+                    trial_length, cost = wire_length(drawing), _layout_cost(drawing)
+                    if trial_length < best_length - 1e-8 and cost <= best[0] and preserves_nets(circuit, drawing):
+                        best, best_length = (cost, drawing), trial_length
+            return optimize_layout(circuit, best[1]) if shorten and len(parts) <= 64 else best[1]
     return labeled(circuit, labels)
 
 

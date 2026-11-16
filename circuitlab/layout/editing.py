@@ -50,19 +50,19 @@ def move_symbol(circuit, original, name, delta, *, diagonal=False, rotate=0, ali
     else:
         drawing.rotations.pop(name, None)
 
-    new_pins = _routed_pins(moved, turns)
+    new_pins = _routed_pins(moved, turns, drawing.pin_grid)
     endpoints = {(net, clean_point(point)) for net, point in new_pins}
     docked_pins, stationary_pins = set(), []
     for j, other in enumerate(drawing.symbols):
         if i == j:
             continue
         other_turns = original.rotations.get(other[0].name, 0)
-        other_pins = _routed_pins(other, other_turns)
+        other_pins = _routed_pins(other, other_turns, drawing.pin_grid)
         shared = endpoints.intersection((net, clean_point(point)) for net, point in other_pins)
         # Same-net endpoints may touch. Keep the symbol bodies clear of each other.
         if boxes_overlap(
-            _symbol_bounds(moved, turns, body_only=bool(shared)),
-            _symbol_bounds(other, other_turns, body_only=bool(shared)),
+            _symbol_bounds(moved, turns, body_only=True),
+            _symbol_bounds(other, other_turns, body_only=True),
         ):
             return None
         docked_pins.update(shared)
@@ -72,7 +72,7 @@ def move_symbol(circuit, original, name, delta, *, diagonal=False, rotate=0, ali
 
     return _reroute_move(
         circuit, original, drawing,
-        _routed_pins(symbol, previous_turns), new_pins,
+        _routed_pins(symbol, previous_turns, original.pin_grid), new_pins,
         (a[0] + b[0]) / 2,
         stationary_pins=stationary_pins, diagonal=diagonal, rotate=rotate,
         align_axis=align_axis, docked_pins=docked_pins,
@@ -97,6 +97,12 @@ def _symbol_bounds(symbol, turns, *, body_only=False):
     return rotate_point(lo, a, b, turns), rotate_point(hi, a, b, turns)
 
 
+def selection_ends(layout):
+    yield from ((("boundary", net), net, pos) for net, pos in layout.boundary.items())
+    yield from ((("ground", pos), layout.ground_names.get(pos, "0"), pos) for pos in layout.grounds)
+    yield from ((("connector", i), net, pos) for i, (net, pos, *_) in enumerate(layout.connectors))
+
+
 def move_symbols(circuit, original, names, delta, *, diagonal=False):
     """Translate a selection together and reroute its connections to fixed parts."""
     if not any(delta):
@@ -109,7 +115,7 @@ def move_symbols(circuit, original, names, delta, *, diagonal=False):
         return original.rotations.get(symbol[0].name, 0)
 
     def pins(symbols):
-        return [pin for symbol in symbols for pin in _routed_pins(symbol, turns(symbol))]
+        return [pin for symbol in symbols for pin in _routed_pins(symbol, turns(symbol), original.pin_grid)]
 
     moved, old, fixed, symbols = [], [], [], []
     for symbol in original.symbols:
@@ -122,27 +128,34 @@ def move_symbols(circuit, original, names, delta, *, diagonal=False):
             fixed.append(symbol)
         symbols.append(symbol)
 
-    if not old:
+    selected_ends = [(key, net, pos) for key, net, pos in selection_ends(original) if key in names]
+    if not old and not selected_ends:
         return original
-    fixed_boxes = [_symbol_bounds(symbol, turns(symbol)) for symbol in fixed]
-    moved_boxes = [_symbol_bounds(symbol, turns(symbol)) for symbol in moved]
+    fixed_boxes = [_symbol_bounds(symbol, turns(symbol), body_only=True) for symbol in fixed]
+    moved_boxes = [_symbol_bounds(symbol, turns(symbol), body_only=True) for symbol in moved]
     if any(
         boxes_overlap(body, box) for body in moved_boxes for box in fixed_boxes
     ):
         return None
 
     old_pins, new_pins, stationary_pins = pins(old), pins(moved), pins(fixed)
-    internal = {net for net, _ in old_pins} - ({net for net, _ in stationary_pins} | original.boundary.keys())
+    end_pins = [(net, pos) for _, net, pos in selected_ends]
+    old_pins += end_pins
+    new_pins += [(net, shift(pos)) for net, pos in end_pins]
+    stationary_ends = [(net, pos) for key, net, pos in selection_ends(original) if key not in names]
+    internal = {net for net, _ in old_pins} - ({net for net, _ in stationary_pins} | ({net for net, _ in stationary_ends} if selected_ends else original.boundary.keys()))
     grounds = {
-        pos: shift(pos) if original.ground_names.get(pos, "0") in internal else pos
+        pos: shift(pos) if original.ground_names.get(pos, "0") in internal or ("ground", pos) in names else pos
         for pos in original.grounds
     }
     if len(set(grounds.values())) != len(grounds):
         return None
-    connectors = {pos: shift(pos) for net, pos, *_ in original.connectors if net in internal}
+    connectors = {pos: shift(pos) for i, (net, pos, *_) in enumerate(original.connectors)
+                  if net in internal or ("connector", i) in names}
     positions = {**original.positions, **{part.name: a for part, a, _, _ in moved}}
     drawing = replace(
         original, symbols=symbols, positions=positions,
+        boundary={net: shift(pos) if ("boundary", net) in names else pos for net, pos in original.boundary.items()},
         wires={net: [(shift(a), shift(b)) for a, b in edges] if net in internal else edges
                for net, edges in original.wires.items()},
         junctions={net: list(map(shift, dots)) if net in internal else dots
@@ -160,17 +173,18 @@ def move_symbols(circuit, original, names, delta, *, diagonal=False):
     if external_old:
         return _reroute_move(
             circuit, original, drawing, external_old, external_new,
-            sum(symbol[1][0] for symbol in old) / len(old),
+            sum(pos[0] for _, pos in old_pins) / len(old_pins),
             stationary_pins=stationary_pins, diagonal=diagonal,
+            moving_ends=set(end_pins),
         )
     _mark_crossings(drawing)
     return drawing if preserves_nets(circuit, drawing) else None
 
 
-def _routed_pins(symbol, turns):
+def _routed_pins(symbol, turns, grid=0):
     _, a, b, _ = symbol
     return tuple(
-        (net, rotate_point(pin, a, b, turns)) for net, pin in symbol_pins(*symbol)
+        (net, rotate_point(pin, a, b, turns)) for net, pin in symbol_pins(*symbol, grid=grid)
     )
 
 
@@ -180,7 +194,7 @@ def symbol_terminal_offsets(drawing, name):
     moving = ()
     for symbol in drawing.symbols:
         part = symbol[0]
-        pins = _routed_pins(symbol, drawing.rotations.get(part.name, 0))
+        pins = _routed_pins(symbol, drawing.rotations.get(part.name, 0), drawing.pin_grid)
         if part.name == name:
             moving = pins
         else:
@@ -202,7 +216,7 @@ def symbol_wire_alignments(drawing, name):
         return None, {}
     axis = (axis + turns) % 2
     pins = list(drawing.pins())
-    moving_pins = _routed_pins(symbol, turns)
+    moving_pins = _routed_pins(symbol, turns, drawing.pin_grid)
     for pin in moving_pins:
         pins.remove(pin)
     return 1 - axis, _terminal_wire_alignments(drawing, moving_pins, axis, pins)
@@ -356,7 +370,7 @@ def _move_endpoint_labels(layout, *, grounds=None, connectors=None):
     return offsets
 
 
-def split_wire(circuit, original, net, edge, at):
+def split_wire(circuit, original, net, edge, at, *, grid=0, origin=(0, 0)):
     """Replace a short span of wire with two matching labeled ends."""
     a, b = sorted(map(clean_point, edge))
     if a == b or net in circuit.grounds:
@@ -385,6 +399,13 @@ def split_wire(circuit, original, net, edge, at):
         clean_point(along(a, b, (center + side * margin / 2) / length))
         for side in (-1, 1)
     )
+    if grid:
+        low, high = (
+            clean_point(tuple(math.floor((v + o) / grid + 0.5) * grid - o for v, o in zip(p, origin)))
+            for p in (low, high)
+        )
+        if low == high:
+            return None
     graph[a].remove(b)
     graph[b].remove(a)
     existing = {wire: caption for wire, _, caption, *_ in original.connectors}
@@ -411,7 +432,7 @@ def split_wire(circuit, original, net, edge, at):
 def _reroute_move(
     circuit, original, drawing, old_pins, new_pins, center_x, *,
     stationary_pins=None, moving_ground=None, moving_connector=None, moving_boundary=None,
-    diagonal=False, rotate=0, align_axis=None, direct=False, docked_pins=(),
+    diagonal=False, rotate=0, align_axis=None, direct=False, docked_pins=(), moving_ends=(),
 ):
     affected = {net for net, _ in old_pins}
     coincident = {net for net, end in docked_pins if route_anchors(drawing, net) == {end}}
@@ -421,7 +442,7 @@ def _reroute_move(
         net: route_anchors(
             original, net, stationary_pins,
             moving_ground=moving_ground, moving_connector=moving_connector, moving_boundary=moving_boundary,
-        )
+        ) - {clean_point(pos) for wire, pos in moving_ends if wire == net}
         for net in affected
     }
     graphs = {
@@ -562,9 +583,11 @@ def _shortest_move(drawing, circuit, affected, connections, fixed_edges, bends, 
     return best[1] if best else None
 
 
-def move_wire(circuit, original, net, edge, distance, *, snap=0):
+def move_wire(circuit, original, net, edge, distance, *, snap=0, pointer=None, accept_offset=None):
     """Return the first electrically valid slide and its snapped offset, if any."""
-    for drawing, offset in wire_slide_candidates(original, net, edge, distance, snap=snap):
+    for drawing, offset in wire_slide_candidates(original, net, edge, distance, snap=snap, pointer=pointer):
+        if accept_offset is not None and not accept_offset(distance if offset is None else offset):
+            continue
         if drawing is original:
             return drawing, None
         _mark_crossings(drawing)

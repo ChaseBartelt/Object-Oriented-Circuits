@@ -9,7 +9,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtWidgets import QApplication
 
 from circuitlab.viewer.legacy import MainWindow
-from circuitlab.layout.persistence import placement_path, read_pin_overrides, write_placement
+from circuitlab.layout.persistence import placement_path, read_pin_overrides, write_placement, strip_placement, layout_payload
 
 
 class PinPersistenceTest(unittest.TestCase):
@@ -29,7 +29,9 @@ class PinPersistenceTest(unittest.TestCase):
                 self.assertEqual(window.pins, {"v": "Viewer"})
                 self.assertTrue(window.save())
                 self.assertEqual(read_pin_overrides(path), {"v": "Viewer"})
-                self.assertEqual(path.read_text(encoding="utf-8"), source)
+                saved = path.read_text(encoding="utf-8")
+                self.assertEqual(strip_placement(saved), source)
+                self.assertEqual(layout_payload(saved)['pin_overrides'], {"v": "Viewer"})
                 window.write_pin("v", "Edited")
                 self.assertEqual(window.pins, {"v": "Edited"})
                 self.assertTrue(window.save())

@@ -1,0 +1,10 @@
+# Digital-only chip: select=0 chooses a; select=1 chooses b.
+# enable=0 forces y=0. y_n is always the inverse of y.
+# Run OOC Check, then Export Verilog; these are single-bit signals, not voltages.
+# This combinational module has no clock, memory or analog transistor model.
+chip EnabledMux(a, b, select, enable, y, y_n) {
+    a, b, select, enable = input;
+    y, y_n = output;
+    y = enable & ((!select & a) | (select & b));
+    y_n = !y;
+}

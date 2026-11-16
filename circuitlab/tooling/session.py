@@ -15,7 +15,7 @@ from circuitlab.math.analysis import Diagnostic, analyze, diagnostics
 from circuitlab.model.graph import Circuit, CircuitError, MethodInstance
 from circuitlab.exporters.spice import export_spice
 from circuitlab.exporters.verilog import compile_chips, export_verilog
-from circuitlab.tooling.pins import read_pins
+from circuitlab.tooling.pins import apply_pin_overrides, read_pins
 
 
 def issue_for(error):
@@ -50,13 +50,7 @@ class CircuitSession:
 
     @property
     def pins(self):
-        pins = read_pins(self.source)
-        for net, label in self.pin_overrides.items():
-            if label is None:
-                pins.pop(net, None)
-            else:
-                pins[net] = label
-        return pins
+        return apply_pin_overrides(read_pins(self.source), self.pin_overrides)
 
     def load(self, filename):
         """Accept a saved file only after its bytes have decoded successfully."""

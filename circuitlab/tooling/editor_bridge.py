@@ -12,6 +12,7 @@ from PySide6.QtCore import QObject, Signal
 class EditorBridge(QObject):
     requested = Signal(str)
     refreshed = Signal(str)
+    edited = Signal(object)
 
     def start(self, stream):
         Thread(target=self.read_requests, args=(stream,), daemon=True).start()
@@ -22,6 +23,9 @@ class EditorBridge(QObject):
             for line in request_lines(stream):
                 try:
                     request = json.loads(line)
+                    if isinstance(request, dict) and request.get('type') == 'ooc-source-edit-result':
+                        self.edited.emit(request)
+                        continue
                     file = request.get("file") if isinstance(request, dict) else None
                     if isinstance(file, str) and Path(file).is_absolute():
                         signal = self.refreshed if request.get("activate") is False else self.requested

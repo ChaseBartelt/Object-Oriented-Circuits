@@ -2,6 +2,7 @@
 
 from collections import deque
 from dataclasses import dataclass, field
+import math
 
 BJT_PIN_OFFSET = 0.85
 PACKAGE_WIDTH = 6.8
@@ -27,41 +28,51 @@ def rotate_point(point, a, b, turns):
     return round(x + dx, 8), round(y + dy, 8)
 
 
-def package_pins(part):
+def pin_offset(value, grid=0):
+    """Retain legacy spacing unless a layout explicitly uses grid-sized pins."""
+    if not grid or not value:
+        return value
+    return math.copysign(max(1, math.floor(abs(value) / grid + 0.5)) * grid, value)
+
+
+def package_pins(part, grid=0):
     """Put the first half down the left side and the rest up the right side."""
     if part.base:
         for (label, net), (left, offset) in zip(
             part.package_pins, ((True, 0), (False, BJT_PIN_OFFSET), (False, -BJT_PIN_OFFSET))
         ):
-            yield label, net, left, offset
+            yield label, net, left, pin_offset(offset, grid)
         return
     left_count = (len(part.package_pins) + 1) // 2
     middle = (left_count - 1) / 2
     for index, (label, net) in enumerate(part.package_pins):
         left = index < left_count
         row = index if left else len(part.package_pins) - 1 - index
-        yield label, net, left, middle - row
+        yield label, net, left, (middle - row) * max(1, 2 * grid)
 
 
-def symbol_pins(part, a, b, top):
+def symbol_pins(part, a, b, top, *, grid=0):
     """Yield each net and its coordinates for one placed symbol."""
     if part.kind == "H":
-        for _, net, left, offset in package_pins(part):
+        for _, net, left, offset in package_pins(part, grid):
             yield net, ((a if left else b)[0], a[1] + offset)
     elif part.kind == "O":
-        plus, minus = (0.35, -0.35) if top == "+" else (-0.35, 0.35)
+        offset = pin_offset(0.35, grid)
+        plus, minus = (offset, -offset) if top == "+" else (-offset, offset)
         yield part.in_plus, (a[0], a[1] + plus)
         yield part.in_minus, (a[0], a[1] + minus)
         yield part.p, b
     elif part.kind == "Q":
-        yield part.p, (b[0], b[1] + BJT_PIN_OFFSET)
-        yield part.n, (b[0], b[1] - BJT_PIN_OFFSET)
+        offset = pin_offset(BJT_PIN_OFFSET, grid)
+        yield part.p, (b[0], b[1] + offset)
+        yield part.n, (b[0], b[1] - offset)
         yield part.base, a
     elif part.kind == "S":
-        yield part.in_plus, (a[0], a[1] + 0.6)
-        yield part.in_minus, (a[0], a[1] - 0.6)
-        yield part.p, (b[0], b[1] + 0.6)
-        yield part.n, (b[0], b[1] - 0.6)
+        offset = pin_offset(0.6, grid)
+        yield part.in_plus, (a[0], a[1] + offset)
+        yield part.in_minus, (a[0], a[1] - offset)
+        yield part.p, (b[0], b[1] + offset)
+        yield part.n, (b[0], b[1] - offset)
     else:
         yield part.p, a
         yield part.n, b
@@ -84,6 +95,7 @@ class Layout:
     rotations: dict = field(default_factory=dict)
     ground_rotations: dict = field(default_factory=dict)
     label_offsets: dict = field(default_factory=dict)
+    pin_grid: float = 0
 
     @property
     def uses_packages(self):
@@ -94,7 +106,7 @@ class Layout:
         for symbol in self.symbols:
             part, a, b, _ = symbol
             turns = self.rotations.get(part.name, 0)
-            for net, pin in symbol_pins(*symbol):
+            for net, pin in symbol_pins(*symbol, grid=self.pin_grid):
                 yield net, rotate_point(pin, a, b, turns)
 
     def visible_segments(self, net):

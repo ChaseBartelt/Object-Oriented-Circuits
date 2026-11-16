@@ -7,7 +7,7 @@ from itertools import combinations
 
 from circuitlab.model.graph import CircuitError
 from circuitlab.layout.hierarchy import METHOD_PREFIX, hood_levels
-from circuitlab.layout.geometry import BJT_PIN_OFFSET, package_pins, rotate_point, wire_axis
+from circuitlab.layout.geometry import BJT_PIN_OFFSET, package_pins, pin_offset, rotate_point, wire_axis
 from circuitlab.layout.checks import segments_intersect
 from circuitlab.math.report import component_labels
 from circuitlab.layout.routing import fast_layout
@@ -223,7 +223,7 @@ def _schematic(layout, spice, scale, *, pin_flags=False, blocks, ports, aliases,
                 raise GridConflict
             origin = x, a[1]
             symbol, rotation = block.name, "R0"
-            for (_, net, left, offset), (_, _, pin_x, pin_y) in zip(package_pins(part), block.pins):
+            for (_, net, left, offset), (_, _, pin_x, pin_y) in zip(package_pins(part, layout.pin_grid), block.pins):
                 anchor = ((start if left else end)[0], start[1] + offset)
                 terminal = x + pin_x, a[1] + pin_y
                 pin(net, terminal, anchor=anchor, bends=((terminal[0], point(anchor)[1]),))
@@ -238,7 +238,7 @@ def _schematic(layout, spice, scale, *, pin_flags=False, blocks, ports, aliases,
             symbol = r"OpAmps\opamp2"
             for net, sign in ((part.in_plus, "+"), (part.in_minus, "-")):
                 upper = sign == top
-                offset = 0.35 if upper else -0.35
+                offset = pin_offset(0.35 if upper else -0.35, layout.pin_grid)
                 anchor = start[0], start[1] + offset
                 lane = y - 16 if upper else y + 16
                 pin(net, (x + 32, lane), anchor=anchor, bends=((x + 16, point(anchor)[1]), (x + 16, lane)))
@@ -255,7 +255,7 @@ def _schematic(layout, spice, scale, *, pin_flags=False, blocks, ports, aliases,
             pin(part.base, a, anchor=start)
             # Both native BJT symbols place C and E 64 units right of B.
             for net, direction in ((part.p, 1), (part.n, -1)):
-                anchor = end[0], end[1] + direction * BJT_PIN_OFFSET
+                anchor = end[0], end[1] + direction * pin_offset(BJT_PIN_OFFSET, layout.pin_grid)
                 terminal = (x + 64, y - direction * 48)
                 pin(net, terminal, anchor=anchor, bends=((terminal[0], point(anchor)[1]),))
         elif model.kind == "S":
@@ -264,11 +264,12 @@ def _schematic(layout, spice, scale, *, pin_flags=False, blocks, ports, aliases,
                 raise GridConflict
             symbol, rotation = "sw", "R0"
             origin = x, y - 56
+            offset = pin_offset(0.6, layout.pin_grid)
             for net, anchor, terminal in (
-                (part.in_plus, (start[0], start[1] + 0.6), (x - 48, y + 24)),
-                (part.in_minus, (start[0], start[1] - 0.6), (x - 48, y - 24)),
-                (part.p, (end[0], end[1] + 0.6), (x, y - 40)),
-                (part.n, (end[0], end[1] - 0.6), (x, y + 40)),
+                (part.in_plus, (start[0], start[1] + offset), (x - 48, y + 24)),
+                (part.in_minus, (start[0], start[1] - offset), (x - 48, y - 24)),
+                (part.p, (end[0], end[1] + offset), (x, y - 40)),
+                (part.n, (end[0], end[1] - offset), (x, y + 40)),
             ):
                 pin(net, terminal, anchor=anchor, bends=((terminal[0], point(anchor)[1]),))
         else:

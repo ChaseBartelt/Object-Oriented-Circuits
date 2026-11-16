@@ -18,6 +18,8 @@ RUNTIME_FILES = ("runtime.js", "structure.js", "hover-client.js")
 
 
 def runtime_bundle(package, files):
+    # Git's Windows line-ending conversion must not change live-update compatibility.
+    files = {name: data.replace(b"\r\n", b"\n") for name, data in files.items()}
     # Anything outside the replaceable runtime is a conservative reload boundary.
     registration = {key: value for key, value in package.items() if key != "version"}
     stable = {name: hashlib.sha256(data).hexdigest() for name, data in files.items()
@@ -107,7 +109,7 @@ def build(output):
             raise ValueError(f"Unexpected snippet path {path}")
         files[path.as_posix()] = EXTENSION / path
 
-    files = {name: path.read_bytes() for name, path in files.items()}
+    files = {name: path.read_text(encoding="utf-8").encode("utf-8") for name, path in files.items()}
     files["runtime-bundle.json"] = runtime_bundle(package, files)
     output.parent.mkdir(parents=True, exist_ok=True)
     with ZipFile(output, "w", compression=ZIP_DEFLATED) as archive:

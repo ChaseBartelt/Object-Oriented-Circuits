@@ -182,7 +182,7 @@ def source_rows(source, *, legacy_markers=True):
                 yield item.strip(), number, Binding()
 
 
-def parse_wires(raw, count=None):
+def parse_wires(raw: str, count: int | None = None) -> tuple[str, ...]:
     """Normalize and validate a comma-separated list of node names."""
     if count == 0 and not raw.strip():
         return ()

@@ -20,19 +20,23 @@ In VS Code, install the [OOC language extension](ide/vscode/README.md), open a `
 
 In Visual Studio on Windows, use the [OOC editor setup](ide/visual-studio/README.md) to edit `.ckt` files with syntax highlighting and run OOC Check or OOC Solve from the Tools menu.
 
-Open existing `.ckt` or `.txt` files with **File → Open**. Click **Compile / Solve** or press **Ctrl+Enter**. `examples/circuit_method.ckt` gives **3.75 V** at `out`. In the viewer, double-click a diagnostic to open its source location in VS Code. The viewer contains no source-editor widgets; **Save layout** writes presentation data beside the circuit and never overwrites code being edited in your IDE. Unsaved layout changes pause automatic refresh until you save them.
+Open existing `.ckt` or `.txt` files with **File → Open**. Click **Compile / Solve** or press **Ctrl+Enter**. `examples/circuit_method.ckt` gives **3.75 V** at `out`. In the viewer, double-click a diagnostic to open its source location in VS Code. The viewer contains no source-editor widgets; **Save layout** writes presentation data into comments in the circuit file, checking with the IDE before saving so unsaved code is not overwritten. Unsaved layout changes pause automatic refresh until you save them.
 
 - **Schematic** shows the circuit. Click a wire or connector to highlight the whole node. Click a component label for its voltage and current. Junction dots show connections and gaps show unconnected crossings. Use **Fit**, the zoom buttons, or the mouse wheel to explore the drawing.
 - Drag components, packages, grounds, and labeled connectors to move them. Drag a horizontal wire up or down or a vertical wire left or right. Hold **Shift** while moving a symbol for diagonal leads. Right-click a part or ground and choose **Rotate clockwise** or **Rotate counterclockwise** to turn it 90°. Press **Ctrl+Z** in the schematic to undo a placement edit. **Reset placement** restores the automatic layout.
 - **Ctrl+click** components and packages to toggle their selection, or hold **Ctrl** and drag from empty space to draw a selection box. Drag any selected item to move the group. Click empty space to clear the selection.
+- **Grid** shows faint snap rows and columns, with a darker line every four intervals and no dots. Parts, grounds, pin ends, and wire segments always snap to grid steps, even with **Alt** held or the grid hidden. Alignment magnets only choose positions on the grid. Labels remain freely movable. Blocked moves show a prohibited cursor and keep the last valid position; releasing commits that position. Placement edits leave circuit values and connections unchanged.
+- **Align to grid** adjusts the whole visible circuit, including opened chip contents, in one undoable step. It trims component leads to grid-sized lengths, spaces device pins on the grid, and reconnects wires, grounds and connector ends. **Ctrl+Z** restores the previous arrangement; **Save layout** keeps the aligned geometry for next time. New automatic drawings use the same alignment when the connection checks succeed. Saved circuit and shared gate layouts are kept until you explicitly align them. If a crowded drawing cannot align without joining different nets, the action leaves it unchanged. Zoom in to see the finer rows. Customize grid colors, line width and major spacing at the top of `circuitlab/viewer/schematic.py`; movement spacing and magnet strength are in `circuitlab/viewer/snapping.py`.
 - Open **View → Gate Layouts** or right-click a built-in gate and choose **Edit shared gate layout**. Drag parts, wire segments, and pin labels or their endpoint circles. Select **Apply to all** to save the internals for that gate type and input count. Existing circuit-specific placements take priority. Use **Restore automatic → Apply to all** to remove a shared layout.
-- **Save layout** stores drawing edits alongside the circuit in `<name>.ckt.layout.json`. Keep it beside the circuit when moving the project. In VS Code, hover over a wire argument to see a representative connected path with the hovered net in blue, or over a gate/chip name for its reference symbol or declared package pinout.
+- Open **View → Chip & Circuit Layouts** to search the bundled library by category or device name, preview its internals, and copy an include/call template. Drag parts, wires, pin ends and labels, then choose **Apply to all instances** to save that device's default. Click a nested block to edit its own default; built-in gates open the gate editor. Right-clicking a library chip in the main schematic also opens its shared editor. Each declaration has an independent default, including the seven shared circuits and the uA741 wrapper; include-only aliases use the same declared chip. The seven pinout-only chips show their packages but have no internal model to arrange. Defaults also supply child sheets during LTspice export. Existing circuit-specific saved placements still take priority.
+- Chip defaults persist in the same per-user app settings as gate defaults, under `device-layouts/v1/<name>` (gate keys remain unchanged). **Restore automatic → Apply to all instances** disables only the selected default and keeps its saved design for **Use saved layout**. Previews connect a declared `gnd` pin to `0`. If an override or different exposed-pin structure does not fit the saved geometry, the viewer uses automatic placement instead of changing connections. Applying a shared default does not rewrite circuit source or circuit-specific saved layouts. The browser is implemented in `circuitlab/viewer/device_layouts.py`; library discovery, persistence and instance mapping are in `circuitlab/layout/devices.py`.
+- **Save layout** stores drawing edits inside the `.ckt` file in a managed `# @ooc-layout-begin` / `# @ooc-layout-end` comment block. Carry the `.ckt` file when moving the project. Existing `.ckt.layout.json` files still load and are copied into comments on save; the old JSON is retained as a backup. Embedded layouts take priority when both exist. In VS Code, hover over a wire argument to see a representative connected path with the hovered net in blue, or over a gate/chip name for its reference symbol or declared package pinout.
 - **Results** and **Analysis window** display the same quantities, equations, and values. Search by quantity. Labels display spaces in place of underscores, while circuit code uses the original identifiers.
 - **Render schematic** draws a parseable circuit when the solver cannot calculate its voltages and currents.
 
 ### Optional desktop editor
 
-Launch without `--editor` to use the original code editor, file tabs and quantity picker. Click a diagnostic to jump to its line. Drag the divider to resize the editor and preview; **Hide preview** and **Show preview** control the preview pane. **Save** writes source and its layout sidecar.
+Launch without `--editor` to use the original code editor, file tabs and quantity picker. Click a diagnostic to jump to its line. Drag the divider to resize the editor and preview; **Hide preview** and **Show preview** control the preview pane. **Save** writes source and its embedded layout comments together.
 
 Inside `main` or a `circuit` method in this editor, type a section name to see matching definitions. Press **Tab** or **Enter** to insert the call and start filling in its arguments. Use **Ctrl+Space** to open suggestions or **Esc** to dismiss them. Hover over a method or `op1` for its argument order. **Enter** follows the current line's indentation and adds a level after `{`. Type `}` on its own line to align it with the opening block. **Tab** indents by four spaces when suggestions are closed. **Shift+Tab** outdents the current line or selection. The extension's separate editing features are described in the [VS Code guide](ide/vscode/README.md).
 
@@ -44,7 +48,7 @@ Choose **Add pin**, click a wire, connector, or component terminal, and enter a 
 
 Voltage and current sources are drawn vertically. Input sources declared before the circuit stages are placed on the left. Sources declared later are placed near the components that use their nets.
 
-Click a pin to reopen its results. Right-click a pin marker to rename or remove it. Each node has one pin. Existing `# @pin` source comments still work. In the IDE viewer, new names, renames and removals are saved as optional pin overrides in the layout sidecar, so source remains untouched. Keep the sidecar to preserve these changes. The optional desktop editor continues to support source-comment pins and preserves sidecar overrides when saving.
+Click a pin to reopen its results. Right-click a pin marker to rename or remove it. Each node has one pin. Existing `# @pin` source comments still work. In the IDE viewer, new names, renames and removals are saved as optional pin overrides in the embedded layout comment block; executable circuit code remains unchanged. The optional desktop editor continues to support source-comment pins and preserves these overrides when saving.
 
 Open `examples/three_way_crossover.ckt` and add a pin to `midOut`. The result is about **802 mV RMS** at 1 kHz.
 
@@ -80,9 +84,9 @@ Select the including file to solve, render, or export the combined circuit. The 
 
 ### Chip library
 
-Open **View → Chip Library** to browse the package definitions. Copy the `include("@chips/...");` line from the [chip catalog](circuitlab/libraries/chips/README.md) and call the chip in `main`. Arguments are in physical pin order, starting at pin 1. Hover over an imported chip call in VS Code for the pin diagram; the optional desktop editor also offers autocomplete inside `main`. Open `examples/chip_library_nand.ckt` for a runnable example.
+Use `include("74HC00");` to load a bundled chip by name. OOC searches the categories in `circuitlab/libraries/chips` automatically; you do not need the folder or `.ckt` extension. Open **View → Chip Library** to browse the package definitions, or consult the [chip catalog](circuitlab/libraries/chips/README.md). Call the chip in `main`, with arguments in physical pin order, starting at pin 1. Hover over an imported chip call in VS Code for the pin diagram; the optional desktop editor also offers autocomplete inside `main`. Open `examples/chip_library_nand.ckt` for a runnable example.
 
-An included file containing only `chip`, `gate`, or `circuit` definitions supplies reusable methods to the caller. The `@chips/` prefix works in saved and untitled circuits. Use ordinary relative paths for your own definition files. Calls instantiate separate copies with local internal nets. See the catalog for supported behavior and any package-specific limits.
+An included file containing only `chip`, `gate`, or `circuit` definitions supplies reusable methods to the caller. Short chip names are case-insensitive and work in saved and untitled circuits. Existing paths such as `include("@chips/logic/74HC00.ckt");` still work. Use ordinary relative `.ckt` or `.txt` paths for your own definition files; these retain their local-file meaning. If two library files share a short name, specify the full `@chips/` path. Calls instantiate separate copies with local internal nets. See the catalog for supported behavior and any package-specific limits.
 
 Open `examples/synth/synth.ckt` for a step sequencer that selects two notes, adds an accent envelope and filters the output. Its [project guide](examples/synth/README.md) lists the signals to probe and the chip demos.
 
@@ -280,6 +284,14 @@ Pins are one bit wide. Logic expressions support `!` (NOT), `&` (AND), `^` (XOR)
 
 Chips with `input` and `output` declarations export to Verilog. Chips and gates built from electrical components export to SPICE.
 
+## Compact circuit examples
+
+Explore the [compact circuit lab](examples/compact_lab/README.md): ten fresh
+examples covering phase cancellation, resonators, pulse envelopes, an oscillator,
+logic, a metallic percussion patch, a generated DAC, passive filtering and a gate
+override. Each includes useful probes and settings; the guide lists verified
+outputs and the shortcuts used.
+
 ## Contributing
 
 The editable install in Quick start picks up changes to `circuitlab/`. Restart running viewer/hover processes after changing Python code. Read the [architecture overview](docs/architecture.md) and [development guide](docs/development.md) before adding a feature. The [refactor validation report](docs/refactor-report.md) records preservation checks, test results and remaining limits.
@@ -312,3 +324,65 @@ node --test ide/vscode/test/*.test.js
 ~~~
 
 The suites check language and graph behavior, nominal gate truth tables, calculations, wiring, exports, both viewer shells and IDE integration. Qt tests use the offscreen platform; Node is needed for extension tests. Immutable refactor fixtures preserve source scopes, terminal mappings, selected numerical outputs, SPICE text and saved root/child layouts. The captured MATLAB R2026a fixtures allow parity tests to run with Python alone. To regenerate them in MATLAB, add `tests/` to the MATLAB path and call `captureReference(legacyRoot, casesJsonPath, referenceJsonPath)`.
+
+### Distributing shared defaults
+
+In **Gate Layouts** or **Chip & Circuit Layouts**, apply your edits, then click
+**Save defaults to project**. Save to `circuitlab/libraries/layouts/defaults.json`
+and commit that file. It includes active gate and chip defaults, and is included
+in the Python package/installer. A fresh installation reads these bundled defaults;
+personal overrides and circuit-specific saved layouts take priority. Publishing does not
+commit or upload anything. The initial file may be empty until you export from the
+app running under your own Windows account.
+
+Ctrl-click or Ctrl-drag a selection rectangle now includes boundary pin ends,
+split connectors and grounds, alongside components. Drag a selected member to move
+the group; fixed terminals remain connected and Ctrl+Z undoes the group movement.
+New automatic layouts also shorten unnecessary channel detours and try reversing
+passive components when that reduces wiring. Shortcuts retain branch connections,
+avoid symbol bodies, and must pass the electrical net checks. Block layouts try
+four additional placements without increasing their congestion score. These searches
+are bounded heuristics, not a global minimum; automatic optimization is limited to
+64 components per displayed level to keep large drawings responsive.
+
+For an existing drawing, click **Optimize wiring** beside Undo, choose
+**View → Optimize wiring**, or right-click the
+schematic and choose **Optimize wiring** (also available in the gate/chip layout
+editors). This also tries moving components and chip/circuit blocks toward their
+connections on the grid, accepting shorter routes that preserve connectivity and
+avoid covering other components or wires. It can rotate passive parts by 90° or
+180° to fit the signal flow, and remove staircase bends even when the wire is
+already at its shortest orthogonal length. The search tries at most 36 moves per
+displayed level; it does not guarantee a globally optimal arrangement.
+The status line reports the wire-length reduction or explains that no safe
+improvement was found. **Ctrl+Z** undoes the whole operation. Saved layouts are only optimized when
+you request it; save/apply the result as usual to retain or distribute it.
+
+### Editing values from the schematic
+
+Right-click a resistor, capacitor or inductor and choose **Edit value…** to update
+its value in the source. Add or remove
+components in your code; the schematic does not offer component insertion or deletion.
+
+Value edits recompile the circuit while preserving positions and connections.
+Ordinary dragging only changes presentation. In VS Code, value edits use an undoable
+workspace edit and save the document. Dirty or stale source is refused: save and
+refresh first. The viewer keeps track of value changes until you choose **Save**.
+When closing it or switching files, **Discard** restores values in the code to the
+last viewer save (or the values before the first edit if you have not saved).
+This includes edited definitions in linked files. If the code has changed independently,
+discard is refused and the viewer stays open rather than overwriting those edits.
+The optional built-in editor keeps edits in its text undo history
+until saved. Editing an included/shared definition changes its repeated instances.
+Generated built-in components or ambiguous statements must be edited in their source definition.
+
+In the viewer, **Ctrl+Z** (or the **Undo** button) undoes value changes and layout
+moves in chronological order. Value undo restores the code and preceding drawing.
+In VS Code it uses the same checked edit-and-save bridge and waits for acknowledgment.
+A rejected undo remains available to retry; it never overwrites externally changed source.
+Undo history is session-only and is cleared when a different file or changed source
+is loaded. Toolbar focus and rerendering the same source do not discard undo.
+**Reset placement** is also undoable; layout changes wait while VS Code is applying
+a value edit so they cannot interfere with its acknowledgment.
+The optional built-in editor keeps text undo separate from the schematic page.
+Value undo is also available in VS Code or the built-in text editor.

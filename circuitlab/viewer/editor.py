@@ -17,7 +17,7 @@ from circuitlab.language.gates import GATE_HELP
 from circuitlab.math.numbers import NUMBER
 from circuitlab.language.syntax import OP, TRANS_CALL
 from circuitlab.tooling.source_info import (
-    IDENTIFIER, SourceInfo, accepts_calls as _accepts_calls, methods as _methods,
+    IDENTIFIER, SourceInfo, accepts_calls as _accepts_calls,
 )
 
 INDENT = " " * 4

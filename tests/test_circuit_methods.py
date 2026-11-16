@@ -633,7 +633,7 @@ class CircuitMethods(unittest.TestCase):
 
     def test_battery_and_three_terminal_divider(self):
         example = (
-            Path(__file__).resolve().parents[1] / "examples" / "circuit_method.ckt"
+            Path(__file__).resolve().parent / "fixtures" / "refactor" / "circuit_method.ckt"
         )
         source = example.read_text(encoding="utf-8")
         result = solve_input(source)

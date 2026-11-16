@@ -3,7 +3,7 @@ V1(1 Vrms) between(vin, 0);
 f = 1k
 
 series lowpass(input, output) {
-    R1 = 1k;
+    R1 = 10;
 }
 
 parallel shunt(input, ground) {
@@ -14,3 +14,8 @@ main {
     lowpass(vin, out);
     shunt(out, 0);
 }
+
+
+# @ooc-layout-begin padding=2
+# {"version":1,"mode":"auto","layouts":[[null,"auto",{"symbols":[["V1","V",["vin","0"],[0.0,-0.25],[0.0,-4.25],"+"],["R1_lowpass_1","R",["vin","out"],[2.25,0.0],[6.25,0.0],"+"],["C1_shunt_1","C",["out","0"],[6.5,-0.25],[6.5,-4.25],"+"]],"wires":{"vin":[[[0.0,-0.25],[0.0,0.0]],[[0.0,0.0],[2.25,0.0]]],"out":[[[6.25,0.0],[6.5,0.0]],[[6.5,-0.25],[6.5,0.0]],[[6.5,0.0],[9.0,0.0]]]},"junctions":{"out":[[6.5,0.0]]},"labels":{},"grounds":[[0.0,-4.25],[6.5,-4.25]],"ground_names":[],"ground_rotations":[],"connectors":[["out",[9.0,0.0],"out",false,false]],"boundary":{},"rotations":{},"crossings":[],"label_offsets":[],"pin_grid":0.25}]]}
+# @ooc-layout-end

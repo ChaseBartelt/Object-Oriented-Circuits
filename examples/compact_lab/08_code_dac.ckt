@@ -1,0 +1,24 @@
+# Binary-weighted DAC: change word (0..63); 45 gives 3.515625 V at out.
+# Loops/branches build the circuit, not a runtime program. Ideal TL072 model.
+include("TL072");
+VCC = 12 : wire = positive;
+VEE = -12 : wire = negative;
+
+main {
+    let bits = 6; let word = 45;
+    let span = 1; let n = 0;
+    while (n < bits) { span *= 2; n++; }
+    if (word < 0) { word = 0; }
+    else if (word >= span) { word = span - 1; }
+    let r = 5000 * span; let i = 0;
+    do {
+        VBit${i}(${5 * (word % 2)}) between(bit${i}, 0);
+        RBit${i}(${r}) between(bit${i}, sum);
+        r /= 2; word /= 2; i++;
+    } while (i < bits);
+    RF(5k) between(sum, inverted);
+    RI(10k) between(inverted, feedback);
+    RO(10k) between(feedback, out);
+    TL072(inverted, sum, 0, negative, 0, feedback, out, positive);
+    measure = V out 0;
+}

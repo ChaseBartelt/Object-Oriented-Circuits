@@ -2,6 +2,7 @@
 
 from dataclasses import replace
 from pathlib import Path
+import re
 
 from circuitlab.language.builder import Compiler, compile_program
 from circuitlab.language.document import compile_document, elaborate_document
@@ -10,6 +11,34 @@ from circuitlab.math.numbers import set_known
 from circuitlab.language.syntax import INCLUDE, NET_METHODS, OVERRIDE, SECTION, analysis_mode, has_chip, source_rows
 
 CHIP_LIBRARY = Path(__file__).resolve().parents[1] / "libraries" / "chips"
+
+
+def include_path(name, source_path=None):
+    """Resolve a short bundled chip name or an explicit file path."""
+    library = CHIP_LIBRARY.resolve()
+    if re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_-]*", name):
+        matches = sorted({
+            candidate.resolve() for candidate in library.rglob("*.ckt")
+            if candidate.stem.casefold() == name.casefold() and candidate.is_file()
+            and candidate.resolve().is_relative_to(library)
+        })
+        if not matches:
+            raise CircuitError(f'Unknown chip "{name}". Use a library chip name or a relative .ckt or .txt path.')
+        if len(matches) > 1:
+            choices = ", ".join(f'@chips/{p.relative_to(library).as_posix()}' for p in matches)
+            raise CircuitError(f'Ambiguous chip name "{name}". Use one of: {choices}.')
+        return matches[0]
+    filename = Path(name.replace("\\", "/"))
+    if filename.is_absolute() or filename.drive or filename.suffix.lower() not in {".ckt", ".txt"}:
+        raise CircuitError("Use a library chip name or a relative path to a .ckt or .txt file.")
+    if filename.parts[0] == "@chips":
+        target = library.joinpath(*filename.parts[1:]).resolve()
+        if not target.is_relative_to(library):
+            raise CircuitError("Use a path inside the chip library.")
+        return target
+    if source_path is None:
+        raise CircuitError("Save this circuit to resolve its relative include paths.")
+    return (source_path.parent / filename).resolve()
 
 
 def read_includes(source, path, read_source=None):
@@ -34,17 +63,10 @@ def read_includes(source, path, read_source=None):
             if include:
                 if depth:
                     raise CircuitError("Put include(...) at the top level.", i + 1, path=path)
-                filename = Path(include[1])
-                if filename.is_absolute() or filename.drive or filename.suffix.lower() not in {".ckt", ".txt"}:
-                    raise CircuitError("Use a relative path to a .ckt or .txt file.", i + 1, path=path)
-                if filename.parts[0] == "@chips":
-                    target = CHIP_LIBRARY.joinpath(*filename.parts[1:]).resolve()
-                    if not target.is_relative_to(CHIP_LIBRARY):
-                        raise CircuitError("Use a path inside the chip library.", i + 1, path=path)
-                elif path is None:
-                    raise CircuitError("Save this circuit to resolve its relative include paths.", i + 1)
-                else:
-                    target = (path.parent / filename).resolve()
+                try:
+                    target = include_path(include[1], path)
+                except CircuitError as error:
+                    raise CircuitError(error.message, i + 1, path=path) from None
                 if target in visiting:
                     raise CircuitError(f'Include cycle through "{include[1]}".', i + 1, path=path)
                 if target not in files:

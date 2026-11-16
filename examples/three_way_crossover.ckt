@@ -1,71 +1,45 @@
-# Three-way active audio crossover
-# Change f to sweep the signal through the three bands.
+
+# Three-way active crossover
 V1(1 Vrms) between(source, 0);
 f = 1k
 
-circuit inputBuffer(input, output, ground) {
+circuit Filter(part1, part2, input, output, ground) {
+    part1 between(input, tap);
+    part2 between(tap, ground);
+    op1(tap, output, output);
+}
+
+circuit InputBuffer(input, output, ground) {
     R1(100) between(input, sense);
     R2(100k) between(sense, ground);
     op1(sense, output, output);
 }
 
-circuit lowPass400(input, output, ground) {
-    R1(4.02k) between(input, tap);
-    C1(100n) between(tap, ground);
-    op1(tap, output, output);
-}
-
-circuit highPass400(input, output, ground) {
-    C1(100n) between(input, tap);
-    R1(4.02k) between(tap, ground);
-    op1(tap, output, output);
-}
-
-circuit lowPass4k(input, output, ground) {
-    R1(3.9k) between(input, tap);
-    C1(10n) between(tap, ground);
-    op1(tap, output, output);
-}
-
-circuit highPass4k(input, output, ground) {
-    C1(10n) between(input, tap);
-    R1(3.9k) between(tap, ground);
-    op1(tap, output, output);
-}
-
-circuit wooferFilter(input, output, ground) {
-    lowPass400(input, stage1, ground);
-    lowPass400(stage1, output, ground);
-}
-
-circuit midFilter(input, output, ground) {
-    highPass400(input, stage1, ground);
-    lowPass4k(stage1, output, ground);
-}
-
-circuit tweeterFilter(input, output, ground) {
-    highPass4k(input, stage1, ground);
-    highPass4k(stage1, output, ground);
-}
-
-circuit speakerLoad(input, output, ground) {
-    R1(1) between(input, output);
-    R2(8) between(output, ground);
-    measure = I R2;
+circuit SpeakerLoad(input, ground) {
+    R1(1) between(input, speaker);
+    R2(8) between(speaker, ground);
 }
 
 main {
-    inputBuffer(source, bus, 0);
+    InputBuffer(source, vin, 0);
 
-    wooferFilter(bus, bassDrive, 0);
-    midFilter(bus, midDrive, 0);
-    tweeterFilter(bus, trebleDrive, 0);
+    # Low band: two low-pass stages
+    Filter(R1(4.02k), C1(100n), vin, lo1, 0);
+    Filter(R2(4.02k), C2(100n), lo1, low, 0);
+    SpeakerLoad(low, 0);
 
-    speakerLoad(bassDrive, bassOut, 0);
-    speakerLoad(midDrive, midOut, 0);
-    speakerLoad(trebleDrive, trebleOut, 0);
+    # Mid band: high-pass then low-pass
+    Filter(C3(100n), R3(4.02k), vin, mid1, 0);
+    Filter(R4(3.9k), C4(10n), mid1, mid, 0);
+    SpeakerLoad(mid, 0);
 
-    measure = V bassOut 0;
-    measure = V midOut 0;
-    measure = V trebleOut 0;
+    # High band: two high-pass stages
+    Filter(C5(10n), R5(3.9k), vin, hi1, 0);
+    Filter(C6(10n), R6(3.9k), hi1, high, 0);
+    SpeakerLoad(high, 0);
 }
+
+
+# @ooc-layout-begin padding=2
+# {"version":1,"mode":"auto","layouts":[[null,"auto",{"symbols":[["V1","V",["source","0"],[0.0,-8.25],[0.0,-11.25],"+"],["R1_InputBuffer_1","R",["source","InputBuffer_1.sense"],[3.0,-8.25],[7.0,-8.25],"+"],["R2_InputBuffer_1","R",["InputBuffer_1.sense","0"],[7.0,-8.5],[7.0,-11.5],"+"],["op1_InputBuffer_1","O",["InputBuffer_1.sense","vin","vin","0"],[9.25,-8.25],[13.25,-8.25],"-"],["R1_Filter_1","R",["vin","Filter_1.tap"],[18.0,0.0],[22.0,0.0],"+"],["C1_Filter_1","C",["Filter_1.tap","0"],[22.0,-0.25],[22.0,-3.25],"+"],["op1_Filter_1","O",["Filter_1.tap","lo1","lo1","0"],[24.25,0.0],[28.25,0.0],"-"],["C3_Filter_3","C",["vin","Filter_3.tap"],[18.0,-8.25],[22.0,-8.25],"+"],["R3_Filter_3","R",["Filter_3.tap","0"],[22.0,-8.5],[22.0,-11.5],"+"],["op1_Filter_3","O",["Filter_3.tap","mid1","mid1","0"],[24.25,-8.25],[28.25,-8.25],"-"],["C5_Filter_5","C",["vin","Filter_5.tap"],[18.0,-16.5],[22.0,-16.5],"+"],["R5_Filter_5","R",["Filter_5.tap","0"],[22.0,-16.5],[22.0,-19.5],"+"],["op1_Filter_5","O",["Filter_5.tap","hi1","hi1","0"],[24.25,-16.5],[28.25,-16.5],"-"],["R2_Filter_2","R",["lo1","Filter_2.tap"],[33.0,0.0],[37.0,0.0],"+"],["C2_Filter_2","C",["Filter_2.tap","0"],[37.0,0.0],[37.0,-3.0],"+"],["op1_Filter_2","O",["Filter_2.tap","low","low","0"],[39.25,0.0],[43.25,0.0],"-"],["R4_Filter_4","R",["mid1","Filter_4.tap"],[33.0,-8.25],[37.0,-8.25],"+"],["C4_Filter_4","C",["Filter_4.tap","0"],[37.0,-8.25],[37.0,-11.25],"+"],["op1_Filter_4","O",["Filter_4.tap","mid","mid","0"],[39.25,-8.25],[43.25,-8.25],"-"],["C6_Filter_6","C",["hi1","Filter_6.tap"],[33.0,-16.5],[37.0,-16.5],"+"],["R6_Filter_6","R",["Filter_6.tap","0"],[37.0,-16.5],[37.0,-19.5],"+"],["op1_Filter_6","O",["Filter_6.tap","high","high","0"],[39.25,-16.5],[43.25,-16.5],"-"],["R1_SpeakerLoad_1","R",["low","SpeakerLoad_1.speaker"],[47.5,0.0],[51.5,0.0],"+"],["R2_SpeakerLoad_1","R",["SpeakerLoad_1.speaker","0"],[51.5,0.0],[51.5,-3.0],"+"],["R1_SpeakerLoad_2","R",["mid","SpeakerLoad_2.speaker"],[47.5,-8.25],[51.5,-8.25],"+"],["R2_SpeakerLoad_2","R",["SpeakerLoad_2.speaker","0"],[51.5,-8.25],[51.5,-11.25],"+"],["R1_SpeakerLoad_3","R",["high","SpeakerLoad_3.speaker"],[47.5,-16.5],[51.5,-16.5],"+"],["R2_SpeakerLoad_3","R",["SpeakerLoad_3.speaker","0"],[51.5,-16.5],[51.5,-19.5],"+"]],"wires":{"InputBuffer_1.sense":[[[7.0,-8.5],[7.0,-8.25]],[[7.0,-8.5],[9.25,-8.5]]],"vin":[[[8.5,-7.75],[8.5,-5.5]],[[8.5,-7.75],[9.25,-7.75]],[[8.5,-5.5],[14.25,-5.5]],[[9.25,-8.0],[9.25,-7.75]],[[13.25,-8.25],[14.25,-8.25]],[[14.25,-8.25],[14.25,-5.5]],[[14.25,-8.25],[15.0,-8.25]],[[15.0,-16.5],[15.0,-8.25]],[[15.0,-16.5],[18.0,-16.5]],[[15.0,-8.25],[15.0,0.0]],[[15.0,-8.25],[18.0,-8.25]],[[15.0,0.0],[18.0,0.0]]],"Filter_1.tap":[[[22.0,-0.25],[22.0,0.0]],[[22.0,-0.25],[24.25,-0.25]]],"lo1":[[[23.5,0.25],[23.5,2.5]],[[23.5,0.25],[24.25,0.25]],[[23.5,2.5],[29.25,2.5]],[[28.25,0.0],[29.25,0.0]],[[29.25,0.0],[29.25,2.5]],[[29.25,0.0],[33.0,0.0]]],"Filter_3.tap":[[[22.0,-8.5],[22.0,-8.25]],[[22.0,-8.5],[24.25,-8.5]]],"mid1":[[[23.5,-7.75],[23.5,-5.5]],[[23.5,-7.75],[24.25,-7.75]],[[23.5,-5.5],[29.25,-5.5]],[[24.25,-8.0],[24.25,-7.75]],[[28.25,-8.25],[29.25,-8.25]],[[29.25,-8.25],[29.25,-5.5]],[[29.25,-8.25],[33.0,-8.25]]],"Filter_5.tap":[[[22.0,-16.75],[22.0,-16.5]],[[22.0,-16.75],[24.25,-16.75]]],"hi1":[[[23.5,-16.0],[23.5,-13.75]],[[23.5,-16.0],[24.25,-16.0]],[[23.5,-13.75],[29.25,-13.75]],[[24.25,-16.25],[24.25,-16.0]],[[28.25,-16.5],[29.25,-16.5]],[[29.25,-16.5],[29.25,-13.75]],[[29.25,-16.5],[33.0,-16.5]]],"Filter_2.tap":[[[37.0,-0.25],[37.0,0.0]],[[37.0,-0.25],[39.25,-0.25]]],"low":[[[38.5,0.25],[38.5,2.5]],[[38.5,0.25],[39.25,0.25]],[[38.5,2.5],[44.25,2.5]],[[43.25,0.0],[44.25,0.0]],[[44.25,0.0],[44.25,2.5]],[[44.25,0.0],[47.5,0.0]]],"Filter_4.tap":[[[37.0,-8.5],[37.0,-8.25]],[[37.0,-8.5],[39.25,-8.5]]],"mid":[[[38.5,-7.75],[38.5,-5.5]],[[38.5,-7.75],[39.25,-7.75]],[[38.5,-5.5],[44.25,-5.5]],[[39.25,-8.0],[39.25,-7.75]],[[43.25,-8.25],[44.25,-8.25]],[[44.25,-8.25],[44.25,-5.5]],[[44.25,-8.25],[47.5,-8.25]]],"Filter_6.tap":[[[37.0,-16.75],[37.0,-16.5]],[[37.0,-16.75],[39.25,-16.75]]],"high":[[[38.5,-16.0],[38.5,-13.75]],[[38.5,-16.0],[39.25,-16.0]],[[38.5,-13.75],[44.25,-13.75]],[[39.25,-16.25],[39.25,-16.0]],[[43.25,-16.5],[44.25,-16.5]],[[44.25,-16.5],[44.25,-13.75]],[[44.25,-16.5],[47.5,-16.5]]],"source":[[[0.0,-8.25],[3.0,-8.25]]],"0":[[[0.0,-11.5],[0.0,-11.25]],[[37.0,-11.5],[37.0,-11.25]],[[37.0,-3.25],[37.0,-3.0]],[[51.5,-11.5],[51.5,-11.25]],[[51.5,-3.25],[51.5,-3.0]]]},"junctions":{"vin":[[14.25,-8.25],[15.0,-8.25]],"lo1":[[29.25,0.0]],"mid1":[[29.25,-8.25]],"hi1":[[29.25,-16.5]],"low":[[44.25,0.0]],"mid":[[44.25,-8.25]],"high":[[44.25,-16.5]]},"labels":{},"grounds":[[0.0,-11.5],[7.0,-11.5],[22.0,-3.25],[22.0,-11.5],[22.0,-19.5],[37.0,-3.25],[37.0,-11.5],[37.0,-19.5],[51.5,-3.25],[51.5,-11.5],[51.5,-19.5]],"ground_names":[],"ground_rotations":[],"connectors":[],"boundary":{},"rotations":{},"crossings":[],"label_offsets":[],"pin_grid":0.25}]]}
+# @ooc-layout-end

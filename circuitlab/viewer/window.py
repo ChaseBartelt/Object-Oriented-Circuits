@@ -13,27 +13,30 @@ from PySide6.QtWidgets import (
 from circuitlab.exporters.ltspice import export_hierarchy, export_schematic
 from circuitlab.language.linked import CHIP_LIBRARY
 from circuitlab.language.syntax import has_chip
-from circuitlab.layout.gates import GateLayouts
+from circuitlab.layout.devices import DeviceLayouts
 from circuitlab.layout.persistence import (
-    placement_path, read_pin_overrides, read_placement, write_placement,
+    read_pin_overrides, read_placement, embed_placement,
 )
 from circuitlab.math.numbers import format_value
 from circuitlab.math.report import pin_rows, result_rows
 from circuitlab.model.graph import CircuitError
 from circuitlab.tooling.session import CircuitSession, includes_files, issue_for
+from circuitlab.tooling.source_edits import SourceEdit
 from circuitlab.viewer.exports import export_file, hierarchy_layouts
+from circuitlab.viewer.device_layouts import DeviceLayoutDialog
 from circuitlab.viewer.schematic import SchematicView
 from circuitlab.viewer.scope import Oscilloscope
+from circuitlab.viewer.source_editing import SourceTools
 from circuitlab.viewer.widgets import (
-    GateLayoutDialog, MODES, Results, STYLESHEET, button, search_text, write_bytes,
+    GateLayoutDialog, MODES, Results, STYLESHEET, button, grid_button, search_text,
 )
 
 
 class ViewerWindow(QMainWindow):
     """Present one accepted source document without constructing a text editor.
 
-    Geometry remains independent of electrical source. Refresh is refused while
-    the user has unsaved viewer changes; Save only writes the layout sidecar.
+    Layout comments and value edits are saved through the IDE when attached,
+    or through checked file writes when running standalone.
     """
 
     def __init__(self, session=None):
@@ -104,7 +107,8 @@ class ViewerWindow(QMainWindow):
         canvas.setContentsMargins(0, 0, 0, 0)
         controls = QHBoxLayout()
         settings = QSettings("Electric Circuits", "Object-Oriented Circuits")
-        self.schematic = SchematicView(GateLayouts(settings))
+        self.schematic = SchematicView(DeviceLayouts(settings))
+        self.schematic.device_layout_requested.connect(self.edit_device_layouts)
         self.schematic.gate_layout_requested.connect(
             lambda name, inputs: self.edit_gate_layouts((name, inputs))
         )
@@ -132,12 +136,14 @@ class ViewerWindow(QMainWindow):
         )
         self.pin_button = button("Add pin", self.toggle_pin_tool, controls)
         self.pin_button.setCheckable(True)
+        grid_button(self.schematic, controls)
         button("Zoom in", lambda: self.schematic.zoom(1.4), controls)
         button("Zoom out", lambda: self.schematic.zoom(1 / 1.4), controls)
         button("Fit", self.schematic.fit, controls)
         button("Export LTspice .asc", self.export_ltspice, controls)
         controls.addStretch()
         canvas.addLayout(controls)
+        self.source_tools = SourceTools(self, canvas)
         canvas.addWidget(self.schematic)
         return page
 
@@ -155,10 +161,14 @@ class ViewerWindow(QMainWindow):
         view = self.menuBar().addMenu("&View")
         view.addAction("Chip Library…", self.show_chip_library)
         view.addAction("Gate Layouts…", lambda: self.edit_gate_layouts())
+        view.addAction("Chip & Circuit Layouts…", lambda: self.edit_device_layouts())
+        view.addAction("Optimize wiring", self.schematic.optimize_wiring)
         compile_action = self.menuBar().addMenu("&Circuit").addAction("&Compile / Solve", self.compile_source)
         compile_action.setShortcuts([QKeySequence("Ctrl+Return"), QKeySequence("Ctrl+Enter")])
 
     def open_from_editor(self, filename, *, activate=True):
+        if self.source_tools.pending:
+            return False
         if not activate and self.placement_dirty:
             self.status.setText("Auto-refresh paused: save your layout, then save in your IDE again.")
             return False
@@ -215,6 +225,11 @@ class ViewerWindow(QMainWindow):
 
     def edit_gate_layouts(self, initial=None):
         dialog = GateLayoutDialog(self, self.schematic.gate_layouts, initial)
+        dialog.exec()
+        dialog.deleteLater()
+
+    def edit_device_layouts(self, initial=None):
+        dialog = DeviceLayoutDialog(self, self.schematic.gate_layouts, initial)
         dialog.exec()
         dialog.deleteLater()
 
@@ -391,30 +406,47 @@ class ViewerWindow(QMainWindow):
         self.setWindowModified(self.placement_dirty)
 
     def save(self):
-        """Persist presentation only; never overwrite the IDE's circuit source."""
+        """Save layout comments against the latest source, through the IDE when attached."""
         if self.path is None:
             self.status.setText("Open a saved circuit before saving its layout.")
             return False
-        data = write_placement(
-            self.schematic.layout_mode, self.schematic.placements(),
-            pin_overrides=self.session.pin_overrides,
-        )
-        if not write_bytes(self, placement_path(self.path), data, "Save schematic layout"):
+        if self.source_tools.pending:
+            self.status.setText('Wait for the current source edit before saving the layout.')
             return False
-        self.placement_dirty = False
-        self.update_title()
-        self.status.setText(f"Saved layout for {self.path.name}.")
-        return True
+        try:
+            before = self.path.read_bytes().decode('utf-8-sig')
+            after = embed_placement(before, self.schematic.layout_mode,
+                                    self.schematic.placements(), pin_overrides=self.session.pin_overrides)
+            plan = SourceEdit(self.path, before, after, 'Save schematic layout')
+            if not self.source_tools.write_and_wait(plan):
+                return False
+            previous = self.source_tools.current_identity()
+            self.session.disk_bytes = self.path.read_bytes()
+            self.session.source = self.session.disk_bytes.decode('utf-8-sig')
+            if self.source_tools.current_identity() != previous:
+                self.compile_source()
+            self.source_tools.identity = self.source_tools.current_identity()
+            self.source_tools.checkpoint()
+            self.placement_dirty = False
+            self.update_title()
+            self.status.setText(f'Saved layout and values in {self.path.name}.')
+            return True
+        except (OSError, ValueError) as error:
+            QMessageBox.warning(self, 'Save schematic layout', str(error))
+            return False
 
     def confirm_edits(self):
-        if not self.placement_dirty:
+        if self.source_tools.pending:
+            self.status.setText('Wait for the source edit to finish before closing or switching files.')
+            return False
+        if not self.placement_dirty and not self.source_tools.value_changes:
             return True
         options = QMessageBox.StandardButton
         choice = QMessageBox.question(
-            self, "Save layout changes", f"Save layout changes to {self.path.name if self.path else 'this circuit'}?",
+            self, "Save viewer changes", f"Save layout and value changes to {self.path.name if self.path else 'this circuit'}? Discard restores unsaved value changes in the code.",
             options.Save | options.Discard | options.Cancel, options.Save,
         )
-        return choice == options.Discard or (choice == options.Save and self.save())
+        return self.source_tools.discard_values() if choice == options.Discard else (choice == options.Save and self.save())
 
     def export_netlist(self):
         return export_file(

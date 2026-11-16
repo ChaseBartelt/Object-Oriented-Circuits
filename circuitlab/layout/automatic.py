@@ -4,7 +4,6 @@ from dataclasses import dataclass
 from statistics import median
 
 from circuitlab.layout.geometry import (
-    source_pin_is_upper,
     Layout,
     add_wire,
     component_pins,
@@ -21,9 +20,11 @@ def series_runs(circuit):
     incident = {}
     for i, net, *_ in component_pins(parts):
         incident.setdefault(net, []).append(i)
+    # Only two-terminal parts can be reversed along a series run. Switches
+    # also have control pins, whose sides must agree with symbol_pins().
     passive = {
         i for i, part in enumerate(parts)
-        if not part.is_source and part.kind not in {"O", "Q", "H"} and part.p != part.n
+        if not part.is_source and part.kind not in {"O", "Q", "H", "S"} and part.p != part.n
     }
     joins = {i: {} for i in passive}
 

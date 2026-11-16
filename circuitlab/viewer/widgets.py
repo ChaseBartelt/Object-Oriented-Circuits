@@ -3,13 +3,13 @@
 from PySide6.QtCore import QIODevice, QSaveFile, QSignalBlocker, Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
-    QAbstractItemView, QComboBox, QDialog, QHBoxLayout, QHeaderView, QLabel,
+    QAbstractItemView, QComboBox, QDialog, QFileDialog, QHBoxLayout, QHeaderView, QLabel,
     QLineEdit, QMessageBox, QPushButton, QSpinBox, QTableWidget, QTableWidgetItem,
     QVBoxLayout, QWidget,
 )
 
 from circuitlab.language.gates import GATE_HELP, gate_accepts
-from circuitlab.layout.gates import default_gate_layout, gate_preview
+from circuitlab.layout.gates import BUNDLED_LAYOUTS, default_gate_layout, gate_preview
 from circuitlab.viewer.schematic import SchematicView
 
 
@@ -29,6 +29,7 @@ QPlainTextEdit, QLineEdit, QListWidget { background: #191919; }
 QPushButton, QComboBox { background: #393939; border: 1px solid #666; border-radius: 4px;
                         padding: 6px 12px; }
 QPushButton:hover, QComboBox:hover { background: #4b4b4b; }
+QPushButton:checked { background: #31556b; border-color: #72a6c5; }
 QPushButton#compile { background: #a92537; font-weight: bold; }
 QPushButton#compile:hover { background: #c33449; }
 QTabBar::tab { background: #343434; padding: 7px 16px; border: 1px solid #555; }
@@ -48,8 +49,34 @@ def button(label, callback, layout):
     return control
 
 
+def grid_button(view, layout):
+    control = button("Grid", view.set_grid_enabled, layout)
+    control.setCheckable(True)
+    control.setChecked(view.grid_enabled)
+    control.setToolTip("Show or hide the grid. Components and wire handles always snap; Shift uses diagonal leads.")
+    def align():
+        if not view.align_to_grid():
+            QMessageBox.information(view, "Align to grid",
+                "This layout is too tightly spaced to align without joining different wires. "
+                "Move the crowded parts or wires apart and try again. Your layout has not changed.")
+    align_control = button("Align to grid", align, layout)
+    align_control.setToolTip("Align existing wires, pins, grounds and parts together. Ctrl+Z undoes the whole change.")
+    return control
+
+
 def search_text(value):
     return " ".join(value.casefold().replace("_", " ").split())
+
+
+def publish_defaults(parent, layouts):
+    path, _ = QFileDialog.getSaveFileName(parent, "Save shared defaults to project", str(BUNDLED_LAYOUTS), "JSON (*.json)")
+    if not path:
+        return
+    try:
+        count = layouts.publish(path)
+        QMessageBox.information(parent, "Shared defaults", f"Saved {count} defaults. Include this file in the project's libraries/layouts/defaults.json when distributing OOC.")
+    except (OSError, ValueError, TypeError) as error:
+        QMessageBox.warning(parent, "Shared defaults", str(error))
 
 
 class GateLayoutDialog(QDialog):
@@ -80,6 +107,7 @@ class GateLayoutDialog(QDialog):
         controls.addWidget(self.inputs)
         controls.addStretch()
         self.preview = SchematicView()
+        grid_button(self.preview, controls)
         button("Fit", self.preview.fit, controls)
         panel.addLayout(controls)
         panel.addWidget(self.preview, 1)
@@ -95,6 +123,7 @@ class GateLayoutDialog(QDialog):
         self.message.setContentsMargins(0, 0, 16, 0)
         footer.addWidget(self.message, 1)
         self.saved_button = button("Use saved layout", self.restore_saved, footer)
+        button("Save defaults to project", lambda: publish_defaults(self, self.layouts), footer)
         panel.addLayout(footer)
         self.preview.placement_changed.connect(self.record_draft)
         self.preview.move_refused.connect(
