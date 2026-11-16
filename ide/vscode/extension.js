@@ -24,7 +24,7 @@ function activate(context) {
         const folder = vscode.workspace.workspaceFolders?.find((item) => item.uri.scheme === "file")?.uri.fsPath;
         if (configured && (path.isAbsolute(configured) || folder)) return path.resolve(folder || "", configured);
         return vscode.workspace.workspaceFolders?.find((item) => item.uri.scheme === "file"
-            && existsSync(path.join(item.uri.fsPath, "circuitlab", "cli.py")))?.uri.fsPath;
+            && existsSync(path.join(item.uri.fsPath, "circuitlab", "tooling", "cli.py")))?.uri.fsPath;
     }, output, (bundle) => live.apply(bundle), checkInstalled);
 }
 

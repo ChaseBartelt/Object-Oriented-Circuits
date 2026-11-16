@@ -4,14 +4,14 @@ import unittest
 from math import tau
 from pathlib import Path
 
-from circuitlab.analysis import solve_input
-from circuitlab.compiler import compile_circuit
-from circuitlab.graph import CircuitError
-from circuitlab.layout import compact
-from circuitlab.layout_checks import preserves_nets
-from circuitlab.report import component_labels
-from circuitlab.routing import schematic_layout
-from circuitlab.wiring import signal_flow
+from circuitlab.math.analysis import solve_input
+from circuitlab.language.compiler import compile_circuit
+from circuitlab.model.graph import CircuitError
+from circuitlab.layout.automatic import compact
+from circuitlab.layout.checks import preserves_nets
+from circuitlab.math.report import component_labels
+from circuitlab.layout.routing import schematic_layout
+from circuitlab.layout.wiring import signal_flow
 
 
 class CircuitMethods(unittest.TestCase):

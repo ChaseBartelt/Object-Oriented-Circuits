@@ -4,15 +4,15 @@ from itertools import product
 from pathlib import Path
 import unittest
 
-from circuitlab.analysis import analyze
-from circuitlab.compiler import compile_circuit
-from circuitlab.graph import CircuitError
-from circuitlab.hood import hood_levels
-from circuitlab.layout_checks import preserves_nets
-from circuitlab.ltspice import export_hierarchy
-from circuitlab.report import component_labels
-from circuitlab.routing import fast_layout
-from circuitlab.spice import export_spice
+from circuitlab.math.analysis import analyze
+from circuitlab.language.compiler import compile_circuit
+from circuitlab.model.graph import CircuitError
+from circuitlab.layout.hierarchy import hood_levels
+from circuitlab.layout.checks import preserves_nets
+from circuitlab.exporters.ltspice import export_hierarchy
+from circuitlab.math.report import component_labels
+from circuitlab.layout.routing import fast_layout
+from circuitlab.exporters.spice import export_spice
 
 
 class ChipLibraryTest(unittest.TestCase):

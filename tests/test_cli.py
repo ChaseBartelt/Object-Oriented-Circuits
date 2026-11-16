@@ -13,7 +13,7 @@ FIXTURES = Path(__file__).resolve().parent / "fixtures"
 class CliTest(unittest.TestCase):
     def run_cli(self, command, path):
         return subprocess.run(
-            [sys.executable, "-m", "circuitlab.cli", command, str(path)],
+            [sys.executable, "-m", "circuitlab.tooling.cli", command, str(path)],
             cwd=ROOT,
             capture_output=True,
             text=True,

@@ -14,13 +14,13 @@ import unittest
 import numpy as np
 
 # Keep these public imports: existing integrations must remain compatible.
-from circuitlab.analysis import analyze
-from circuitlab.compiler import compile_circuit
-from circuitlab.hood import hood_levels
-from circuitlab.layout_checks import preserves_nets
-from circuitlab.linked import CHIP_LIBRARY
-from circuitlab.placement import pack_layout, read_placement, restore_layout, write_placement
-from circuitlab.spice import spice_netlist
+from circuitlab.math.analysis import analyze
+from circuitlab.language.compiler import compile_circuit
+from circuitlab.layout.hierarchy import hood_levels
+from circuitlab.layout.checks import preserves_nets
+from circuitlab.language.linked import CHIP_LIBRARY
+from circuitlab.layout.persistence import pack_layout, read_placement, restore_layout, write_placement
+from circuitlab.exporters.spice import spice_netlist
 
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "refactor"

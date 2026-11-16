@@ -3,14 +3,14 @@
 import unittest
 from pathlib import Path
 
-from circuitlab.analysis import analyze, solve_input
-from circuitlab.compiler import compile_circuit
-from circuitlab.graph import CircuitError
-from circuitlab.layout_checks import preserves_nets
-from circuitlab.report import component_labels
-from circuitlab.routing import schematic_layout
-from circuitlab.spice import export_spice
-from circuitlab.verilog import export_verilog
+from circuitlab.math.analysis import analyze, solve_input
+from circuitlab.language.compiler import compile_circuit
+from circuitlab.model.graph import CircuitError
+from circuitlab.layout.checks import preserves_nets
+from circuitlab.math.report import component_labels
+from circuitlab.layout.routing import schematic_layout
+from circuitlab.exporters.spice import export_spice
+from circuitlab.exporters.verilog import export_verilog
 
 
 class ControlFlowTest(unittest.TestCase):

@@ -72,11 +72,11 @@ def verify(args):
 
         divider = project / "divider.ckt"
         divider.write_text("V1(12) between(supply, 0);\nR1(2k) between(supply, out);\nR2(1k) between(out, 0);\n", encoding="utf-8")
-        solved = run([python, "-m", "circuitlab.cli", "solve", divider], "solve")
+        solved = run([python, "-m", "circuitlab.tooling.cli", "solve", divider], "solve")
         assert "Node out: 4 V" in solved, solved
         chip = project / "nand.ckt"
         shutil.copy2(REPO / "tests/fixtures/refactor/chip_library_nand.ckt", chip)
-        run([python, "-m", "circuitlab.cli", "solve", chip], "chip-library")
+        run([python, "-m", "circuitlab.tooling.cli", "solve", chip], "chip-library")
         report["checks"].append("Packaged compiler solves external 4 V divider and @chips NAND")
 
         if args.full_tests:
@@ -142,7 +142,7 @@ assert distribution.read_install(root)['version'] == release['version']
 print(json.dumps(dict(ok=True, previous_runtime=sys.executable, active=distribution.read_install(root)['python'])))
 ''', "update", target, args.setup.resolve(), fixture, json.dumps(extra), timeout=900)
         assert json.loads((target / "install.json").read_text())["version"] == record["version"]
-        run([python, "-m", "circuitlab.cli", "solve", divider], "solve-after-update")
+        run([python, "-m", "circuitlab.tooling.cli", "solve", divider], "solve-after-update")
         report["checks"].append("Synthetic older runtime -> real verified installer -> active current runtime; equal version not offered")
         for path, contents in kept.items():
             assert path.read_bytes() == contents, path

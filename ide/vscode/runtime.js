@@ -56,7 +56,7 @@ function checkoutRoot(document) {
     }
     let directory = path.dirname(document.uri.fsPath);
     while (true) {
-        if (existsSync(path.join(directory, "circuitlab", "cli.py"))) {
+        if (existsSync(path.join(directory, "circuitlab", "tooling", "cli.py"))) {
             return directory;
         }
         const parent = path.dirname(directory);
@@ -111,7 +111,7 @@ function includeTarget(document, filename) {
 
 function compilerProcess(python, cwd, action, file) {
     return new Promise((resolve) => {
-        execFile(python, ["-X", "utf8", "-m", "circuitlab.cli", action, file], {
+        execFile(python, ["-X", "utf8", "-m", "circuitlab.tooling.cli", action, file], {
             cwd, windowsHide: true, encoding: "utf8", maxBuffer: 8 * 1024 * 1024,
         }, (error, stdout, stderr) => resolve({ error, stdout, stderr }));
     });

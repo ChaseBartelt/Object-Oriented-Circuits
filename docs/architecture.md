@@ -16,9 +16,8 @@ circuitlab/
     tooling/        document session, CLI, source inspection, IDE bridge and hover worker
     viewer/         lightweight window, Qt schematic/results/scope, optional old editor
     libraries/      packaged chip definitions and shared .ckt helper circuits
-    gui.py          lazy launcher/compatibility entry point
-    cli.py          compatibility CLI entry point
-    ...             small compatibility imports for historical module paths
+    __init__.py     package marker
+    __main__.py     application launcher; python -m circuitlab
 ide/
     vscode/         extension runtime, structure scanner, hover client and local updates
     visual-studio/  grammar installer and external-tool setup for the full Windows IDE
@@ -27,7 +26,7 @@ tests/
 examples/           circuits for users to inspect and modify
 ```
 
-Root-level names such as `circuitlab.compiler`, `circuitlab.analysis` and `circuitlab.schematic` remain importable. Their implementations belong in the organized packages. Compatibility modules are not second implementations; edit the canonical module, not the forwarding file.
+Import directly from the module that owns the implementation: for example, `circuitlab.language.compiler`, `circuitlab.math.analysis`, or `circuitlab.viewer.schematic`. The package root contains only its marker and launcher. There are no old-name forwarding files or dynamic alias registry. The command-line compiler is `python -m circuitlab.tooling.cli`; the hover worker is `python -m circuitlab.tooling.hover`.
 
 ## Source to circuit
 
@@ -67,7 +66,7 @@ The same graph supports solving, drawing and export. A separate `Layout` holds p
 
 Terminal membership and conducting connectivity are related but different. An ideal op amp senses its two input voltages; its output branch conducts. Do not replace every solver connection rule with a traversal through all displayed pins.
 
-The geometry implementation is split by purpose: [`layout/geometry.py`](../circuitlab/layout/geometry.py) contains drawing data and terminal primitives; [`layout/automatic.py`](../circuitlab/layout/automatic.py) handles recognized circuit shapes; [`layout/routing.py`](../circuitlab/layout/routing.py) routes arbitrary graphs; and [`layout/editing.py`](../circuitlab/layout/editing.py) moves, rotates, slides and splits existing geometry. Shared crossing/topology checks belong in `layout/checks.py`. Historical `circuitlab.layout` and `circuitlab.routing` imports remain available.
+The geometry implementation is split by purpose: [`layout/geometry.py`](../circuitlab/layout/geometry.py) contains drawing data and terminal primitives; [`layout/automatic.py`](../circuitlab/layout/automatic.py) handles recognized circuit shapes; [`layout/routing.py`](../circuitlab/layout/routing.py) routes arbitrary graphs; and [`layout/editing.py`](../circuitlab/layout/editing.py) moves, rotates, slides and splits existing geometry. Shared crossing/topology checks belong in `layout/checks.py`. Import geometry, routing and editing functions from those modules directly.
 
 ## Document and UI ownership
 

@@ -19,7 +19,7 @@ Open and edit `.ckt` files in Visual Studio on Windows. The OOC TextMate grammar
    | --- | --- | --- |
    | Title | `OOC Solve` | `OOC Check` |
    | Command | Full path to the OOC repo's `.venv\Scripts\python.exe` | The same Python executable |
-   | Arguments | `-m circuitlab.cli solve "$(ItemPath)"` | `-m circuitlab.cli check "$(ItemPath)"` |
+   | Arguments | `-m circuitlab.tooling.cli solve "$(ItemPath)"` | `-m circuitlab.tooling.cli check "$(ItemPath)"` |
    | Initial directory | Full path to the OOC repository | The same repository path |
    | Use Output window | Checked | Checked |
 

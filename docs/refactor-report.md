@@ -1,5 +1,7 @@
 # IDE-first refactor validation
 
+Historical report for the initial refactor. Its temporary Python import compatibility layer was subsequently removed in OOC 1.1.1: callers now use the organized modules directly, and the package root contains only `__init__.py` and `__main__.py`. Use the [current architecture guide](architecture.md) for today's paths; the validation below records the earlier phase.
+
 Completed November 15, 2026 on **For-IDEs**. The implementation was checked against the actual local working tree, starting at `78cdeccb0ffeade251450f55349f5f05da0bcd68`, with its existing uncommitted IDE work. The earlier source audit and its immutable snapshots remain the reference for pre-refactor behavior.
 
 ## Delivered behavior

@@ -14,13 +14,14 @@ class LaunchTest(unittest.TestCase):
 import os
 os.environ['QT_QPA_PLATFORM'] = 'offscreen'
 from PySide6.QtCore import QTimer
-from circuitlab import gui
-original = gui.ViewerWindow.show
+from circuitlab.__main__ import main
+from circuitlab.viewer.window import ViewerWindow
+original = ViewerWindow.show
 def show(window):
     original(window)
     QTimer.singleShot(250, window.close)
-gui.ViewerWindow.show = show
-raise SystemExit(gui.main())
+ViewerWindow.show = show
+raise SystemExit(main())
 """
         process = subprocess.Popen(
             [sys.executable, "-X", "utf8", "-c", script, "--editor",

@@ -39,7 +39,8 @@ from PySide6.QtWidgets import (
 )
 
 from circuitlab.math.analysis import Diagnostic, analyze, diagnostics
-from circuitlab.language.compiler import analysis_mode, compile_circuit
+from circuitlab.language.compiler import compile_circuit
+from circuitlab.language.syntax import analysis_mode
 from circuitlab.viewer.device_reference import DeviceReference
 from circuitlab.viewer.editor import CircuitEditor
 from circuitlab.layout.gates import GateLayouts, default_gate_layout, gate_preview
@@ -1160,13 +1161,3 @@ class MainWindow(QMainWindow):
                     return
         self.scope.shutdown()
         event.accept()
-
-
-
-
-
-
-def main(argv=None):
-    """Retain direct legacy entry calls through the application launcher."""
-    from circuitlab.gui import main as launch
-    return launch(argv)

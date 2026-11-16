@@ -13,7 +13,7 @@ class HoverClient {
 
     start() {
         if (this.child) return;
-        const child = spawn(this.python, ["-X", "utf8", "-m", "circuitlab.ide_hover"], {
+        const child = spawn(this.python, ["-X", "utf8", "-m", "circuitlab.tooling.hover"], {
             cwd: this.cwd, windowsHide: true, stdio: ["pipe", "pipe", "pipe"],
         });
         this.child = child;

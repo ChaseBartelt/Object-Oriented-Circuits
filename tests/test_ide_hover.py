@@ -9,7 +9,7 @@ from tempfile import TemporaryDirectory
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication
-from circuitlab.ide_hover import HoverRenderer
+from circuitlab.tooling.hover import HoverRenderer
 
 
 class HoverTest(unittest.TestCase):
@@ -33,7 +33,6 @@ from circuitlab.tooling.hover import HoverRenderer
 app = QApplication([])
 renderer = HoverRenderer()
 assert 'circuitlab.viewer.editor' not in sys.modules
-assert 'circuitlab.editor' not in sys.modules
 assert not any(isinstance(widget, QPlainTextEdit) for widget in app.allWidgets())
 """
         result = subprocess.run(

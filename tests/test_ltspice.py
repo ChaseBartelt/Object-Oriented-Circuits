@@ -3,15 +3,16 @@
 import unittest
 from pathlib import Path
 
-from circuitlab.compiler import compile_circuit
-from circuitlab.hood import hood_levels
-from circuitlab.layout import wire_axis
-from circuitlab.ltspice import export_hierarchy, export_schematic
-from circuitlab.numbers import scalar
-from circuitlab.placement import read_placement, restore_layout
-from circuitlab.report import component_labels
-from circuitlab.routing import move_symbol, schematic_layout
-from circuitlab.spice import spice_circuit
+from circuitlab.language.compiler import compile_circuit
+from circuitlab.layout.hierarchy import hood_levels
+from circuitlab.layout.geometry import wire_axis
+from circuitlab.exporters.ltspice import export_hierarchy, export_schematic
+from circuitlab.math.numbers import scalar
+from circuitlab.layout.persistence import read_placement, restore_layout
+from circuitlab.math.report import component_labels
+from circuitlab.layout.routing import schematic_layout
+from circuitlab.layout.editing import move_symbol
+from circuitlab.exporters.spice import spice_circuit
 
 EXAMPLES = Path(__file__).resolve().parents[1] / "examples"
 PIN_OFFSETS = {

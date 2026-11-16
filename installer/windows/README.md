@@ -53,7 +53,7 @@ Test the packaged interpreter, not just the developer virtual environment: CLI c
 The automated installed-application check does this in a new disposable folder:
 
 ```powershell
-python installer/windows/verify_installer.py --setup "dist/windows/OOC-Setup-1.1.0-windows-x64.exe" --work-dir "C:\OOC-test" --full-tests --code "$env:LOCALAPPDATA\Programs\Microsoft VS Code\Code.exe"
+python installer/windows/verify_installer.py --setup "dist/windows/OOC-Setup-1.1.1-windows-x64.exe" --work-dir "C:\OOC-test" --full-tests --code "$env:LOCALAPPDATA\Programs\Microsoft VS Code\Code.exe"
 ```
 
 Omit `--code` when VS Code is unavailable. The update check uses a synthetic older descriptor/runtime and local release data while exercising the real checksum verification and installer; it does not publish a release or claim to test GitHub delivery. The full installed suite imports OOC from the bundled runtime, while tests and fixtures come from the checkout. Tests explicitly exercising direct source-file launches still use their source-file paths. Test logs and `validation.json` remain available after the test installation is uninstalled.

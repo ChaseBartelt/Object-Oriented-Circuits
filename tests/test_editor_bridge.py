@@ -14,7 +14,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
-from circuitlab.editor_bridge import EditorBridge
+from circuitlab.tooling.editor_bridge import EditorBridge
 from circuitlab.viewer.window import ViewerWindow
 
 

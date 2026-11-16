@@ -4,8 +4,8 @@ import unittest
 from math import tau
 from pathlib import Path
 
-from circuitlab.graph import CircuitError
-from circuitlab.spice import export_spice
+from circuitlab.model.graph import CircuitError
+from circuitlab.exporters.spice import export_spice
 
 EXAMPLES = Path(__file__).resolve().parents[1] / "examples"
 

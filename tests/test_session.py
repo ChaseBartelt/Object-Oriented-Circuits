@@ -23,7 +23,7 @@ session.compile()
 assert session.solution.calculated['I'] == 4
 assert not any(name.startswith('PySide6') for name in sys.modules)
 assert 'circuitlab.viewer.legacy' not in sys.modules
-assert 'circuitlab.editor' not in sys.modules
+assert 'circuitlab.viewer.editor' not in sys.modules
 """
         result = subprocess.run([sys.executable, "-c", script], cwd=ROOT, capture_output=True, text=True, timeout=30)
         self.assertEqual(result.returncode, 0, result.stderr)

@@ -6,11 +6,12 @@ from pathlib import Path
 
 import numpy as np
 
-from circuitlab.analysis import solve_input
-from circuitlab.compiler import compile_circuit
-from circuitlab.graph import CircuitError
-from circuitlab.layout import compact, route
-from circuitlab.report import result_rows
+from circuitlab.math.analysis import solve_input
+from circuitlab.language.compiler import compile_circuit
+from circuitlab.model.graph import CircuitError
+from circuitlab.layout.automatic import compact
+from circuitlab.layout.legacy import route
+from circuitlab.math.report import result_rows
 
 HERE = Path(__file__).parent
 CASES = json.loads((HERE / "cases.json").read_text(encoding="utf-8"))

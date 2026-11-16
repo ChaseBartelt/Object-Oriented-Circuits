@@ -18,15 +18,17 @@ from PySide6.QtGui import QContextMenuEvent, QHelpEvent, QTextCursor
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QPushButton, QToolTip
 
-from circuitlab.gate_layouts import GateLayouts, default_gate_layout, gate_preview
-from circuitlab.gui import GateLayoutDialog, MainWindow
-from circuitlab.layout import symbol_pins
-from circuitlab.layout_checks import preserves_nets
-from circuitlab.placement import pack_layout, placement_path
-from circuitlab.report import component_labels
-from circuitlab.routing import _mark_crossings, fast_layout, move_ground, move_symbol
-from circuitlab.schematic import SCALE, point
-from circuitlab.spice import export_spice
+from circuitlab.layout.gates import GateLayouts, default_gate_layout, gate_preview
+from circuitlab.viewer.legacy import GateLayoutDialog, MainWindow
+from circuitlab.layout.geometry import symbol_pins
+from circuitlab.layout.checks import preserves_nets
+from circuitlab.layout.persistence import pack_layout, placement_path
+from circuitlab.math.report import component_labels
+from circuitlab.layout.checks import mark_crossings as _mark_crossings
+from circuitlab.layout.routing import fast_layout
+from circuitlab.layout.editing import move_ground, move_symbol
+from circuitlab.viewer.schematic import SCALE, point
+from circuitlab.exporters.spice import export_spice
 
 EXAMPLES = Path(__file__).resolve().parents[1] / "examples"
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
@@ -506,7 +508,7 @@ main { nand(supply, 0, input_a, input_b, out); }
         self.assertTrue({"RA", chip}.issubset(schematic.selected_symbols))
 
     def test_chip_library_browses_previews_and_completes_imported_chips(self):
-        from circuitlab.linked import CHIP_LIBRARY
+        from circuitlab.language.linked import CHIP_LIBRARY
 
         win = self.window
         win.show_chip_library()
@@ -603,7 +605,7 @@ main { nand(supply, 0, input_a, input_b, out); }
         event = QContextMenuEvent(
             QContextMenuEvent.Reason.Mouse, middle, schematic.viewport().mapToGlobal(middle)
         )
-        with patch("circuitlab.schematic.QMenu") as menu:
+        with patch("circuitlab.viewer.schematic.QMenu") as menu:
             schematic.contextMenuEvent(event)
             dict(call.args for call in menu.return_value.addAction.call_args_list)["Split"]()
         split = schematic.layout
@@ -643,7 +645,7 @@ main { nand(supply, 0, input_a, input_b, out); }
         event = QContextMenuEvent(
             QContextMenuEvent.Reason.Mouse, cursor, schematic.viewport().mapToGlobal(cursor)
         )
-        with patch("circuitlab.schematic.QMenu") as menu:
+        with patch("circuitlab.viewer.schematic.QMenu") as menu:
             schematic.contextMenuEvent(event)
             actions = dict(call.args for call in menu.return_value.addAction.call_args_list)
             self.assertEqual(list(actions)[:2], ["Rotate clockwise", "Rotate counterclockwise"])
@@ -771,7 +773,7 @@ main { nand(supply, 0, input_a, input_b, out); }
             root.write_text('include("load.ckt");\nconnector(signal, 0);\n'
                             'V1(8) between(vcc, 0);\nR1(1k) between(vcc, signal);\n')
             load.write_text("connector(signal, 0);\nR1(1k) between(signal, 0);\n")
-            with patch("circuitlab.gui.QFileDialog.getExistingDirectory", return_value=str(folder)):
+            with patch("circuitlab.viewer.legacy.QFileDialog.getExistingDirectory", return_value=str(folder)):
                 win.pick_folder()
             self.assertEqual(Path(win.file_model.rootPath()), folder)
             self.assertTrue(win.explorer.isVisible())
@@ -798,7 +800,7 @@ main { nand(supply, 0, input_a, input_b, out); }
             second = root / "second"
             first.mkdir()
             second.mkdir()
-            with patch("circuitlab.gui.QFileDialog.getExistingDirectory", return_value=str(root)):
+            with patch("circuitlab.viewer.legacy.QFileDialog.getExistingDirectory", return_value=str(root)):
                 win.pick_folder()
             win.open_tree_file(win.file_model.index(str(first)))
             self.assertEqual(Path(win.file_model.rootPath()), first)
@@ -1065,7 +1067,7 @@ main { nand(supply, 0, input_a, input_b, out); }
         menu_event = QContextMenuEvent(
             QContextMenuEvent.Reason.Mouse, pos, schematic.viewport().mapToGlobal(pos)
         )
-        with patch("circuitlab.schematic.QMenu") as menu:
+        with patch("circuitlab.viewer.schematic.QMenu") as menu:
             schematic.contextMenuEvent(menu_event)
             actions = dict(call.args for call in menu.return_value.addAction.call_args_list)
             self.assertEqual(list(actions), ["Rotate clockwise", "Rotate counterclockwise"])
@@ -1115,7 +1117,7 @@ main { nand(supply, 0, input_a, input_b, out); }
                 if b.text() == "Export to SPICE"
             )
             with patch(
-                "circuitlab.gui.QFileDialog.getSaveFileName",
+                "circuitlab.viewer.legacy.QFileDialog.getSaveFileName",
                 return_value=(str(path.with_suffix("")), "SPICE netlists (*.cir)"),
             ):
                 button.click()
@@ -1128,8 +1130,8 @@ main { nand(supply, 0, input_a, input_b, out); }
         win = self.window
         win.editor.setPlainText("V1 in 0 12\nR1 in 0 invalid")
         with (
-            patch("circuitlab.gui.QMessageBox.warning") as warning,
-            patch("circuitlab.gui.QFileDialog.getSaveFileName") as save_dialog,
+            patch("circuitlab.viewer.legacy.QMessageBox.warning") as warning,
+            patch("circuitlab.viewer.legacy.QFileDialog.getSaveFileName") as save_dialog,
         ):
             self.assertFalse(win.export_netlist())
         self.assertIn("Line 2", warning.call_args.args[2])
@@ -1158,10 +1160,10 @@ main { nand(supply, 0, input_a, input_b, out); }
             )
             with (
                 patch(
-                    "circuitlab.gui.QFileDialog.getSaveFileName",
+                    "circuitlab.viewer.legacy.QFileDialog.getSaveFileName",
                     return_value=(str(source_path.with_suffix("")), "Verilog (*.v)"),
                 ) as save_dialog,
-                patch("circuitlab.gui.QMessageBox.warning") as warning,
+                patch("circuitlab.viewer.legacy.QMessageBox.warning") as warning,
             ):
                 export.trigger()
             save_dialog.assert_called_once()
@@ -1183,8 +1185,8 @@ main { nand(supply, 0, input_a, input_b, out); }
         win.select_diagnostic(win.issues.item(0))
         self.assertEqual(win.editor.textCursor().blockNumber(), 2)
         with (
-            patch("circuitlab.gui.QMessageBox.warning") as warning,
-            patch("circuitlab.gui.QFileDialog.getSaveFileName") as save_dialog,
+            patch("circuitlab.viewer.legacy.QMessageBox.warning") as warning,
+            patch("circuitlab.viewer.legacy.QFileDialog.getSaveFileName") as save_dialog,
         ):
             self.assertFalse(win.export_verilog())
         self.assertIn("Line 3", warning.call_args.args[2])
@@ -1239,7 +1241,7 @@ main { nand(supply, 0, input_a, input_b, out); }
         with TemporaryDirectory() as directory:
             path = Path(directory) / "divider.asc"
             with patch(
-                "circuitlab.gui.QFileDialog.getSaveFileName",
+                "circuitlab.viewer.legacy.QFileDialog.getSaveFileName",
                 return_value=(str(path), "LTspice schematics (*.asc)"),
             ):
                 button.click()
@@ -1254,7 +1256,7 @@ main { nand(supply, 0, input_a, input_b, out); }
         with TemporaryDirectory() as directory:
             path = Path(directory) / "timer555.asc"
             with patch(
-                "circuitlab.gui.QFileDialog.getSaveFileName",
+                "circuitlab.viewer.legacy.QFileDialog.getSaveFileName",
                 return_value=(str(path), "LTspice schematics (*.asc)"),
             ):
                 self.assertTrue(win.export_ltspice())
@@ -1402,7 +1404,7 @@ main { nand(supply, 0, input_a, input_b, out); }
         pos = win.schematic.mapFromScene(point(win.schematic.anchors["midOut"]))
         QTest.mouseClick(win.pin_button, Qt.MouseButton.LeftButton)
         with patch(
-            "circuitlab.gui.QInputDialog.getText", return_value=("Mid speaker", True)
+            "circuitlab.viewer.legacy.QInputDialog.getText", return_value=("Mid speaker", True)
         ):
             QTest.mouseClick(
                 win.schematic.viewport(), Qt.MouseButton.LeftButton, pos=pos
@@ -1423,7 +1425,7 @@ main { nand(supply, 0, input_a, input_b, out); }
         )
 
         with patch(
-            "circuitlab.gui.QInputDialog.getText", return_value=("My_Speaker", True)
+            "circuitlab.viewer.legacy.QInputDialog.getText", return_value=("My_Speaker", True)
         ):
             win.schematic.pin_renamed.emit("midOut")
         self.assertEqual(win.pins, {"midOut": "My_Speaker"})

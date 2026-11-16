@@ -51,12 +51,11 @@ class ViewerTest(unittest.TestCase):
 import os, sys
 os.environ['QT_QPA_PLATFORM'] = 'offscreen'
 from PySide6.QtWidgets import QApplication
-from circuitlab import gui
+from circuitlab.viewer.window import ViewerWindow
 app = QApplication([])
-window = gui.ViewerWindow()
+window = ViewerWindow()
 assert 'circuitlab.viewer.legacy' not in sys.modules
 assert 'circuitlab.viewer.editor' not in sys.modules
-assert 'circuitlab.editor' not in sys.modules
 window.close()
 """
         result = subprocess.run([sys.executable, "-c", script], cwd=ROOT, capture_output=True, text=True, timeout=30)

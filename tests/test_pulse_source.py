@@ -2,11 +2,11 @@
 
 import unittest
 
-from circuitlab.analysis import solve_input
-from circuitlab.compiler import compile_circuit
-from circuitlab.graph import CircuitError
-from circuitlab.nonlinear import TimeDomain
-from circuitlab.spice import export_spice
+from circuitlab.math.analysis import solve_input
+from circuitlab.language.compiler import compile_circuit
+from circuitlab.model.graph import CircuitError
+from circuitlab.math.nonlinear import TimeDomain
+from circuitlab.exporters.spice import export_spice
 
 
 SOURCE = """VClock(pulse(0, 5, 100u, 100u, 100u, 200u, 800u)) between(clk, 0);

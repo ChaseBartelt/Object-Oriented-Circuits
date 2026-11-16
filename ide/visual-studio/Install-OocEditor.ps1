@@ -23,6 +23,6 @@ Write-Output 'Reopen any .ckt files in Visual Studio to load the grammar.'
 Write-Output 'In Tools > External Tools, add the following entry. Select Use Output window.'
 Write-Output 'Title: OOC Solve'
 Write-Output "Command: $python"
-Write-Output 'Arguments: -m circuitlab.cli solve "$(ItemPath)"'
+Write-Output 'Arguments: -m circuitlab.tooling.cli solve "$(ItemPath)"'
 Write-Output "Initial directory: $repo"
-Write-Output 'For a second tool titled OOC Check, use -m circuitlab.cli check "$(ItemPath)".'
+Write-Output 'For a second tool titled OOC Check, use -m circuitlab.tooling.cli check "$(ItemPath)".'

@@ -3,15 +3,15 @@
 import unittest
 from pathlib import Path
 
-from circuitlab.analysis import solve_input
-from circuitlab.compiler import compile_circuit
-from circuitlab.graph import CircuitError
-from circuitlab.layout_checks import preserves_nets
-from circuitlab.ltspice import export_schematic
-from circuitlab.nonlinear import TimeDomain
-from circuitlab.report import component_labels
-from circuitlab.routing import schematic_layout
-from circuitlab.spice import export_spice
+from circuitlab.math.analysis import solve_input
+from circuitlab.language.compiler import compile_circuit
+from circuitlab.model.graph import CircuitError
+from circuitlab.layout.checks import preserves_nets
+from circuitlab.exporters.ltspice import export_schematic
+from circuitlab.math.nonlinear import TimeDomain
+from circuitlab.math.report import component_labels
+from circuitlab.layout.routing import schematic_layout
+from circuitlab.exporters.spice import export_spice
 from test_ltspice import read_connections
 
 EXAMPLE = Path(__file__).resolve().parents[1] / "examples" / "bjt_switch.ckt"

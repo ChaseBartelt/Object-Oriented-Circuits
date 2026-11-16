@@ -3,7 +3,7 @@
 from itertools import product
 import unittest
 
-from circuitlab.analysis import solve_input
+from circuitlab.math.analysis import solve_input
 
 
 class GateLogicTest(unittest.TestCase):

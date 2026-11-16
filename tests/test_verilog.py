@@ -3,11 +3,11 @@
 import re
 import unittest
 
-from circuitlab.analysis import solve_input
-from circuitlab.graph import CircuitError
-from circuitlab.spice import export_spice
-from circuitlab.syntax import has_chip
-from circuitlab.verilog import export_verilog
+from circuitlab.math.analysis import solve_input
+from circuitlab.model.graph import CircuitError
+from circuitlab.exporters.spice import export_spice
+from circuitlab.language.syntax import has_chip
+from circuitlab.exporters.verilog import export_verilog
 
 
 NAND = """chip NAND(a, b, y) {

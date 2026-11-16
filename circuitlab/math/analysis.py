@@ -9,7 +9,8 @@ from circuitlab.language.compiler import compile_circuit
 from circuitlab.model.graph import Circuit, CircuitError
 from circuitlab.math.equations import solve_known
 from circuitlab.math.numbers import set_known
-from circuitlab.math.linear import Network, NodalBackend, SimulationBackend
+from circuitlab.math.linear import NodalBackend
+from circuitlab.math.results import Network, SimulationBackend
 from circuitlab.language.syntax import FREQUENCY
 
 

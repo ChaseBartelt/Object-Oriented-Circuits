@@ -6,17 +6,18 @@ from itertools import combinations
 from pathlib import Path
 from random import Random
 
-from circuitlab.analysis import solve_input
-from circuitlab.compiler import compile_circuit
-from circuitlab.gate_layouts import default_gate_layout, gate_preview
-from circuitlab.graph import Circuit, Component
-from circuitlab.layout import compact, grounded_bridge
-from circuitlab.layout_checks import preserves_nets
-from circuitlab.placement import pack_layout, restore_layout
-from circuitlab.report import component_labels
-from circuitlab.routing import connected_layout, fast_layout, ground_attachment, move_ground, schematic_layout
-from circuitlab.wire_edit import clean_point
-from circuitlab.wiring import labeled, signal_flow
+from circuitlab.math.analysis import solve_input
+from circuitlab.language.compiler import compile_circuit
+from circuitlab.layout.gates import default_gate_layout, gate_preview
+from circuitlab.model.graph import Circuit, Component
+from circuitlab.layout.automatic import compact, grounded_bridge
+from circuitlab.layout.checks import preserves_nets
+from circuitlab.layout.persistence import pack_layout, restore_layout
+from circuitlab.math.report import component_labels
+from circuitlab.layout.routing import connected_layout, fast_layout, schematic_layout
+from circuitlab.layout.editing import ground_attachment, move_ground
+from circuitlab.layout.wire_edit import clean_point
+from circuitlab.layout.wiring import labeled, signal_flow
 
 
 def intersect(a, b, c, d):

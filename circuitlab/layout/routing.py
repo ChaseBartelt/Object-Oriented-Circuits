@@ -872,26 +872,3 @@ def _shorten_rail_branches(circuit, drawing, cost, clear_symbols):
                 drawing = trial
                 break
     return drawing
-
-
-# Historical routing imports remain available while callers migrate.
-from circuitlab.layout.editing import (
-    _move_endpoint_labels,
-    _reroute_move,
-    _routed_pins,
-    _shortest_move,
-    _symbol_bounds,
-    _terminal_wire_alignments,
-    boxes_overlap,
-    ground_attachment,
-    ground_wire_alignments,
-    move_boundary,
-    move_connector,
-    move_ground,
-    move_symbol,
-    move_symbols,
-    move_wire,
-    split_wire,
-    symbol_terminal_offsets,
-    symbol_wire_alignments,
-)

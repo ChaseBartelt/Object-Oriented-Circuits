@@ -301,7 +301,7 @@ For a quick check, use `examples/circuit_method.ckt` and look for **3.75 V** at 
 
 Both the solver and renderer consume the compiled `Circuit`. Keep electrical connections in that graph. The layout tracks each wire by its net so a visual crossing cannot become an electrical junction. `layout/legacy.py` retains the historical geometry used by MATLAB comparison tests. Root-level compatibility modules keep older imports working; new implementation belongs in the organized packages.
 
-Call `circuitlab.math.analysis.solve_input(source, mode, backend=...)` to solve text without Qt, or use `circuitlab.tooling.session.CircuitSession` for a saved document and its includes. The historical `circuitlab.analysis` import remains supported. A new simulation backend implements `SimulationBackend.solve` and returns the node voltages, branch values and equivalent-circuit fields defined by `Network`.
+Call `circuitlab.math.analysis.solve_input(source, mode, backend=...)` to solve text without Qt, or use `circuitlab.tooling.session.CircuitSession` for a saved document and its includes. Import `Network` and `SimulationBackend` from `circuitlab.math.results`. A new simulation backend implements `SimulationBackend.solve` and returns the node voltages, branch values and equivalent-circuit fields defined by `Network`.
 
 ### Run the tests
 

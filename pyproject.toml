@@ -4,13 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "electric-circuits-calculator"
-version = "1.1.0"
+version = "1.1.1"
 description = "Editor, schematic renderer, and circuit analysis calculator"
 requires-python = ">=3.10"
 dependencies = ["PySide6-Essentials>=6.6,<7", "numpy>=1.26,<3", "scipy>=1.11,<2", "sympy>=1.12,<2"]
 
 [project.gui-scripts]
-electric-circuits = "circuitlab.gui:main"
+electric-circuits = "circuitlab.__main__:main"
 
 [tool.setuptools.packages.find]
 include = ["circuitlab", "circuitlab.*"]

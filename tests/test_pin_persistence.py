@@ -8,7 +8,7 @@ import unittest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtWidgets import QApplication
 
-from circuitlab.gui import MainWindow
+from circuitlab.viewer.legacy import MainWindow
 from circuitlab.layout.persistence import placement_path, read_pin_overrides, write_placement
 
 

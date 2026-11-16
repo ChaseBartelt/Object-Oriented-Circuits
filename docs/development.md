@@ -1,6 +1,6 @@
 # Developing OOC
 
-Start with the [architecture overview](architecture.md) and the [language reference](../README.md#circuit-language). The code is organized by responsibility; root-level compatibility modules preserve older imports. Add implementation to the organized packages rather than duplicating it in those forwarding modules.
+Start with the [architecture overview](architecture.md) and the [language reference](../README.md#circuit-language). The code is organized by responsibility. Implement and import features directly in their owning modules; keep the package root limited to `__init__.py` and `__main__.py`.
 
 ## Set up and check a change
 
@@ -102,7 +102,7 @@ The VS Code replaceable JavaScript runtime is `runtime.js`, `structure.js` and `
 
 The package configuration discovers the Python subpackages and includes the chip assets. Verify a built wheel and VSIX, not only an editable checkout:
 
-1. Check that canonical Python modules, compatibility entry points and all 59 chip `.ckt` assets are present.
+1. Check that organized Python modules, `__main__.py`, the tooling CLI/hover worker and all 59 chip `.ckt` assets are present. Removed root forwarding modules must not reappear in the package.
 2. Install to a fresh target and run from outside the source checkout. Assert imported `circuitlab` modules come from that target so an editable environment cannot silently hide missing packaged files.
 3. Exercise CLI Check/Solve, `@chips` resolution, a packaged NAND calculation, viewer launch and offscreen hover rendering.
 4. Verify the VSIX contains its generated runtime bundle, grammar, snippets and registrations. Test both compatible live replacement and reload-required updates.

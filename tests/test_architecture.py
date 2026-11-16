@@ -1,4 +1,4 @@
-"""Keep the public APIs while lower-level modules remain independently usable."""
+"""Check direct module ownership and independently usable compiler layers."""
 
 from pathlib import Path
 import subprocess
@@ -28,15 +28,8 @@ assert 'circuitlab.language.compiler' not in sys.modules
 assert not any(name.startswith(('PySide6', 'circuitlab.viewer')) for name in sys.modules)
 """)
 
-    def test_compiler_compatibility_exports_keep_the_same_types(self):
-        from circuitlab import compiler as legacy
+    def test_compiler_and_explicit_document_build_produce_the_same_graph(self):
         from circuitlab.language import builder, compiler, document
-
-        self.assertIs(legacy, compiler)
-        for name in ("Compiler", "Group", "Battery", "compile_program", "resolve_alias"):
-            self.assertIs(getattr(compiler, name), getattr(builder, name))
-        for name in ("CircuitProgram", "compile_document", "elaborate_document"):
-            self.assertIs(getattr(compiler, name), getattr(document, name))
 
         rows = ["V1(5) between(supply, 0);", "R1(1k) between(supply, 0);"]
         direct = compiler.compile_circuit(rows)
@@ -55,15 +48,11 @@ assert 'circuitlab.math.analysis' not in sys.modules
 assert not any(name.startswith(('PySide6', 'circuitlab.viewer')) for name in sys.modules)
 """)
 
-    def test_result_types_are_shared_by_old_and_new_solver_paths(self):
-        from circuitlab import simulation
-        from circuitlab.compiler import compile_circuit
+    def test_linear_and_nonlinear_solvers_share_result_types(self):
+        from circuitlab.language.compiler import compile_circuit
         from circuitlab.math import linear, results
         from circuitlab.math.nonlinear import TimeDomain
 
-        self.assertIs(simulation, linear)
-        self.assertIs(linear.Network, results.Network)
-        self.assertIs(linear.SimulationBackend, results.SimulationBackend)
         circuit = compile_circuit("V1(5) between(supply, 0);\nR1(1k) between(supply, 0);")
         native = linear.NodalBackend().solve(circuit, ac=False)
         implicit = TimeDomain(circuit).operating_point()
@@ -73,14 +62,18 @@ assert not any(name.startswith(('PySide6', 'circuitlab.viewer')) for name in sys
         self.assertAlmostEqual(native.voltage[native.nodes.index("supply")].real, 5)
         self.assertAlmostEqual(implicit.voltage[implicit.nodes.index("supply")], 5)
 
-    def test_layout_compatibility_exports_keep_the_same_implementations(self):
-        from circuitlab import layout, routing
-        from circuitlab.layout import automatic, editing, geometry, legacy
+    def test_package_root_contains_only_the_package_marker_and_launcher(self):
+        import circuitlab
 
-        self.assertIs(layout.Layout, geometry.Layout)
-        self.assertIs(layout.compact, automatic.compact)
-        self.assertIs(layout.route, legacy.route)
-        self.assertIs(routing.move_symbol, editing.move_symbol)
+        root = Path(circuitlab.__file__).parent
+        self.assertEqual({p.name for p in root.glob('*.py')}, {'__init__.py', '__main__.py'})
+        self.run_isolated("""
+import sys
+import circuitlab.layout
+assert 'circuitlab.layout.routing' not in sys.modules
+assert 'circuitlab.layout.legacy' not in sys.modules
+assert not hasattr(circuitlab.layout, '__getattr__')
+""")
 
     def test_geometry_can_place_either_source_polarity_without_qt(self):
         self.run_isolated("""

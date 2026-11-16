@@ -25,7 +25,7 @@ OOC Setup. You can also install the bundled extension VSIX through Extensions > 
 The OOC viewer is available from the Windows Start menu without VS Code.
 
 OOC normally installs in %LOCALAPPDATA%\Programs\OOC. Its versioned runtime can run the
-compiler from a terminal: runtime\python.exe -m circuitlab.cli solve your-file.ckt
+compiler from a terminal: runtime\python.exe -m circuitlab.tooling.cli solve your-file.ckt
 The active runtime path is recorded in install.json. The extension detects it automatically.
 
 Uninstall through Windows Installed apps. Circuit source, saved circuit layouts and shared
