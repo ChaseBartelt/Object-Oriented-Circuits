@@ -8,6 +8,7 @@ This tolerant inspection describes source; it does not compile or simulate it.
 import re
 
 from circuitlab.language.control_flow import is_control_block
+from circuitlab.language.digital_declarations import INLINE_WIRE, normalize_wire_declarations
 from circuitlab.language.gates import GATE_HELP, gate_accepts, gate_call_help
 from circuitlab.language.pin_banks import expand_pin_banks
 from circuitlab.model.graph import CircuitError
@@ -128,12 +129,56 @@ class SourceInfo:
         signatures.update(methods(self.source))
         return signatures
 
+    def _computed_wire_help(self, line, column, code):
+        start = max(code.rfind(mark, 0, column) for mark in ';{}') + 1
+        raw = re.split(r'[;{}]', code[start:], maxsplit=1)[0]
+        statement = raw.strip()
+        column -= start + len(raw) - len(raw.lstrip())
+        candidate = INLINE_WIRE.fullmatch(statement)
+        if (not candidate or not 0 <= column <= candidate.end(2) + 1
+                or candidate[3].strip().lower() in {'input', 'output', 'wire'}):
+            return ''
+        # Use compiler classification in the complete enclosing chip scope.
+        # In particular, an existing signal's [index] is not a new [width].
+        body, pins, target, depth = None, (), None, 0
+        for index, (text, number, _) in enumerate(source_rows(self.source)):
+            section = SECTION.fullmatch(text) if depth == 0 else None
+            if section and section[1].lower() == 'chip':
+                body, target = [], None
+                parameters = _pin_parameters('chip', section[3], number) or ''
+                pins = tuple(pin.strip() for pin in parameters.split(',') if pin.strip())
+            elif body is not None:
+                if text == '}' and depth == 1:
+                    if target is not None:
+                        break
+                    body = None
+                else:
+                    body.append((text, number, index))
+                    if depth == 1 and number == line + 1 and text == statement:
+                        target = index
+            depth = max(0, depth + text.count('{') - text.count('}'))
+        if body is None or target is None:
+            return ''
+        try:
+            normalized = normalize_wire_declarations(body, pins)
+        except CircuitError:
+            return ''
+        declaration = re.compile(re.escape(candidate[1]) + r'\s*\[\s*([^]]+)\s*\]\s*=\s*wire', re.I)
+        for text, _, origin in normalized:
+            if origin == target and (match := declaration.fullmatch(text)):
+                return (f'{statement}\nComputed wire: {match[1].strip()} bits.\n'
+                        'Declares an unsigned combinational signal that follows the expression as its inputs change. '
+                        'It does not store state or wait for a clock edge.')
+        return ''
+
     def hover_help(self, line, column):
         location = self.position(line, column)
         if location is None:
             return ""
         text, column = location
         code = text.partition("#")[0]
+        if computed := self._computed_wire_help(line, column, code):
+            return computed
         section = SECTION.match(code.strip())
         direction = re.fullmatch(r'.+?=\s*(input|output)\s*;?', code.strip(), re.I)
         if direction or (section and section[1].lower() == 'chip'):
@@ -196,6 +241,15 @@ class SourceInfo:
                 if method:
                     kind, declared, pins = method
                     return f"{declared}({pins})\nCall this {kind} section with wires in the listed order."
+                if name == "sevenseg" and re.match(r"\s*\(", code[match.end():]):
+                    return (
+                        "sevenseg(value, [point])\n"
+                        "Decode the lowest 4 bits as a hexadecimal digit (0-F). Returns an 8-bit "
+                        "active-low segment pattern: bit 0 = a, 1 = b, 2 = c, 3 = d, 4 = e, "
+                        "5 = f, 6 = g, 7 = decimal point. A zero lights a segment. "
+                        "The decimal point is off unless the optional point expression is nonzero. "
+                        "For example: HEX0[7:0] = sevenseg(SW[3:0]);"
+                    )
                 if name.upper().startswith("Z") and re.match(r"\s*(?:\([^()]*\)\s*)?between\s*\(", code[match.end():], re.I):
                     return (
                         f"{name}(R + jX) between(positive, negative)\n"

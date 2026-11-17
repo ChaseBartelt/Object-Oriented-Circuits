@@ -6,7 +6,8 @@ from graphlib import CycleError, TopologicalSorter
 from circuitlab.exporters.clocked import Expressions, SELECTOR, selected_bits, compile_clocks
 from circuitlab.language.control_flow import expand_digital_loops
 from circuitlab.language.digital_switch import expand_switches, normalize_switch_labels
-from circuitlab.language.pin_banks import expand_pin_banks
+from circuitlab.language.digital_declarations import normalize_wire_declarations
+from circuitlab.language.pin_banks import expand_pin_banks, pin_bank_names
 from circuitlab.model.graph import CircuitError
 from circuitlab.language.syntax import CHIP, source_rows
 
@@ -229,7 +230,7 @@ class _CombinationalExpressions(Expressions):
 
 
 def _module(name, pins, body, header_line):
-    body = expand_switches(expand_digital_loops(normalize_switch_labels(body)))
+    body = normalize_wire_declarations(expand_switches(expand_digital_loops(normalize_switch_labels(body))), pins)
     directions, port_widths, wires, states, constants = {}, {}, {}, {}, {}
     declarations_body, clocks = [], []
     index = outer_depth = 0
@@ -276,7 +277,7 @@ def _module(name, pins, body, header_line):
         depth += int(statement.endswith("{")) - int(statement == "}")
 
     declared = set(pins) | wires.keys()
-    banks = {re.sub(r"\d+$", "", signal) for signal in declared if re.search(r"\d$", signal)}
+    banks = pin_bank_names(declared)
     behavior, depth = [], 0
     for statement, line in remaining:
         match = STATEMENT.fullmatch(statement)
@@ -311,7 +312,8 @@ def _module(name, pins, body, header_line):
     selections = {}
 
     def reads_in(expression, line):
-        reads = {token for token in TOKEN.findall(expression) if token in signals}
+        reads = {match[0] for match in TOKEN.finditer(expression) if match[0] in signals
+                 and not (match[0] == "sevenseg" and expression[match.end():].lstrip().startswith("("))}
         for selection in SELECTOR.finditer(expression):
             reads.update(name for name, _ in selected_bits(selection[0], signals, line))
         return reads
@@ -416,6 +418,7 @@ def compile_chips(source: str):
             body.append((statement, body_line))
         else:
             raise CircuitError(f'Close chip "{name}" with }}.', line)
+        body = normalize_wire_declarations(body, pins)
         verilog, directions = _module(name, pins, body, line)
         statements = tuple(text for text, _ in body)
         modules.append((name, directions, statements, verilog))

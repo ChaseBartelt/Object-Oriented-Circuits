@@ -10,12 +10,10 @@
 chip HYBRID01(SW[9:0], LEDR[9:0]) {
     SW[9:0] = input;
     LEDR[9:0] = output;
-    requests[8], lowest[8], highest[8], winner[8] = wire;
-
-    requests = SW[7:0];
-    lowest = SW0 ? 1 : SW1 ? 2 : SW2 ? 4 : SW3 ? 8 : SW4 ? 16 : SW5 ? 32 : SW6 ? 64 : SW7 ? 128 : 0;
-    highest = SW7 ? 128 : SW6 ? 64 : SW5 ? 32 : SW4 ? 16 : SW3 ? 8 : SW2 ? 4 : SW1 ? 2 : SW0 ? 1 : 0;
-    winner = SW8 ? (SW9 ? highest : lowest) : 0;
+    requests[8] = SW[7:0];
+    lowest[8] = SW0 ? 1 : SW1 ? 2 : SW2 ? 4 : SW3 ? 8 : SW4 ? 16 : SW5 ? 32 : SW6 ? 64 : SW7 ? 128 : 0;
+    highest[8] = SW7 ? 128 : SW6 ? 64 : SW5 ? 32 : SW4 ? 16 : SW3 ? 8 : SW2 ? 4 : SW1 ? 2 : SW0 ? 1 : 0;
+    winner[8] = SW8 ? (SW9 ? highest : lowest) : 0;
 
     LEDR[7:0] = winner;
     LEDR8 = SW8 && (requests != 0);

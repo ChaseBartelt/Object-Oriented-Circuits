@@ -10,6 +10,7 @@ from dataclasses import dataclass
 
 from circuitlab.language.control_flow import ExpansionBudget, expand_control_flow, expand_digital_loops
 from circuitlab.language.digital_switch import expand_switches, normalize_switch_labels
+from circuitlab.language.digital_declarations import normalize_wire_declarations
 from circuitlab.language.pin_banks import expand_pin_banks
 from circuitlab.language.syntax import CHIP, DIGITAL_MAIN, source_rows
 from circuitlab.model.graph import CircuitError, MethodInstance
@@ -147,7 +148,7 @@ def _definitions(source):
             origins = {number: origin for _, number, origin in body}
             body = [(text, number, origins[number]) for text, number in expand_switches(expand_digital_loops(
                 normalize_switch_labels([(text, number) for text, number, _ in body])))]
-            body = _normalize_declarations(body)
+            body = normalize_wire_declarations(_normalize_declarations(body), pins)
             signals, kinds = _declarations(body)
             body = _normalize_banks(body, signals)
             signals, kinds = _declarations(body)
@@ -226,6 +227,8 @@ Source text and saved layouts are never rewritten by elaboration.
             # A state named clock/every/const remains legal. Rename references,
             # while preserving the same words in their syntax positions.
             prefix, suffix = row[:token.start()], row[token.end():]
+            if word == "sevenseg" and suffix.lstrip().startswith("("):
+                return word
             if not prefix.strip() and (
                 (word in {"clock", "every"} and suffix.lstrip().startswith("("))
                 or (word == "const" and suffix[:1].isspace())

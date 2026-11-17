@@ -12,7 +12,7 @@ import operator
 OPS = {"+": operator.add, "-": operator.sub, "&": operator.and_,
        "|": operator.or_, "^": operator.xor, "==": operator.eq,
        "!=": operator.ne, "<": operator.lt, "<=": operator.le,
-       ">": operator.gt, ">=": operator.ge,
+       ">": operator.gt, ">=": operator.ge, "<<": operator.lshift, ">>": operator.rshift,
        "&&": lambda a, b: bool(a) and bool(b),
        "||": lambda a, b: bool(a) or bool(b)}
 BOOLEAN = {"==", "!=", "<", "<=", ">", ">=", "&&", "||"}
@@ -83,7 +83,8 @@ class FastPlan:
                 yes, no = bind(node[2], names, depth + 1), bind(node[3], names, depth + 1)
                 return _Expr(op, (left, yes, no), max(yes.width, no.width))
             right = bind(node[2], names, depth + 1)
-            return _Expr(op, (left, right), 1 if op in BOOLEAN else max(left.width, right.width))
+            width = 1 if op in BOOLEAN else left.width if op in {"<<", ">>"} else max(left.width, right.width)
+            return _Expr(op, (left, right), width)
 
         def statements(rows, names):
             result = []
@@ -151,7 +152,8 @@ class FastPlan:
                 else:
                     right, other_slope, other_bound = evaluate(args[1], deltas, horizon, high, memo)
                     bound = min(bound, other_bound)
-                    value = int(OPS[op](left, right)) & mask
+                    value = (0 if op in {"<<", ">>"} and right >= width
+                             else int(OPS[op](left, right)) & mask)
                     if op in {"+", "-"}:
                         slope = slope + other_slope if op == "+" else slope - other_slope
                         result = value, slope, _boundary(value, slope, width, bound)

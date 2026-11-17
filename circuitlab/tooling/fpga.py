@@ -17,15 +17,29 @@ from circuitlab.exporters.clocked import frequency
 from circuitlab.exporters.verilog import compile_chips, _signal_list
 
 
-# Terasic DE10-Lite User Manual, Tables 3-2, 3-4, 3-5 and 3-7:
+# Terasic DE10-Lite User Manual, Tables 3-2, 3-4, 3-5, 3-6 and 3-7:
 # https://www.mouser.com/datasheet/2/598/DE10-Lite_User_Manual-1100361.pdf
 SWITCH_PINS = dict(zip((f"SW{i}" for i in range(10)),
                        ("C10", "C11", "D12", "C12", "A12", "B12", "A13", "A14", "B14", "F15")))
 LED_PINS = dict(zip((f"LEDR{i}" for i in range(10)),
                     ("A8", "A9", "A10", "B10", "D13", "C13", "E14", "D14", "A11", "B11")))
+# Common-anode displays: segments a..g are bits 0..6, decimal point is bit 7.
+# A low output lights a segment; keep this electrical polarity in OOC and HDL.
+HEX_PINS = {
+    f"HEX{digit}{bit}": pin
+    for digit, pins in enumerate((
+        ("C14", "E15", "C15", "C16", "E16", "D17", "C17", "D15"),
+        ("C18", "D18", "E18", "B16", "A17", "A18", "B17", "A16"),
+        ("B20", "A20", "B19", "A21", "B21", "C22", "B22", "A19"),
+        ("F21", "E22", "E21", "C19", "C20", "D19", "E17", "D22"),
+        ("F18", "E20", "E19", "J18", "H19", "F19", "F20", "F17"),
+        ("J20", "K20", "L18", "N18", "M20", "N19", "N20", "L19"),
+    ))
+    for bit, pin in enumerate(pins)
+}
 PORTS = {"MAX10_CLK1_50": "input", **dict.fromkeys(SWITCH_PINS, "input"),
-         **dict.fromkeys(LED_PINS, "output"), "AUDIO_OUT": "output"}
-PINS = {"MAX10_CLK1_50": "P11", **SWITCH_PINS, **LED_PINS, "AUDIO_OUT": "V10"}
+         **dict.fromkeys(LED_PINS, "output"), **dict.fromkeys(HEX_PINS, "output"), "AUDIO_OUT": "output"}
+PINS = {"MAX10_CLK1_50": "P11", **SWITCH_PINS, **LED_PINS, **HEX_PINS, "AUDIO_OUT": "V10"}
 DEVICE = "10M50DAF484C7G"
 TOP = "HYBRID01"
 QSF_HEADER = '''set_global_assignment -name FAMILY "MAX 10"
@@ -140,7 +154,7 @@ def compile_de10_lite(source):
     for pin, direction in directions.items():
         if PORTS.get(pin) != direction:
             raise FpgaError(f"Unsupported DE10-Lite port or direction: {pin}. Use MAX10_CLK1_50 and SW0–SW9 "
-                            "as inputs, LEDR0–LEDR9 and optional AUDIO_OUT as outputs.")
+                            "as inputs; LEDR0–LEDR9, HEX0[7:0]–HEX5[7:0], and optional AUDIO_OUT as outputs.")
     switches = [pin for pin in SWITCH_PINS if pin in directions]
     if not switches or "output" not in directions.values():
         raise FpgaError("Declare at least one SW0–SW9 input and at least one board output. "

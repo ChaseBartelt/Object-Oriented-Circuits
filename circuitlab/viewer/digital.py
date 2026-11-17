@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
 from circuitlab.math.digital import DigitalSimulation
 from circuitlab.model.graph import CircuitError
 from circuitlab.viewer.logic_scene import LogicSceneView
+from circuitlab.viewer.seven_segment import SevenSegmentDisplay
 from circuitlab.viewer.widgets import button
 
 
@@ -127,7 +128,7 @@ class DigitalSimulator(QWidget):
         toolbar = QHBoxLayout()
         self.profile = QComboBox()
         self.profile.addItem("OOC logic", "ooc")
-        self.profile.addItem("DE10-Lite switches", "de10-lite")
+        self.profile.addItem("DE10-Lite", "de10-lite")
         self.profile.currentIndexChanged.connect(self._profile_changed)
         toolbar.addWidget(self.profile)
         self.run_button = button("Run", self.toggle, toolbar)
@@ -165,6 +166,9 @@ class DigitalSimulator(QWidget):
         ports.addWidget(self.input_group, 1)
         ports.addWidget(self.output_group, 1)
         layout.addLayout(ports)
+        self.hex_display = SevenSegmentDisplay()
+        self.hex_display.segment_probed.connect(self.select_signal)
+        layout.addWidget(self.hex_display)
         splitter = QSplitter(Qt.Orientation.Vertical)
         self.port_view = LogicSceneView()
         self.port_view.input_toggled.connect(self.toggle_input)
@@ -289,6 +293,7 @@ class DigitalSimulator(QWidget):
             self.probe.clear()
         self.table.setRowCount(0)
         self.port_view.configure(None)
+        self.hex_display.configure(None)
         self.waveform.configure((), {})
         self.history_label.setText("512 points · plateaus compressed")
         for control in (self.run_button, self.step_button, self.reset_button, self.probe, self.all_ports, self.speed_button):
@@ -322,6 +327,7 @@ class DigitalSimulator(QWidget):
             self._show_error(error)
             return
         sim = self.simulation
+        self.hex_display.configure(sim)
         for index, name in enumerate(sim.inputs):
             control = QPushButton(name)
             scalar = sim.signals[name] == 1
@@ -332,12 +338,14 @@ class DigitalSimulator(QWidget):
             control.clicked.connect(lambda checked=False, pin=name: self.toggle_input(pin))
             self.input_buttons[name] = control
             self.input_grid.addWidget(control, index // 5, index % 5)
-        for index, name in enumerate(sim.outputs):
+        for index, name in enumerate(name for name in sim.outputs if name not in self.hex_display.pins):
             label = QLabel()
             label.setAlignment(Qt.AlignmentFlag.AlignCenter)
             label.setTextFormat(Qt.TextFormat.PlainText)
             self.output_labels[name] = label
             self.output_grid.addWidget(label, index // 5, index % 5)
+        self.output_toggle.setEnabled(bool(self.output_labels))
+        self.output_group.setVisible(bool(self.output_labels) and self.output_toggle.isChecked())
         self.port_view.configure(sim)
         self.port_view.restore_placement(self.layout_records.get(sim.profile, {}))
         self.table.setRowCount(len(sim.signals))
@@ -408,6 +416,7 @@ class DigitalSimulator(QWidget):
         for row, (name, width) in enumerate(sim.signals.items()):
             self.table.item(row, 2).setText(display_value(sim.values[name], width))
         self.port_view.set_values(sim.values)
+        self.hex_display.set_values(sim.values)
         self.values_changed.emit(dict(sim.values))
 
     def _failure(self, error):

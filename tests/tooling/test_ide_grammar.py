@@ -146,6 +146,15 @@ class TextMateGrammarTest(unittest.TestCase):
                 "    data[10] = wire;",
                 "}",
             )),
+            "inline_wires": "\n".join((
+                "chip Select(SW[9:0], LEDR[9:0]) {",
+                "    SW[9:0] = input; LEDR[9:0] = output;",
+                "    requests[8] = SW[7:0];",
+                "    winner[8] = SW9 ? requests : 0;",
+                "    phase[32] = 0;",
+                "    requests[3] = SW3;",
+                "}",
+            )),
             "switch_logic": "\n".join((
                 "switch(fsm) {",
                 "case EARLY: LEDR[7:0] = data[7:0];",
@@ -158,6 +167,16 @@ class TextMateGrammarTest(unittest.TestCase):
             "analog": 'R1(1k) between(input, out); C1(100n) between(out, 0);\ntransQ1(base, out, 0, npn);\ninclude("chips/clock.ckt"); # phase[31] += 50MHz',
             "potentiometer": 'P1(10k,25%) between(high,wiper,low);\nPbare between(high,wiper,low);\nP = 3W;\nchip Pins(P0,P1) { P0 = input; P1 = output; }',
             "incomplete": "data[8 # unfinished selector\nphase += 440Hz;\nlet enabled = true;",
+            "sevenseg": "\n".join((
+                "HEX0[7:0] = sevenseg(SW[3:0]);",
+                "if (sevenseg(value >> 4, point) != 255) {",
+                "    bits <<= 1; bits >>= amount;",
+                "    bits &= mask; bits |= flags; bits ^= toggles;",
+                "    let digit = sevenseg(value << 1);",
+                "}",
+                "sevenseg = input;",
+                "# HEX0[7:0] = sevenseg(SW[3:0]);",
+            )),
         }
         cls.example_names = []
         for path in sorted((ROOT / "examples/advanced/fpga").glob("*.ckt")):
@@ -192,6 +211,16 @@ class TextMateGrammarTest(unittest.TestCase):
         self.assert_scope("fpga", 3, "phase", "variable.other.readwrite.ooc")
         self.assert_scope("fpga", 3, "flag", "variable.other.readwrite.ooc")
 
+    def test_seven_segment_function_and_vector_operations(self):
+        for line in (0, 1, 4):
+            self.assert_scope('sevenseg', line, 'sevenseg', 'support.function.ooc')
+        for line, operators in ((1, ('>>', '!=')), (2, ('<<=', '>>=')),
+                                (3, ('&=', '|=', '^=')), (4, ('<<',))):
+            for operator in operators:
+                self.assert_scope('sevenseg', line, operator, 'keyword.operator.ooc')
+        self.assert_scope('sevenseg', 6, 'sevenseg', 'variable.other.readwrite.ooc')
+        self.assert_scope('sevenseg', 7, 'sevenseg', 'comment.line.number-sign.ooc')
+
     def test_pin_banks_color_ranges_and_directions_without_changing_vector_syntax(self):
         self.assert_scope('pin_banks', 0, 'HYBRID01', 'entity.name.function.ooc')
         for row in (0, 1, 2):
@@ -200,6 +229,17 @@ class TextMateGrammarTest(unittest.TestCase):
         self.assert_scope('pin_banks', 1, 'input', 'storage.modifier.pin-direction.ooc')
         self.assert_scope('pin_banks', 2, 'output', 'storage.modifier.pin-direction.ooc')
         self.assert_scope('pin_banks', 3, 'wire', 'storage.modifier.pin-direction.ooc')
+
+    def test_inline_computed_wires_and_literal_state_keep_expression_scopes(self):
+        for row, name, width in ((2, 'requests', '8'), (3, 'winner', '8'), (4, 'phase', '32')):
+            self.assert_scope('inline_wires', row, name, 'variable.other.readwrite.ooc')
+            self.assert_scope('inline_wires', row, width, 'constant.numeric.ooc')
+            self.assert_scope('inline_wires', row, '=', 'keyword.operator.ooc')
+        self.assert_scope('inline_wires', 2, 'SW', 'variable.other.readwrite.ooc')
+        self.assert_scope('inline_wires', 2, ':', 'punctuation.separator.ooc')
+        self.assert_scope('inline_wires', 3, '?', 'keyword.operator.ooc')
+        self.assert_scope('inline_wires', 4, '0', 'constant.numeric.ooc')
+        self.assert_scope('inline_wires', 5, '3', 'constant.numeric.ooc')
 
     def test_timed_blocks_expressions_and_bit_reads(self):
         self.assert_scope("fpga", 4, "clock", "keyword.control.ooc")

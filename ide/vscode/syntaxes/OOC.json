@@ -190,10 +190,11 @@
         },
         { "include": "#selectors" },
         { "include": "#numbers" },
+        { "include": "#digital-functions" },
         { "include": "#identifiers" },
         {
           "name": "keyword.operator.ooc",
-          "match": "\\+\\+|--|&&|\\|\\||==|!=|<=|>=|[+*/%\\-]=|[+*/%=!?&|^<>-]"
+          "match": "<<=?|>>=?|\\+\\+|--|&&|\\|\\||==|!=|<=|>=|[+*/%&|^\\-]=|[+*/%=!?&|^<>-]"
         },
         {
           "name": "punctuation.separator.ooc",
@@ -254,8 +255,13 @@
         }
       ]
     },
+    "digital-functions": {
+      "name": "support.function.ooc",
+      "match": "\\bsevenseg(?=\\s*\\()"
+    },
     "calls": {
       "patterns": [
+        { "include": "#digital-functions" },
         {
           "name": "keyword.other.placement.ooc",
           "match": "(?i)\\b(?:include|connector|between)(?=\\s*\\()"
@@ -308,7 +314,7 @@
       "patterns": [
         {
           "name": "keyword.operator.ooc",
-          "match": "==|!=|<=|>=|&&|\\|\\||\\+\\+|--|[+*/%\\-]=|[=!?&|^<>∠+*/%\\-]"
+          "match": "<<=?|>>=?|==|!=|<=|>=|&&|\\|\\||\\+\\+|--|[+*/%&|^\\-]=|[=!?&|^<>∠+*/%\\-]"
         }
       ]
     },

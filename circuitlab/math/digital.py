@@ -18,7 +18,7 @@ from circuitlab.model.graph import CircuitError
 
 
 LEX = re.compile(r"\s+|//[^\n]*|[0-9]+'[bd][0-9]+|[A-Za-z_][A-Za-z0-9_]*|[0-9]+|"
-                 r"==|!=|<=|>=|&&|\|\||[!+\-&^|<>()\[\]{}?:;,.=@]")
+                 r"==|!=|<=|>=|<<|>>|&&|\|\||[!+\-&^|<>()\[\]{}?:;,.=@]")
 IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 
 
@@ -97,7 +97,7 @@ class _Parser:
             raise _error("expression nesting exceeds the simulator limit.")
         token = self.take()
         if token == "!":
-            left = ("!", self.expression(9, depth + 1))
+            left = ("!", self.expression(max(PRECEDENCE.values()) + 1, depth + 1))
         elif token == "(":
             left = self.expression(1, depth + 1)
             self.take(")")
@@ -303,8 +303,13 @@ def _expression(node, names, widths, slots, depth=0):
         return (lambda values: yes(values) if left(values) else no(values),
                 max(yes_width, no_width), reads | yes_reads | no_reads)
     right, right_width, right_reads = _expression(node[2], names, widths, slots, depth + 1)
-    width = 1 if op in BOOLEAN else max(left_width, right_width)
+    width = 1 if op in BOOLEAN else left_width if op in {"<<", ">>"} else max(left_width, right_width)
     mask, function = (1 << width) - 1, BINARY[op]
+    if op in {"<<", ">>"}:
+        def shifted(values):
+            count = right(values)
+            return 0 if count >= width else function(left(values), count) & mask
+        return shifted, width, reads | right_reads
     return lambda values: int(function(left(values), right(values))) & mask, width, reads | right_reads
 
 

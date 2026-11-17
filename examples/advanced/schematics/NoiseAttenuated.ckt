@@ -1,0 +1,14 @@
+Vin(1 Vrms) between(input, 0);
+f = 60;
+
+main {
+    series(input, A) {
+        R2 = 1k;
+        C1 = 10n;
+    }
+
+    op1(0, A, output);
+    R1(10k) between(A, output);
+
+    measure = V output 0;
+}

@@ -1,0 +1,20 @@
+# DE10-Lite: SW7..0 select an 8-bit number; SW9..8 select a shift of 0..3.
+# HEX1:HEX0 show the number, HEX3:HEX2 its left shift, HEX5:HEX4 its right shift.
+# Shifts keep 8 bits, so bits moved past either end are discarded.
+# Clockless: changes appear immediately; no Run button or input clock needed.
+chip HYBRID01(SW[9:0], HEX0[7:0], HEX1[7:0], HEX2[7:0], HEX3[7:0], HEX4[7:0], HEX5[7:0]) {
+    SW[9:0] = input;
+    HEX0[7:0], HEX1[7:0], HEX2[7:0], HEX3[7:0], HEX4[7:0], HEX5[7:0] = output;
+
+    number[8] = SW[7:0];
+    amount[2] = SW[9:8];
+    left[8] = number << amount;
+    right[8] = number >> amount;
+
+    HEX0[7:0] = sevenseg(number);
+    HEX1[7:0] = sevenseg(number >> 4);
+    HEX2[7:0] = sevenseg(left);
+    HEX3[7:0] = sevenseg(left >> 4);
+    HEX4[7:0] = sevenseg(right);
+    HEX5[7:0] = sevenseg(right >> 4);
+}

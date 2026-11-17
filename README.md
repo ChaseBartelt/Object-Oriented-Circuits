@@ -39,13 +39,19 @@ The **Schematic** tab has a resizable oscilloscope beside the drawing. Choose it
 
 ## FPGA
 
-The viewer's **FPGA...** window supports the DE10-Lite HYBRID01 profile: 50 MHz clock, SW0-SW9, LEDR0-LEDR9 and optional AUDIO_OUT. The profile can add two-stage switch synchronization; it is not debouncing. Install Quartus with MAX 10 support and the USB-Blaster driver separately.
+The viewer's **FPGA...** window supports the DE10-Lite HYBRID01 profile: 50 MHz clock, SW0-SW9, LEDR0-LEDR9, HEX0-HEX5 seven-segment displays and optional AUDIO_OUT. The profile can add two-stage switch synchronization; it is not debouncing. Install Quartus with MAX 10 support and the USB-Blaster driver separately.
 
 Open a saved digital design, **Build from OOC**, inspect **Performance**, select the cable, then **Program FPGA**. A verified build is required. Programming uses volatile SRAM (.sof), not power-on flash. Fmax is a fitted estimate, not the running clock. Electrical transistor/op-amp circuits cannot compile directly to FPGA logic.
 
 Digital chip behavior supports bounded `for` loops, bit/slice assignments (`LEDR[7:0] = elapsed[7:0];`), ternary expressions (`fsm = SW1 ? EARLY : WAITING;`), and `switch` with `case`, `break`, and `default`, including inside clock blocks. Loops expand at compile time; they do not consume one clock cycle per iteration. Indexed pin banks such as `LEDR[i]` can refer to separately declared `LEDR0`…`LEDR9` pins. Switches support stacked labels and fallthrough; put `break` directly at the end of a case, since conditional breaks are rejected.
 
 Headers and declarations accept numbered pin ranges: `chip HYBRID01(SW[9:0], LEDR[9:0]) { SW[9:0] = input; LEDR[9:0] = output; LEDR[9:0] = SW[9:0]; }`. A range expands in written order (`SW9, SW8, ... SW0`) into individual scalar pins, retaining the board pin assignments. Ranges are inclusive and descending, with indices from 0 to 4095. The existing `data[10] = input;` syntax still declares one ten-bit vector named `data`.
+
+Inside a chip, `requests[8] = SW[7:0];` declares a new eight-bit combinational wire and its expression in one statement. The expression continuously drives the wire; no register is added. Arithmetic and ternary expressions work too. Bare declarations (`phase[32];`) and decimal literal initializers (`phase[32] = 0;`) retain their stored-state meaning. Once a signal is declared, `requests[3]` selects bit 3 instead of declaring a width.
+
+Unsigned vectors support whole-bus `&`, `|`, `^`, `+`, `-`, `<<` and `>>`. Shifts zero-fill and keep the left operand's width: an eight-bit `value << 1` discards its old top bit, even when assigned to a wider output. A shift by the width or more produces zero. Addition binds more tightly than shifts, which bind more tightly than comparisons. Clocked state updates support `+=`, `-=`, `&=`, `|=`, `^=`, `<<=` and `>>=`, including constant bit/slice targets; each reads the previous clock-edge state. `!` remains logical NOT (a one-bit result); use `value ^ 255` to invert every bit of an eight-bit vector.
+
+Declare a display bank with `HEX0[7:0] = output;` and drive it using `HEX0[7:0] = sevenseg(value);`. The helper decodes the low four bits as hexadecimal 0–F. `sevenseg(value, point)` lights the decimal point when `point` is nonzero; it is off by default. Bits 0–6 are segments a–g, bit 7 is the point, and zero lights a segment. Raw masks also work (`255` blanks a digit). Include each used bank in the chip header. The logic simulator shows all six digit positions above its schematic; click a segment to probe its signal. [Seven-segment and shift example](examples/advanced/fpga/07_seven_segment_display.ckt) shows these features together on the DE10-Lite without a clock.
 
 ## Where to change the implementation
 

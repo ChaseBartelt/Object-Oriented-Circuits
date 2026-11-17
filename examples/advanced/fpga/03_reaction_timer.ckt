@@ -1,75 +1,23 @@
-# DE10-Lite reaction timer: fixed-delay finite-state machine, 50 MHz clock.
-# SW0 = arm; SW1 = react; SW9 = reset. Other switches are unused.
-# Start with SW0/SW1 low, pulse SW9 high, then raise SW0 to arm.
-# After 100 waiting ticks (1 s), GO lights LEDR9. Raise SW1 to stop.
-# Reacting before GO, including arming with SW1 high, latches a false start.
-# LEDR7..0 = unsigned elapsed count, LEDR0 least significant; each count is 10 ms.
-# The count saturates at 255 (2.55 s); it never wraps to a misleading small time.
-# LEDR9:LEDR8 = 00 idle/result, 01 waiting, 10 GO, 11 false start.
-# Result/fault holds until reset. Return SW0/SW1 low before releasing reset.
-# Controls and reset are sampled every 10 ms; hold each change at least 20 ms.
-# The base tick runs continuously, so the first sample depends on tick phase.
-# Timing reports complete elapsed ticks; a response on a tick takes priority.
-# The DE10-Lite profile inserts two synchronizer stages for every used switch.
-# Synchronization is not debounce. This educational timer is hardware-untested
-# and is not a calibrated measure of human reaction time. No external files.
+# SW0–SW7: request a channel.
+# SW8: enable.
+# SW9: 0 = lowest numbered request wins; 1 = highest wins.
+# LEDR0–LEDR7: winning channel.
+# LEDR8: valid winner. LEDR9: multiple requests active.
 
-chip HYBRID01(MAX10_CLK1_50, SW0, SW1, SW9, LEDR0, LEDR1, LEDR2, LEDR3, LEDR4, LEDR5, LEDR6, LEDR7, LEDR8, LEDR9) {
-    MAX10_CLK1_50, SW0, SW1, SW9 = input;
-    LEDR0, LEDR1, LEDR2, LEDR3, LEDR4, LEDR5, LEDR6, LEDR7, LEDR8, LEDR9 = output;
+chip HYBRID01(SW[9:0], LEDR[9:0]) {
+    SW[9:0] = input;
+    LEDR[9:0] = output;
 
-    const IDLE[3] = 0;
-    const WAITING[3] = 1;
-    const GO[3] = 2;
-    const RESULT[3] = 3;
-    const EARLY[3] = 4;
-    fsm[3] = 0;
-    wait_ticks[7] = 0;
-    elapsed[8] = 0;
+    requests[8], lowest[8], highest[8], winner[8] = wire;
 
-clock(MAX10_CLK1_50, 50MHz) {
-    every(10ms) {
-        if (SW9) {
-            fsm = IDLE;
-            wait_ticks = 0;
-            elapsed = 0;
-        } else {
-            switch (fsm) {
-                case IDLE:
-                    if (SW0) {
-                        wait_ticks = 0;
-                        elapsed = 0;
-                        fsm = SW1 ? EARLY : WAITING;
-                    }
-                    break;
+    requests = SW[7:0];
 
-                case WAITING:
-                    if (SW1) {
-                        fsm = EARLY;
-                    } else if (wait_ticks == 99) {
-                        fsm = GO;
-                        elapsed = 0;
-                    } else {
-                        wait_ticks += 1;
-                    }
-                    break;
+    lowest = SW0 ? 1 : SW1 ? 2 : SW2 ? 4 : SW3 ? 8 : SW4 ? 16 : SW5 ? 32 : SW6 ? 64 : SW7 ? 128 : 0;
+    highest = SW7 ? 128 : SW6 ? 64 : SW5 ? 32 : SW4 ? 16 : SW3 ? 8 : SW2 ? 4 : SW1 ? 2 : SW0 ? 1 : 0;
 
-                case GO:
-                    if (SW1) {
-                        fsm = RESULT;
-                    } else if (elapsed < 255) {
-                        elapsed += 1;
-                    }
-                    break;
+    winner = SW8 ? (SW9 ? highest : lowest) : 0;
 
-                default:
-                    break;
-            }
-        }
-    }
-}
-
-    LEDR[7:0] = elapsed[7:0];
-    LEDR8 = (fsm == WAITING) || (fsm == EARLY);
-    LEDR9 = (fsm == GO) || (fsm == EARLY);
+    LEDR[7:0] = winner;
+    LEDR8 = SW8 && (requests != 0);
+    LEDR9 = SW8 && ((requests & (requests - 1)) != 0);
 }

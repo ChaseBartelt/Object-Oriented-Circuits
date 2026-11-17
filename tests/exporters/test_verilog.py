@@ -136,7 +136,7 @@ class VerilogExportTest(unittest.TestCase):
             "phase[1__024];", "phase[_32];", "phase[32_];",
             "phase[32] = -1;", "phase[32] = 4294967296;",
             "phase[32] = 1.5;", "phase[32] = 1k;", "phase[32] = 0x10;",
-            "phase[32] = 2 + 2;", "phase[32] = other;",
+            "phase[32] = other;",
             "phase[32] = 1__024;", "phase[32] = _100;", "phase[32] = 100_;",
             "flag = -1;", "flag = 2;",
         )

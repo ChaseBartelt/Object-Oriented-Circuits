@@ -111,7 +111,7 @@ class FpgaDialog(QDialog):
         self.description.setText(
             "Write and save OOC in your IDE. Build here, select the board's USB-Blaster, "
             "then program the FPGA. Quartus runs in the background.\n"
-            "DE10-Lite · SW0–SW9 · LEDR0–LEDR9 · optional audio on JP1 pin 1. " + mode + "\n"
+            "DE10-Lite · SW0–SW9 · LEDR0–LEDR9 · HEX0–HEX5 active-low displays · optional audio on JP1 pin 1. " + mode + "\n"
             "Programming lasts until power-off; it does not write flash.")
         self.source_label.setText(f"Source: {path or 'No OOC file loaded'}")
         self.performance.set_source(path, source)

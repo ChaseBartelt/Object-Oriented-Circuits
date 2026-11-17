@@ -11,6 +11,12 @@ DECIMAL = r"[0-9]+(?:_[0-9]+)*"
 BANK = re.compile(rf"([A-Za-z_][A-Za-z0-9_]*)\s*\[\s*({DECIMAL})\s*:\s*({DECIMAL})\s*\]")
 
 
+def pin_bank_names(pins):
+    """Recognize every possible bank prefix, including HEX0 in HEX00."""
+    return {pin[:index] for pin in pins if (suffix := re.search(r"\d+$", pin))
+            for index in range(suffix.start(), len(pin))}
+
+
 def expand_pin_banks(raw, line):
     """Expand SW[3:0] to SW3, SW2, SW1, SW0; leave data[4] unchanged."""
     pins = []

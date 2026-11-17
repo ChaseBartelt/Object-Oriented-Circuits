@@ -49,7 +49,8 @@ class SourceInfoTest(unittest.TestCase):
         operator = re.compile(grammar['operators']['patterns'][0]['match'])
         expression = next(pattern['match'] for pattern in grammar['expression']['patterns']
                           if pattern.get('name') == 'keyword.operator.ooc')
-        for token in ('+', '-', '+=', '-=', '!', '&', '|', '^', '&&', '||', '==', '<='):
+        for token in ('+', '-', '+=', '-=', '!', '&', '|', '^', '&&', '||', '==', '<=',
+                      '<<', '>>', '<<=', '>>=', '&=', '|=', '^='):
             with self.subTest(token=token):
                 self.assertIsNotNone(operator.fullmatch(token))
                 self.assertIsNotNone(re.fullmatch(expression, token))
@@ -65,6 +66,25 @@ class SourceInfoTest(unittest.TestCase):
         self.assertEqual(info.wire_at(0, source.index('inv')), (1, 'Zs', 1, 'inv'))
         self.assertEqual(SourceInfo('Zs input inv 2-j2').wire_at(0, 9), (1, 'Zs', 1, 'inv'))
         declared = SourceInfo('circuit Ztest(a,b) { }\nZtest(a,b);')
+        self.assertIn('Call this circuit', declared.hover_help(1, 1))
+
+    def test_sevenseg_hover_describes_bit_order_low_nibble_and_decimal_point(self):
+        for source in ('HEX0[7:0] = sevenseg(SW[3:0]);',
+                       'y = sevenseg((a >> 4), point);',
+                       'if (sevenseg(a) != 255) {', 'y = sevenseg('):
+            with self.subTest(source=source):
+                info = SourceInfo(source)
+                column = source.index('sevenseg') + 1
+                help_text = info.hover_help(0, column)
+                self.assertIn('lowest 4 bits', help_text)
+                self.assertIn('8-bit active-low', help_text)
+                self.assertIn('bit 0 = a', help_text)
+                self.assertIn('7 = decimal point', help_text)
+                self.assertIn('optional point expression is nonzero', help_text)
+                self.assertIsNone(info.device_at(0, column))
+        for source in ('sevenseg = input;', '# y = sevenseg(a);'):
+            self.assertEqual(SourceInfo(source).hover_help(0, source.index('sevenseg')), '')
+        declared = SourceInfo('circuit sevenseg(a,b) { }\nsevenseg(a,b);')
         self.assertIn('Call this circuit', declared.hover_help(1, 1))
 
     def test_bare_component_values_keep_editor_wire_recognition(self):
@@ -185,6 +205,30 @@ assert not any(name.startswith('circuitlab.viewer') for name in sys.modules)
         self.assertEqual(methods('circuit Analog(a[2:0],b) {')['analog'][2], 'a[2:0], b')
         self.assertEqual(methods('chip Unfinished(SW[9:], y) {')['unfinished'][2], 'SW[9:], y')
         self.assertNotIn('Pin bank:', SourceInfo('y = data[3:0];').hover_help(0, 6))
+
+    def test_computed_wire_hover_uses_chip_scope_and_keeps_state_and_bit_assignments_distinct(self):
+        source = '''chip Select(a, y) {
+    a[8] = input; y[8] = output;
+    requests[8] = a;
+    winner[8] = a[0] ? requests : 0;
+    phase[32] = 0;
+    requests[3] = a[3];
+    y = winner;
+}'''
+        info = SourceInfo(source)
+        for line in (2, 3):
+            help_text = info.hover_help(line, 7)
+            self.assertIn('Computed wire: 8 bits', help_text)
+            self.assertIn('follows the expression', help_text)
+            self.assertIn('does not store state', help_text)
+        for line in (1, 4, 5):
+            self.assertNotIn('Computed wire', info.hover_help(line, 7))
+        one_line = 'chip X(a,y) { a=input; y=output; w[8]=a; w[3]=a; y=w[0]; }'
+        inline = SourceInfo(one_line)
+        self.assertIn('Computed wire', inline.hover_help(0, one_line.index('w[8]')))
+        self.assertNotIn('Computed wire', inline.hover_help(0, one_line.index('w[3]')))
+        for text in ('circuit Analog(a,b) { x[8]=a; }', 'chip X(a,y) { clock(a,1Hz) { x[8]=a; } }'):
+            self.assertNotIn('Computed wire', SourceInfo(text).hover_help(0, text.index('x[8]')))
 
     def test_modern_legacy_and_grouped_wire_locations(self):
         rows = [

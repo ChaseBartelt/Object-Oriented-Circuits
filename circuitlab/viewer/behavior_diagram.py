@@ -93,20 +93,37 @@ class BehaviorBlock:
 
 
 def behavior_graph(simulation):
-    """Group only proven contiguous output slices; retain actual dependencies."""
+    """Group physical displays and proven output slices; retain dependencies."""
     sim = simulation
     kinds = getattr(sim, 'signal_kinds', {})
     expressions = getattr(sim, 'signal_expressions', {})
     clocks = getattr(sim, 'signal_clocks', {})
     names = [name for name in sim.signals if name not in sim.clocks and kinds.get(name) != 'constant']
     bundles = defaultdict(list)
+    displays = defaultdict(list)
     for name in sim.outputs:
+        # On DE10-Lite the first digit identifies the display, the second its
+        # segment. Group the physical display even when separate expressions
+        # drive its segments; the edges below retain all their dependencies.
+        display = re.fullmatch(r'((?:\w+\.)*HEX[0-5])([0-7])', name)
+        if display and sim.signals[name] == 1:
+            displays[display[1]].append((int(display[2]), name))
+            continue
         output = re.fullmatch(r'(.+?)(\d+)', name)
         expression = re.fullmatch(re.escape(name) + r'\s*=\s*([\w.]+)(?:\[(\d+):(\d+)\])?\[(\d+)\]', expressions.get(name, ''))
         if output and expression and sim.signals[name] == 1:
             index, bit = int(output[2]), int(expression[4]) + int(expression[3] or 0)
             bundles[output[1], expression[1], bit - index].append((index, name))
     grouped = {}
+    for prefix, entries in displays.items():
+        entries.sort()
+        if [index for index, _ in entries] != list(range(8)):
+            continue
+        members = tuple(member for _, member in entries)
+        block = BehaviorBlock(f'{prefix}[7:0]', 'output', 8, members,
+                              'Seven-segment display · active low',
+                              'Bits 0–6: a–g; bit 7: decimal point\n' + ', '.join(members))
+        grouped.update((member, block) for member in members)
     for (prefix, driver, offset), entries in bundles.items():
         entries.sort()
         runs = []

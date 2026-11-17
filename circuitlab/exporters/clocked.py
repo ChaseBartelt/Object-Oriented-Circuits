@@ -5,13 +5,16 @@ from fractions import Fraction
 
 from circuitlab.model.graph import CircuitError
 
-TOKEN = re.compile(r"\s*([A-Za-z_][A-Za-z0-9_]*|[0-9]+(?:_[0-9]+)*|==|!=|<=|>=|&&|\|\||[!+\-&^|<>()\[\]:?])")
+TOKEN = re.compile(r"\s*([A-Za-z_][A-Za-z0-9_]*|[0-9]+(?:_[0-9]+)*|==|!=|<=|>=|<<|>>|&&|\|\||[!+\-&^|<>()\[\]:?,])")
 PRECEDENCE = {"||": 1, "&&": 2, "|": 3, "^": 4, "&": 5,
               "==": 6, "!=": 6, "<": 7, "<=": 7, ">": 7, ">=": 7,
-              "+": 8, "-": 8}
+              "<<": 8, ">>": 8, "+": 9, "-": 9}
 DECIMAL = r"[0-9]+(?:_[0-9]+)*(?:\.[0-9]+(?:_[0-9]+)*)?"
 FREQUENCY = rf"({DECIMAL})\s*(Hz|kHz|MHz|GHz)"
 SELECTOR = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)\s*\[\s*([0-9]+(?:_[0-9]+)*)\s*(?::\s*([0-9]+(?:_[0-9]+)*)\s*)?\]")
+# Active-low a,b,c,d,e,f,g,decimal-point bits; hexadecimal glyphs 0..F.
+SEVEN_SEGMENTS = (192, 249, 164, 176, 153, 146, 130, 248,
+                  128, 144, 136, 131, 198, 161, 134, 142)
 
 
 def selected_bits(text, signals, line):
@@ -115,7 +118,7 @@ class Expressions:
         while offset < len(text):
             match = TOKEN.match(text, offset)
             if not match:
-                raise CircuitError("Use unsigned signals, literals, bit reads, +, -, comparisons or Boolean operators.", line)
+                raise CircuitError("Use unsigned signals, literals, bit reads, +, -, shifts, comparisons or Boolean operators.", line)
             self.tokens.append(match[1])
             offset = match.end()
         if len(self.tokens) > 256:
@@ -149,6 +152,8 @@ class Expressions:
 
     def primary(self):
         token = self.take()
+        if token == "sevenseg" and self.peek() == "(":
+            return self.seven_segment()
         if token == "!":
             code, _ = self.primary()
             return self.temporary(f"!{code}", 1)
@@ -183,12 +188,41 @@ class Expressions:
         width = self.signals[token]
         return token, width or 1
 
+    def seven_segment(self):
+        """Decode the low nibble; optional nonzero point lights the decimal dot."""
+        self.take()  # Opening parenthesis after sevenseg.
+        if self.peek() in {None, ")", ","}:
+            raise CircuitError("Use sevenseg(value) or sevenseg(value, point).", self.line)
+        value, width = self.conditional()
+        point = None
+        if self.peek() == ",":
+            self.take()
+            if self.peek() in {None, ")", ","}:
+                raise CircuitError("Give sevenseg a decimal-point expression after the comma.", self.line)
+            point, _ = self.conditional()
+        if self.peek() != ")":
+            raise CircuitError("Use sevenseg(value) or sevenseg(value, point).", self.line)
+        self.take()
+        if width > 4:
+            value, _ = self.temporary(value, width)
+            value = f"{value}[3:0]"
+        nibble, _ = self.temporary(value, 4)
+        code = f"8'd{SEVEN_SEGMENTS[-1]}"
+        for digit in range(14, -1, -1):
+            condition, _ = self.temporary(f"({nibble} == 4'd{digit})", 1)
+            code, _ = self.temporary(f"({condition} ? 8'd{SEVEN_SEGMENTS[digit]} : {code})", 8)
+        if point is not None:
+            mask, _ = self.temporary(f"({point} ? 8'd127 : 8'd255)", 8)
+            code, _ = self.temporary(f"({code} & {mask})", 8)
+        return code, 8
+
     def binary(self, minimum):
         left, left_width = self.primary()
         while PRECEDENCE.get(self.peek(), 0) >= minimum:
             op = self.take()
             right, right_width = self.binary(PRECEDENCE[op] + 1)
-            width = 1 if op in {"==", "!=", "<", "<=", ">", ">=", "&&", "||"} else max(left_width, right_width)
+            width = (1 if op in {"==", "!=", "<", "<=", ">", ">=", "&&", "||"}
+                     else left_width if op in {"<<", ">>"} else max(left_width, right_width))
             operands = (left, left_width, right, right_width)
             left, left_width = self.temporary(f"({left} {op} {right})", width)
             if op == "+":
@@ -314,7 +348,7 @@ def compile_clocks(clocks, signals, states, directions):
                 if condition:
                     output.extend(conditional(indent, condition[1], number, update_rate))
                     continue
-                assignment = re.fullmatch(r"([A-Za-z_][A-Za-z0-9_]*(?:\s*\[[^]]+\])?)\s*(\+=|=)\s*(.+)", statement)
+                assignment = re.fullmatch(r"([A-Za-z_][A-Za-z0-9_]*(?:\s*\[[^]]+\])?)\s*(<<=|>>=|[+\-&|^]=|=)\s*(.+)", statement)
                 target = assignment[1].partition("[")[0].strip() if assignment else ""
                 if not assignment or target not in states:
                     raise CircuitError("Clock blocks assign declared state and support if / else and every blocks.", number)
@@ -323,11 +357,10 @@ def compile_clocks(clocks, signals, states, directions):
                 if target in owners:
                     raise CircuitError(f'State "{target}" is driven by more than one clock block.', number)
                 expression = assignment[3].strip()
-                if assignment[2] == "+=":
-                    if selected:
-                        raise CircuitError("Use = for slice updates; use += on the whole state.", number)
+                if assignment[2] != "=":
+                    operator = assignment[2][:-1]
                     operand = expression if re.fullmatch(FREQUENCY, expression) else f"({expression})"
-                    expression = f"{target} + {operand}"
+                    expression = f"{destination} {operator} {operand}"
                 expression = phase_increment(expression, target, states, update_rate, number)
                 code, _ = expressions.parse(expression, number)
                 output.append(f"{indent}{destination} <= {code};")
