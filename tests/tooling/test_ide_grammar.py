@@ -92,7 +92,7 @@ class GrammarStructureTest(unittest.TestCase):
         node = shutil.which('node')
         if node is None:
             self.skipTest('Node.js is unavailable for the editor outline check.')
-        source = ('chip Follow(SW,LEDR) { SW[8]=input; LEDR[8]=output; '
+        source = ('chip Follow(SW[7:0],LEDR[7:0]) { SW[7:0]=input; LEDR[7:0]=output; '
                   'for (i=0; i<8; i=i+1) { LEDR[i]=SW[i]; } '
                   'switch(fsm) { case EARLY: LEDR[7:0]=data[7:0]; break; '
                   'default: LEDR[7:0]=SW1 ? EARLY : WAITING; break; } }')
@@ -103,6 +103,7 @@ class GrammarStructureTest(unittest.TestCase):
         self.assertEqual(completed.returncode, 0, completed.stderr)
         parsed = json.loads(completed.stdout)
         self.assertEqual(parsed['structure'][0]['name'], 'Follow')
+        self.assertEqual(parsed['structure'][0]['detail'], 'chip (SW[7:0],LEDR[7:0])')
         self.assertEqual([child['kind'] for child in parsed['structure'][0]['children']], ['for', 'switch'])
         self.assertFalse(parsed['references'])
 
@@ -137,6 +138,13 @@ class TextMateGrammarTest(unittest.TestCase):
                 "fsm = SW1 ? EARLY : WAITING;",
                 "if ((SW1 ? EARLY : WAITING) == fsm) { LEDR[7:0] = 0; }",
                 "for (i=0; i<8; i=i+1) { LEDR[i] = SW[i]; }",
+            )),
+            "pin_banks": "\n".join((
+                "chip HYBRID01(SW[9:0], LEDR[9:0]) {",
+                "    SW[9:0] = input;",
+                "    LEDR[9:0] = output;",
+                "    data[10] = wire;",
+                "}",
             )),
             "switch_logic": "\n".join((
                 "switch(fsm) {",
@@ -183,6 +191,15 @@ class TextMateGrammarTest(unittest.TestCase):
         self.assert_scope("fpga", 2, "24_999_999", "constant.numeric.ooc")
         self.assert_scope("fpga", 3, "phase", "variable.other.readwrite.ooc")
         self.assert_scope("fpga", 3, "flag", "variable.other.readwrite.ooc")
+
+    def test_pin_banks_color_ranges_and_directions_without_changing_vector_syntax(self):
+        self.assert_scope('pin_banks', 0, 'HYBRID01', 'entity.name.function.ooc')
+        for row in (0, 1, 2):
+            self.assert_scope('pin_banks', row, '9', 'constant.numeric.ooc')
+            self.assert_scope('pin_banks', row, ':', 'punctuation.separator.ooc')
+        self.assert_scope('pin_banks', 1, 'input', 'storage.modifier.pin-direction.ooc')
+        self.assert_scope('pin_banks', 2, 'output', 'storage.modifier.pin-direction.ooc')
+        self.assert_scope('pin_banks', 3, 'wire', 'storage.modifier.pin-direction.ooc')
 
     def test_timed_blocks_expressions_and_bit_reads(self):
         self.assert_scope("fpga", 4, "clock", "keyword.control.ooc")
@@ -264,15 +281,16 @@ class TextMateGrammarTest(unittest.TestCase):
         for row in self.rows["potentiometer"][2:]:
             self.assertTrue(all("entity.name.function.component.ooc" not in token["scopes"] for token in row["tokens"]))
 
-    def test_advanced_fpga_examples_have_scoped_clock_and_state_tokens(self):
+    def test_advanced_fpga_examples_scope_declared_clocks_and_signals(self):
         if not self.example_names:
             self.skipTest("Optional advanced examples are absent; inline syntax cases still run.")
         for name in self.example_names:
             with self.subTest(example=name):
                 rows = self.rows[name]
-                clock = next(index for index, row in enumerate(rows) if row["line"].strip().startswith("clock("))
-                self.assert_scope(name, clock, "clock", "keyword.control.ooc")
-                self.assert_scope(name, clock, "MHz", "constant.other.unit.ooc")
+                for clock, row in enumerate(rows):
+                    if row['line'].strip().startswith('clock('):
+                        self.assert_scope(name, clock, "clock", "keyword.control.ooc")
+                        self.assert_scope(name, clock, "MHz", "constant.other.unit.ooc")
                 declaration = next(index for index, row in enumerate(rows)
                                    if re.match(r"\s*[A-Za-z_][A-Za-z0-9_]*\[[0-9]+\]", row["line"]))
                 variable = rows[declaration]["line"].strip().split("[", 1)[0]

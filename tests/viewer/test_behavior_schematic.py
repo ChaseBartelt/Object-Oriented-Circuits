@@ -251,6 +251,28 @@ class BehaviorSchematicTest(unittest.TestCase):
         self.assertEqual(self.window.digital.probe.currentText(), first_bindings['value'])
         self.assertEqual(self.window.views.currentIndex(), 0)
 
+    def test_nested_pin_banks_keep_scalar_ports_and_live_input_bindings(self):
+        source = '''chip Bank(a[1:0], y[1:0]) {
+            a[1:0] = input; y[1:0] = output;
+            y0 = a0; y1 = a1;
+        }
+        main Pair {
+            left, right = input; first, second = output;
+            Bank(left, right, first, second);
+        }'''
+        schematic = self.open(source)
+        diagram = self.expand()
+        model, bindings = schematic.behavior_models['@method:0']
+        self.assertEqual(model.inputs, ('a1', 'a0'))
+        self.assertEqual(model.outputs, ('y1', 'y0'))
+        self.assertEqual(set(diagram.blocks), {'a1', 'a0', 'y1', 'y0'})
+        self.click(diagram, 'a0')
+        self.assertEqual(self.window.digital.simulation.values['right'], 1)
+        self.assertEqual(self.window.digital.simulation.values['left'], 0)
+        self.assertEqual(diagram.values['y0'], 1)
+        self.assertEqual(diagram.values['y1'], 0)
+        self.assertEqual(bindings['a0'], 'right')
+
     def test_closing_and_reopening_hood_preserves_layout_source_and_simulation(self):
         schematic = self.open()
         source = self.window.session.source

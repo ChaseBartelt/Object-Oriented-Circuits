@@ -7,9 +7,9 @@
 # Both OOC and DE10-Lite simulation respond without Run or Step.
 # No clock, registers, or switch synchronizers: the FPGA uses combinational logic.
 
-chip HYBRID01(SW0, SW1, SW2, SW3, SW4, SW5, SW6, SW7, SW8, SW9, LEDR0, LEDR1, LEDR2, LEDR3, LEDR4, LEDR5, LEDR6, LEDR7, LEDR8, LEDR9) {
-    SW0, SW1, SW2, SW3, SW4, SW5, SW6, SW7, SW8, SW9 = input;
-    LEDR0, LEDR1, LEDR2, LEDR3, LEDR4, LEDR5, LEDR6, LEDR7, LEDR8, LEDR9 = output;
+chip HYBRID01(SW[9:0], LEDR[9:0]) {
+    SW[9:0] = input;
+    LEDR[9:0] = output;
     requests[8], lowest[8], highest[8], winner[8] = wire;
 
     requests = SW[7:0];

@@ -14,7 +14,7 @@ import shutil
 import tempfile
 
 from circuitlab.exporters.clocked import frequency
-from circuitlab.exporters.verilog import compile_chips
+from circuitlab.exporters.verilog import compile_chips, _signal_list
 
 
 # Terasic DE10-Lite User Manual, Tables 3-2, 3-4, 3-5 and 3-7:
@@ -135,7 +135,7 @@ def compile_de10_lite(source):
     directions = dict(declared_ports)
     for statement in body:
         if declaration := re.fullmatch(r"(.+?)\s*=\s*(input|output)", statement, re.I):
-            if "[" in declaration[1]:
+            if any(width is not None for width in _signal_list(declaration[1], 1).values()):
                 raise FpgaError("DE10-Lite physical ports must be scalar pins. Keep buses inside chips and connect individual bits to board outputs.")
     for pin, direction in directions.items():
         if PORTS.get(pin) != direction:

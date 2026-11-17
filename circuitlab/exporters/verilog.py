@@ -6,6 +6,7 @@ from graphlib import CycleError, TopologicalSorter
 from circuitlab.exporters.clocked import Expressions, SELECTOR, selected_bits, compile_clocks
 from circuitlab.language.control_flow import expand_digital_loops
 from circuitlab.language.digital_switch import expand_switches, normalize_switch_labels
+from circuitlab.language.pin_banks import expand_pin_banks
 from circuitlab.model.graph import CircuitError
 from circuitlab.language.syntax import CHIP, source_rows
 
@@ -45,7 +46,7 @@ def _name(name, line):
 
 
 def _pin_list(raw, line):
-    pins = tuple(_name(pin.strip(), line) for pin in raw.split(","))
+    pins = tuple(_name(pin.strip(), line) for pin in expand_pin_banks(raw, line).split(","))
     if len(set(pins)) != len(pins):
         raise CircuitError("List each pin once.", line)
     return pins
@@ -138,7 +139,7 @@ def _logic(expression, signals, line):
 def _signal_list(raw, line):
     """Parse scalar/vector port and wire declarations without changing header order."""
     result = {}
-    for item in raw.split(","):
+    for item in expand_pin_banks(raw, line).split(","):
         match = re.fullmatch(r"\s*([A-Za-z_][A-Za-z0-9_]*)\s*(?:\[([^\]]*)\])?\s*", item)
         if not match:
             raise CircuitError("Declare a signal as name or name[width].", line)

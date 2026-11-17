@@ -31,6 +31,8 @@ class SourceInfoTest(unittest.TestCase):
             ('enable = input;', 'input'),
             ('SW${i}, enable${i + 1} = input;', 'input'),
             ('link${i}[8] = wire;', 'wire'),
+            ('SW[9:0], reset = input;', 'input'),
+            ('LEDR[9:0] = output;', 'output'),
         ):
             with self.subTest(source=source):
                 match = direction.match(source)
@@ -167,6 +169,22 @@ assert not any(name.startswith('circuitlab.viewer') for name in sys.modules)
         self.assertIn("base, collector, emitter", SourceInfo("transQ1(b,c,e,npn);").hover_help(0, 2))
         self.assertEqual(gate_inputs("nor", "vcc, (a, b, c), y"), 3)
         self.assertEqual(gate_inputs("and", "vcc, gnd, a, b, y"), 2)
+
+    def test_pin_bank_signatures_expand_in_declared_order_and_preserve_vectors(self):
+        source = 'chip Board(SW[2:0], data[8], LEDR[1:0]) {\nSW[2:0] = input;\n}\nBoard(a,b,c,data,y,z);'
+        info = SourceInfo(source)
+        pins = ('SW2', 'SW1', 'SW0', 'data[8]', 'LEDR1', 'LEDR0')
+        self.assertEqual(info.device_at(0, 6), ('chip', 'Board', pins))
+        self.assertEqual(info.device_at(3, 1), ('chip', 'Board', pins))
+        self.assertEqual(methods(source)['board'][2], ', '.join(pins))
+        for line, column in ((0, source.index('SW[')), (1, 1)):
+            help_text = info.hover_help(line, column)
+            self.assertIn('SW2, SW1, SW0', help_text)
+            self.assertIn('descending, inclusive', help_text)
+            self.assertIn('one vector signal', help_text)
+        self.assertEqual(methods('circuit Analog(a[2:0],b) {')['analog'][2], 'a[2:0], b')
+        self.assertEqual(methods('chip Unfinished(SW[9:], y) {')['unfinished'][2], 'SW[9:], y')
+        self.assertNotIn('Pin bank:', SourceInfo('y = data[3:0];').hover_help(0, 6))
 
     def test_modern_legacy_and_grouped_wire_locations(self):
         rows = [

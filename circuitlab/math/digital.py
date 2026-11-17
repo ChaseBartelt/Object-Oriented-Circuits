@@ -12,6 +12,7 @@ from time import perf_counter
 
 from circuitlab.exporters.clocked import PRECEDENCE, frequency
 from circuitlab.exporters.verilog import compile_chips
+from circuitlab.language.pin_banks import expand_pin_banks
 from circuitlab.math.digital_fast import BOOLEAN, OPS as BINARY
 from circuitlab.model.graph import CircuitError
 
@@ -339,7 +340,7 @@ class DigitalSimulation:
         for row in chips[0][2]:
             if declaration := re.fullmatch(r"(.+?)\s*=\s*wire", row, re.I):
                 declared_wires.update(re.sub(r"\[.*", "", name).strip()
-                                      for name in declaration[1].split(","))
+                                      for name in expand_pin_banks(declaration[1], 1).split(","))
 
         def flatten(module, prefix="", aliases=None, ancestors=()):
             if module.name in ancestors or len(ancestors) > 1:

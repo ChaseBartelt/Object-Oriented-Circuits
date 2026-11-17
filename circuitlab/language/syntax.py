@@ -47,7 +47,7 @@ MARKER = re.compile(
 )
 WIRE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_. \t-]*")
 ASSIGNMENT = re.compile(r"([A-Za-z][A-Za-z0-9_]*)\s*=\s*(.*)")
-PIN_DIRECTION = re.compile(r"[\w, \t\[\]]+\s*=\s*(input|output)", re.I)
+PIN_DIRECTION = re.compile(r"[\w, \t\[\]:]+\s*=\s*(input|output)", re.I)
 PARAMETER_TARGET = re.compile(r"[RCLXZVI][A-Za-z0-9_]*", re.I)
 PART_ARGUMENT = re.compile(r"([RCLZP][A-Za-z0-9_]*)(?:\s*\(([^()]*)\))?", re.I)
 PART_PLACEMENT = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)\s+between\s*\(([^()]*)\)", re.I)

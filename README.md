@@ -45,6 +45,8 @@ Open a saved digital design, **Build from OOC**, inspect **Performance**, select
 
 Digital chip behavior supports bounded `for` loops, bit/slice assignments (`LEDR[7:0] = elapsed[7:0];`), ternary expressions (`fsm = SW1 ? EARLY : WAITING;`), and `switch` with `case`, `break`, and `default`, including inside clock blocks. Loops expand at compile time; they do not consume one clock cycle per iteration. Indexed pin banks such as `LEDR[i]` can refer to separately declared `LEDR0`…`LEDR9` pins. Switches support stacked labels and fallthrough; put `break` directly at the end of a case, since conditional breaks are rejected.
 
+Headers and declarations accept numbered pin ranges: `chip HYBRID01(SW[9:0], LEDR[9:0]) { SW[9:0] = input; LEDR[9:0] = output; LEDR[9:0] = SW[9:0]; }`. A range expands in written order (`SW9, SW8, ... SW0`) into individual scalar pins, retaining the board pin assignments. Ranges are inclusive and descending, with indices from 0 to 4095. The existing `data[10] = input;` syntax still declares one ten-bit vector named `data`.
+
 ## Where to change the implementation
 
 | Folder | Responsibility |

@@ -10,6 +10,7 @@ from dataclasses import dataclass
 
 from circuitlab.language.control_flow import ExpansionBudget, expand_control_flow, expand_digital_loops
 from circuitlab.language.digital_switch import expand_switches, normalize_switch_labels
+from circuitlab.language.pin_banks import expand_pin_banks
 from circuitlab.language.syntax import CHIP, DIGITAL_MAIN, source_rows
 from circuitlab.model.graph import CircuitError, MethodInstance
 
@@ -29,6 +30,25 @@ class _Chip:
     line: int
     signals: dict
     directions: dict
+
+
+def _normalize_declarations(rows):
+    """Expand scalar bank declarations before interpreting expression selectors."""
+    result = []
+    for text, line, origin in rows:
+        if (match := DECLARATION.fullmatch(text)) and ":" in match[1]:
+            text = f"{expand_pin_banks(match[1], line)} = {match[2]}"
+        result.append((text, line, origin))
+    return result
+
+
+def _call_arguments(raw, signals, line):
+    for argument in raw.split(","):
+        selector = re.fullmatch(r"\s*([A-Za-z_][A-Za-z0-9_]*)\s*\[[^]]*:[^]]*\]\s*", argument)
+        if selector and selector[1] in signals:
+            raise CircuitError("Chip argument ranges list numbered scalar pins; pass a declared vector by name instead of a slice.", line)
+    expanded = expand_pin_banks(raw, line) if raw.strip() else ""
+    return tuple(argument.strip() for argument in expanded.split(",")) if expanded else ()
 
 
 def _declarations(rows):
@@ -64,6 +84,8 @@ def _normalize_banks(body, signals):
     from circuitlab.exporters.clocked import SELECTOR, selected_bits
     helpers, aliases, names, output = [], {}, set(signals), []
     for text, line, origin in body:
+        if (call := CALL.fullmatch(text)) and ":" in call[2]:
+            text = f"{call[1]}({', '.join(_call_arguments(call[2], signals, line))})"
         destination = re.match(r"\s*(\w+\s*\[[^]]+\])\s*=(?!=)", text)
         def replace(match):
             if match[1] in signals:
@@ -125,6 +147,7 @@ def _definitions(source):
             origins = {number: origin for _, number, origin in body}
             body = [(text, number, origins[number]) for text, number in expand_switches(expand_digital_loops(
                 normalize_switch_labels([(text, number) for text, number, _ in body])))]
+            body = _normalize_declarations(body)
             signals, kinds = _declarations(body)
             body = _normalize_banks(body, signals)
             signals, kinds = _declarations(body)
@@ -149,7 +172,7 @@ Source text and saved layouts are never rewritten by elaboration.
     if top in chips:
         raise CircuitError(f'Main name "{top}" conflicts with a chip definition; choose another top name.', line)
     budget = ExpansionBudget()
-    main = list(expand_control_flow(main, budget=budget))
+    main = _normalize_declarations(expand_control_flow(main, budget=budget))
     widths, kinds, pins, output = {}, {}, [], []
     for text, number, _ in main:
         if match := DECLARATION.fullmatch(text):
@@ -183,7 +206,7 @@ Source text and saved layouts are never rewritten by elaboration.
                 if call[1] not in chips:
                     raise CircuitError(f'Unknown behavioral chip "{call[1]}".', number)
                 child = chips[call[1]]
-                arguments = tuple(a.strip() for a in call[2].split(",")) if call[2].strip() else ()
+                arguments = _call_arguments(call[2], chip.signals, number)
                 if len(arguments) != len(child.pins):
                     raise CircuitError(f'{child.name} expects {len(child.pins)} signal arguments.', number)
                 for formal, argument in zip(child.pins, arguments):
@@ -228,7 +251,7 @@ Source text and saved layouts are never rewritten by elaboration.
             raise CircuitError("Digital chip instances cannot recurse or nest beyond 32 levels.", number)
         chip = chips[name]
         validate_chip(chip)
-        actual = tuple(a.strip() for a in call[2].split(",")) if call[2].strip() else ()
+        actual = _call_arguments(call[2], context, number)
         if len(actual) != len(chip.pins):
             raise CircuitError(f'{name} expects {len(chip.pins)} signal arguments.', number)
         mapping = {}

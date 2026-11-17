@@ -4,6 +4,7 @@ import re
 from types import SimpleNamespace
 
 from circuitlab.math.digital import DigitalSimulation
+from circuitlab.language.pin_banks import expand_pin_banks
 
 
 def chip_diagram_model(circuit, index, simulation=None):
@@ -50,7 +51,8 @@ def chip_diagram_model(circuit, index, simulation=None):
     ports = {'input': [], 'output': []}
     for row in instance.body:
         if match := re.fullmatch(r'(.+?)\s*=\s*(input|output)', row):
-            ports[match[2]].extend(name.partition('[')[0].strip() for name in match[1].split(','))
+            pins = expand_pin_banks(match[1], 1)
+            ports[match[2]].extend(name.partition('[')[0].strip() for name in pins.split(','))
     clocks = tuple(reverse[name] for name in simulation.clocks if name in reverse)
     model = SimpleNamespace(
         name=instance.name,

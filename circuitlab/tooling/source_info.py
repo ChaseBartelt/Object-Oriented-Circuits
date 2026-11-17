@@ -9,6 +9,8 @@ import re
 
 from circuitlab.language.control_flow import is_control_block
 from circuitlab.language.gates import GATE_HELP, gate_accepts, gate_call_help
+from circuitlab.language.pin_banks import expand_pin_banks
+from circuitlab.model.graph import CircuitError
 from circuitlab.language.syntax import (
     CALL, CONNECTOR, DEFAULT_TERMINALS, DIGITAL_MAIN, INCLUDE, MAIN, MARKER, OP, SECTION,
     TRANS_CALL, source_rows,
@@ -27,13 +29,23 @@ def timed_block_at(code, column):
     return None
 
 
+def _pin_parameters(kind, parameters, line):
+    if kind.lower() == 'chip' and parameters is not None:
+        try:
+            return expand_pin_banks(parameters, line)
+        except CircuitError:
+            pass  # Keep incomplete editor signatures available while typing.
+    return parameters
+
+
 def methods(source):
     """Collect top-level signatures, including unfinished editor documents."""
     result = {}
     depth = 0
-    for text, _, _ in source_rows(source):
+    for text, line, _ in source_rows(source):
         if depth == 0 and (match := SECTION.fullmatch(text)):
             kind, name, parameters = match.groups()
+            parameters = _pin_parameters(kind, parameters, line)
             if not OP.fullmatch(name):
                 pins = DEFAULT_TERMINALS if parameters is None else parameters.split(",")
                 result.setdefault(
@@ -122,6 +134,18 @@ class SourceInfo:
             return ""
         text, column = location
         code = text.partition("#")[0]
+        section = SECTION.match(code.strip())
+        direction = re.fullmatch(r'.+?=\s*(input|output)\s*;?', code.strip(), re.I)
+        if direction or (section and section[1].lower() == 'chip'):
+            for bank in re.finditer(r'\b[A-Za-z_]\w*\s*\[[^\]\n]*:[^\]\n]*\]', code):
+                if bank.start() <= column < bank.end():
+                    try:
+                        pins = expand_pin_banks(bank[0], line + 1)
+                    except CircuitError:
+                        return ''
+                    return (f'{bank[0]}\nPin bank: {pins}.\n'
+                            'Expands to separate numbered scalar pins in descending, inclusive order. '
+                            'Use [width] without a colon to declare one vector signal instead.')
         main = DIGITAL_MAIN.match(code.lstrip())
         if main and column <= len(code) - len(code.lstrip()) + main.end():
             return (
@@ -230,6 +254,7 @@ class SourceInfo:
             kind, name, raw = match.groups()
             if kind.lower() not in {"gate", "chip"} or not 0 <= column <= match.end(2):
                 return None
+            raw = _pin_parameters(kind, raw, line + 1)
             return kind, name, tuple(pin.strip() for pin in (raw or "").split(",") if pin.strip())
         name, raw = match.groups()
         if not 0 <= column < len(name):
