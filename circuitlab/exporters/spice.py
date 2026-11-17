@@ -146,6 +146,18 @@ def _bjt_models(parts):
 
 def spice_circuit(circuit: Circuit) -> SpiceCircuit:
     """Normalize values and names before writing a netlist or schematic."""
+    circuit.require_values()
+    # Both flat and hierarchical LTspice drawings use this same full-graph
+    # validation. A constant AC impedance has no general physical SPICE model.
+    for part in circuit.components:
+        if part.kind == "Z":
+            raise CircuitError(
+                f"{part.label or part.name} is a theoretical AC impedance (Z). "
+                "SPICE/LTspice export requires an explicit circuit model; "
+                "replace it with R/L/C or other modeled components.",
+                circuit.component_lines.get(part.name), "UnsupportedImpedanceExport",
+                path=circuit.component_files.get(part.name),
+            )
     circuit.require_models()
     if not circuit.components or circuit.mode == "transient":
         raise CircuitError("SPICE export requires a DC or AC circuit with components.")

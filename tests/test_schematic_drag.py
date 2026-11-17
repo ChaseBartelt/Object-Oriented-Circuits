@@ -6,7 +6,8 @@ from dataclasses import replace
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QPoint, Qt
+from PySide6.QtCore import QPoint, Qt, QTimer
+from PySide6.QtGui import QContextMenuEvent
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
@@ -55,6 +56,63 @@ class SchematicDragTest(unittest.TestCase):
         end = self.start_pos + self.view.mapFromScene(point((dx, dy))) - self.view.mapFromScene(point((0, 0)))
         self.view.preview_drag(end)
         return end
+
+    def test_split_end_drag_joins_wire_interior_and_undo_restores_markers(self):
+        circuit = compile_circuit('R1(1k) between(a,n);\nR2(2k) between(n,b);', render_only=True)
+        r1, r2 = circuit.components
+        drawing = Layout(
+            symbols=[(r1, (0, 0), (4, 0), '+'), (r2, (0, 4), (-4, 4), '+')],
+            positions={'R1': (0, 0), 'R2': (0, 4)},
+            wires={'n': [((4, 0), (6, 0)), ((0, 4), (4, 4))], 'a': [((-4, 0), (0, 0))]},
+            connectors=[('n', (6, 0), 'n', False, False), ('n', (4, 4), 'n', False, False)],
+        )
+        self.view.draw(circuit, layout=drawing)
+        self.view.start_drag('connector', 'n', self.key, self.view.mapFromScene(point((6, 0))), terminal=0)
+        end = self.view.mapFromScene(point((2, 4)))
+        self.view.preview_drag(end)
+        self.assertFalse(self.view.drag.blocked)
+        self.assertEqual(self.view.layout.connectors, [])
+        self.assertTrue(preserves_nets(circuit, self.view.layout))
+        QTest.mouseRelease(self.view.viewport(), Qt.MouseButton.LeftButton, pos=end)
+        self.assertEqual(self.view.layout.connectors, [])
+        self.view.undo_placement()
+        self.assertEqual(self.view.layout.connectors, drawing.connectors)
+        # The input wire is before R1: dragging here must never bypass R1.
+        self.view.start_drag('connector', 'n', self.key, self.view.mapFromScene(point((6, 0))), terminal=0)
+        self.view.preview_drag(self.view.mapFromScene(point((-2, 0))))
+        self.assertTrue(self.view.layout.connectors)
+        self.assertTrue(preserves_nets(circuit, self.view.layout))
+
+    def test_ground_wire_context_menu_splits_into_symbols_and_can_undo(self):
+        circuit = compile_circuit('R1(1k) between(a,0);\nR2(2k) between(b,0);', render_only=True)
+        r1, r2 = circuit.components
+        drawing = Layout(
+            symbols=[(r1, (0, 0), (4, 0), '+'), (r2, (0, 6), (4, 6), '+')],
+            positions={'R1': (0, 0), 'R2': (0, 6)},
+            wires={'0': [((4, 0), (4, 6)), ((4, -2), (4, 0))]}, grounds=[(4, -2)],
+        )
+        self.view.draw(circuit, layout=drawing)
+        at = self.view.mapFromScene(point((4, 3)))
+        actions = []
+
+        def choose_split():
+            menu = self.app.activePopupWidget()
+            actions.extend(action.text() for action in menu.actions())
+            for action in menu.actions():
+                if action.text() == 'Split':
+                    action.trigger()
+                    break
+            menu.close()
+
+        QTimer.singleShot(0, choose_split)
+        self.view.contextMenuEvent(QContextMenuEvent(QContextMenuEvent.Reason.Mouse, at, self.view.mapToGlobal(at)))
+        self.assertIn('Split', actions)
+        self.assertEqual(self.view.layout.connectors, [])
+        self.assertGreaterEqual(len(self.view.layout.grounds), 2)
+        self.assertTrue(preserves_nets(circuit, self.view.layout))
+        self.view.undo_placement()
+        self.assertEqual(self.view.layout.grounds, drawing.grounds)
+        self.assertEqual(self.view.layout.wires, drawing.wires)
 
     def test_small_moves_follow_each_grid_row_and_keep_the_view_still(self):
         self.start()

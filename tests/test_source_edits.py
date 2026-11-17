@@ -18,6 +18,11 @@ from circuitlab.viewer.schematic import point
 
 
 SOURCE = 'V1(5) between(v,0);\nR1(1k) between(v,out); # keep comment\nR2(1k) between(out,0);\n'
+IMPEDANCE_SOURCE = ('f=1k\nV1(1 Vrms) between(v,0);\n'
+                    'Z1(2-j2) between(v,out); # keep impedance comment\n'
+                    'R2(1k) between(out,0);\n')
+UNSPECIFIED_IMPEDANCE_SOURCE = IMPEDANCE_SOURCE.replace('Z1(2-j2)', 'Z1()')
+BARE_IMPEDANCE_SOURCE = IMPEDANCE_SOURCE.replace('Z1(2-j2)', 'Z1')
 
 
 class SourceEditsTest(unittest.TestCase):
@@ -44,6 +49,14 @@ class SourceEditsTest(unittest.TestCase):
         self.addCleanup(close)
         return view
 
+    def assert_missing_component(self, window, name='Z1'):
+        self.assertIsNotNone(window.schematic.circuit)
+        self.assertIsNotNone(window.schematic.layout)
+        self.assertIsNone(window.solution)
+        self.assertIsNone(next(p.value for p in window.schematic.circuit.components if p.name == name))
+        self.assertTrue(window.session.issues)
+        self.assertIn(name, window.session.issues[0].message)
+
 
     def test_component_toolbar_has_no_value_or_topology_tools(self):
         window = self.window()
@@ -62,6 +75,67 @@ class SourceEditsTest(unittest.TestCase):
             self.assertEqual(next(p.value for p in changed.components if p.name == 'R1'), 4700)
             self.assertIn('# keep comment', plan.after)
             self.assertIn('R2(1k) between(out,0);', plan.after)
+
+    def test_complex_impedance_edits_preserve_comments_and_connections(self):
+        grouped = ('f=1k\nV1(1 Vrms) between(v,0);\n'
+                   'series load(input, output) {\n'
+                   '    Z1 = 2-j2; # keep impedance comment\n'
+                   '}\nmain {\n    load(v,out);\n    R2(1k) between(out,0);\n}\n')
+        sources = (
+            IMPEDANCE_SOURCE,
+            IMPEDANCE_SOURCE.replace('Z1(2-j2) between(v,out);', 'Z1 v out 2-j2'),
+            grouped,
+        )
+        for source in sources:
+            with self.subTest(source=source):
+                circuit = compile_circuit(source, path=self.path, render_only=True)
+                impedance = next(part for part in circuit.components if part.kind == 'Z')
+                plan = edit_value(circuit, impedance.name, '4+j3', self.path, source, self.reader)
+                changed = compile_circuit(plan.after, path=self.path, render_only=True)
+                self.assertEqual(next(p.value for p in changed.components if p.name == impedance.name), 4 + 3j)
+                self.assertEqual([(p.name, p.kind, p.terminal_nets) for p in changed.components],
+                                 [(p.name, p.kind, p.terminal_nets) for p in circuit.components])
+                self.assertIn('# keep impedance comment', plan.after)
+                self.assertIn('R2(1k) between(out,0);', plan.after)
+                self.assertEqual(plan.before, source)
+                self.assertEqual(plan.path, self.path.resolve())
+        self.assertEqual(self.reader(self.path), SOURCE)
+
+    def test_invalid_zero_and_nonfinite_impedance_edits_leave_source_untouched(self):
+        self.path.write_text(IMPEDANCE_SOURCE, encoding='utf-8')
+        circuit = compile_circuit(IMPEDANCE_SOURCE, path=self.path, render_only=True)
+        original = self.path.read_bytes()
+        for value in ('oops', '1 bananas', '0', '0+j0', 'nan', 'inf', '1e999',
+                      '2-j2; R99(1) between(a,b);', '2-j2\nR99(1) between(a,b);'):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                edit_value(circuit, 'Z1', value, self.path, IMPEDANCE_SOURCE, self.reader)
+        self.assertEqual(self.path.read_bytes(), original)
+
+    def test_impedance_edit_keeps_explicitly_selected_ac_mode(self):
+        source = IMPEDANCE_SOURCE.replace('f=1k\n', '').replace('1 Vrms', '1')
+        circuit = compile_circuit(source, 'ac', path=self.path, render_only=True)
+        plan = edit_value(circuit, 'Z1', '3-j4', self.path, source, self.reader)
+        changed = compile_circuit(plan.after, 'ac', path=self.path, render_only=True)
+        self.assertEqual(changed.mode, 'ac')
+        self.assertEqual(next(p.value for p in changed.components if p.name == 'Z1'), 3 - 4j)
+
+    def test_included_impedance_edit_targets_definition_and_all_instances(self):
+        library = self.path.with_name('impedance.ckt')
+        definition = 'chip load(a,b) {\n  Z1(2-j2) between(a,b); # shared impedance\n}\n'
+        library.write_text(definition, encoding='utf-8')
+        source = ('include("impedance.ckt");\nf=1k\nV1(1 Vrms) between(v,0);\n'
+                  'main { load(v,out); load(out,0); }\n')
+        self.path.write_text(source, encoding='utf-8')
+        circuit = compile_circuit(source, path=self.path, render_only=True)
+        impedance = next(part for part in circuit.components if part.kind == 'Z')
+        plan = edit_value(circuit, impedance.name, '4-j1', self.path, source, self.reader)
+        self.assertEqual(plan.path, library.resolve())
+        self.assertEqual(plan.after, definition.replace('2-j2', '4-j1'))
+        changed = compile_circuit(source, path=self.path, render_only=True,
+                                  read_source=lambda path: plan.after if path == library else self.reader(path))
+        self.assertEqual([p.value for p in changed.components if p.kind == 'Z'], [4 - 1j, 4 - 1j])
+        self.assertEqual(self.reader(library), definition)
+        self.assertEqual(self.reader(self.path), source)
 
 
     def test_rejects_invalid_values_and_generated_builtin_components(self):
@@ -154,6 +228,133 @@ class SourceEditsTest(unittest.TestCase):
             legacy.placement_dirty = False
             legacy.close()
             legacy.deleteLater()
+
+    def test_right_click_complex_impedance_edit_and_ctrl_z_restore_code_and_value(self):
+        self.path.write_text(IMPEDANCE_SOURCE, encoding='utf-8')
+        window = self.window()
+        window.resize(1400, 800)
+        window.show()
+        window.activateWindow()
+        self.app.processEvents()
+        original_layout = pack_layout(window.schematic.layout)
+        _, a, b, _ = next(row for row in window.schematic.layout.symbols if row[0].name == 'Z1')
+        location = tuple((x + y) / 2 for x, y in zip(a, b))
+        pos = window.schematic.mapFromScene(point(location))
+        event = QContextMenuEvent(QContextMenuEvent.Reason.Mouse, pos,
+                                  window.schematic.viewport().mapToGlobal(pos))
+        with patch('circuitlab.viewer.schematic.QMenu') as menu, \
+             patch('circuitlab.viewer.source_editing.QInputDialog.getText', return_value=('4+j3', True)):
+            window.schematic.contextMenuEvent(event)
+            actions = dict(call.args for call in menu.return_value.addAction.call_args_list)
+            self.assertIn('Edit value…', actions)
+            actions['Edit value…']()
+        self.assertEqual(self.reader(self.path), IMPEDANCE_SOURCE.replace('2-j2', '4+j3'))
+        self.assertEqual(next(p.value for p in window.schematic.circuit.components if p.name == 'Z1'), 4 + 3j)
+        self.assertEqual(pack_layout(window.schematic.layout), original_layout)
+        window.schematic.setFocus()
+        self.app.processEvents()
+        QTest.keyClick(window.schematic, Qt.Key.Key_Z, Qt.KeyboardModifier.ControlModifier)
+        self.assertEqual(self.reader(self.path), IMPEDANCE_SOURCE)
+        self.assertEqual(next(p.value for p in window.schematic.circuit.components if p.name == 'Z1'), 2 - 2j)
+        self.assertEqual(pack_layout(window.schematic.layout), original_layout)
+
+    def test_unspecified_impedance_renders_with_a_named_missing_value_diagnostic(self):
+        self.path.write_text(UNSPECIFIED_IMPEDANCE_SOURCE, encoding='utf-8')
+        window = self.window()
+        self.assert_missing_component(window)
+        labels = [item.text() for item in window.schematic.scene().items()
+                  if item.data(4) == ('component', 'Z1') and hasattr(item, 'text')]
+        self.assertEqual(labels, ['Z1'])
+        self.assertEqual(self.reader(self.path), UNSPECIFIED_IMPEDANCE_SOURCE)
+
+    def test_filling_unspecified_impedance_solves_and_ctrl_z_restores_placeholder(self):
+        self.path.write_text(UNSPECIFIED_IMPEDANCE_SOURCE, encoding='utf-8')
+        window = self.window()
+        self.assert_missing_component(window)
+        before = pack_layout(window.schematic.layout)
+        window.show()
+        window.activateWindow()
+        self.app.processEvents()
+        with patch('circuitlab.viewer.source_editing.QInputDialog.getText', return_value=('4+j3', True)) as dialog:
+            window.source_tools.change_value('Z1')
+        self.assertEqual(dialog.call_args.kwargs['text'], '')
+        self.assertEqual(self.reader(self.path), UNSPECIFIED_IMPEDANCE_SOURCE.replace('Z1()', 'Z1(4+j3)'))
+        self.assertIsNotNone(window.solution)
+        self.assertFalse(window.session.issues)
+        self.assertEqual(next(p.value for p in window.schematic.circuit.components if p.name == 'Z1'), 4 + 3j)
+        self.assertEqual(pack_layout(window.schematic.layout), before)
+        window.schematic.setFocus()
+        self.app.processEvents()
+        QTest.keyClick(window.schematic, Qt.Key.Key_Z, Qt.KeyboardModifier.ControlModifier)
+        self.assertEqual(self.reader(self.path), UNSPECIFIED_IMPEDANCE_SOURCE)
+        self.assert_missing_component(window)
+        self.assertEqual(pack_layout(window.schematic.layout), before)
+
+    def test_clearing_known_impedance_keeps_drawing_and_removes_value_parentheses(self):
+        for blank in ('', '   '):
+            with self.subTest(blank=blank):
+                self.path.write_text(IMPEDANCE_SOURCE, encoding='utf-8')
+                window = self.window()
+                self.assertIsNotNone(window.solution)
+                before = pack_layout(window.schematic.layout)
+                with patch('circuitlab.viewer.source_editing.QInputDialog.getText', return_value=(blank, True)):
+                    window.source_tools.change_value('Z1')
+                self.assertEqual(self.reader(self.path), BARE_IMPEDANCE_SOURCE)
+                self.assert_missing_component(window)
+                self.assertEqual(pack_layout(window.schematic.layout), before)
+                window.source_tools.checkpoint()
+
+    def test_bare_passive_value_edits_fill_clear_and_undo_without_changing_connections(self):
+        cases = (('R1', '2k', 2000), ('C1', '220n', 220e-9),
+                 ('L1', '10m', .01), ('Z1', '4+j3', 4 + 3j))
+        for name, value, expected in cases:
+            with self.subTest(part=name):
+                source = ('f=1k\nV1(1 Vrms) between(v,0);\n'
+                          f'{name} between(v,out); # keep placeholder comment\n'
+                          'Rload(1k) between(out,0);\n')
+                self.path.write_text(source, encoding='utf-8')
+                window = self.window()
+                self.assert_missing_component(window, name)
+                original_layout = pack_layout(window.schematic.layout)
+                original_nets = [(p.name, p.terminal_nets) for p in window.schematic.circuit.components]
+                with patch('circuitlab.viewer.source_editing.QInputDialog.getText', return_value=(value, True)) as dialog:
+                    window.source_tools.change_value(name)
+                self.assertEqual(dialog.call_args.kwargs['text'], '')
+                filled = source.replace(f'{name} between', f'{name}({value}) between')
+                self.assertEqual(self.reader(self.path), filled)
+                self.assertIsNotNone(window.solution)
+                self.assertFalse(window.session.issues)
+                self.assertAlmostEqual(next(p.value for p in window.schematic.circuit.components if p.name == name), expected)
+                with patch('circuitlab.viewer.source_editing.QInputDialog.getText', return_value=('   ', True)):
+                    window.source_tools.change_value(name)
+                self.assertEqual(self.reader(self.path), source)
+                self.assert_missing_component(window, name)
+                window.schematic.undo()
+                self.assertEqual(self.reader(self.path), filled)
+                self.assertAlmostEqual(next(p.value for p in window.schematic.circuit.components if p.name == name), expected)
+                window.schematic.undo()
+                self.assertEqual(self.reader(self.path), source)
+                self.assert_missing_component(window, name)
+                self.assertEqual([(p.name, p.terminal_nets) for p in window.schematic.circuit.components], original_nets)
+                self.assertEqual(pack_layout(window.schematic.layout), original_layout)
+                self.assertFalse(window.source_tools.history)
+                window.source_tools.checkpoint()
+
+    def test_cancelled_impedance_dialog_does_not_fill_or_clear_a_value(self):
+        for source, replacement in ((UNSPECIFIED_IMPEDANCE_SOURCE, '4+j3'), (IMPEDANCE_SOURCE, '')):
+            with self.subTest(source=source):
+                self.path.write_text(source, encoding='utf-8')
+                window = self.window()
+                before = self.path.read_bytes()
+                revision = window.session.revision
+                with patch('circuitlab.viewer.source_editing.QInputDialog.getText', return_value=(replacement, False)), \
+                     patch('circuitlab.viewer.source_editing.edit_value') as edit:
+                    window.source_tools.change_value('Z1')
+                edit.assert_not_called()
+                self.assertEqual(self.path.read_bytes(), before)
+                self.assertEqual(window.session.revision, revision)
+                self.assertFalse(window.source_tools.history)
+                self.assertFalse(window.source_tools.value_changes)
 
     def test_stale_disk_is_not_overwritten_and_ide_request_waits_for_ack(self):
         window = self.window()

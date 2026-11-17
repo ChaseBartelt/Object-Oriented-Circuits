@@ -1,0 +1,9 @@
+# Theoretical inverting amplifier: fill in the impedances when ready.
+# Omit value parentheses to keep a connected block with an unspecified value.
+# Right-click each Z block -> Edit value. Numerical solving needs all values.
+f = 1k
+Vac(1 Vpk) between(input, 0);
+Zs between(input, inv);
+Zf between(output, inv);
+Zload between(output, 0);
+op1(0, inv, output);

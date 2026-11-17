@@ -52,7 +52,8 @@ class Component:
     kind: str
     p: str
     n: str
-    value: Scalar = 0
+    # None is an unspecified component value, never a zero or open circuit.
+    value: Scalar | None = 0
     dc: Scalar = 0
     label: str = ""
     equation: str = "Given"
@@ -151,6 +152,23 @@ class Circuit:
             raise CircuitError(
                 f"{missing.name} is available as a schematic pinout. A simulation model is required.",
                 missing.line, "UnavailableChipModel", path=missing.path,
+            )
+
+    def require_values(self):
+        """Reject schematic placeholders before any numerical interpretation."""
+        missing = [(part.label or part.name, self.component_lines.get(part.name), self.component_files.get(part.name))
+                   for part in self.components if part.value is None]
+        if not missing:
+            for group in self.groups:
+                for index, (kind, name, value) in enumerate(group.entries):
+                    if value is None:
+                        line, path = group.entry_sources.get(index, (group.line, None))
+                        missing.append((name or kind, line, path))
+        if missing:
+            names = ", ".join(name for name, _, _ in missing)
+            raise CircuitError(
+                f"Enter a value for {names} before simulation. Parts without values are schematic placeholders.",
+                missing[0][1], "MissingComponentValue", path=missing[0][2],
             )
 
     @property

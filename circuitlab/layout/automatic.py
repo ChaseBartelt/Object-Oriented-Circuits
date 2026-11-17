@@ -46,7 +46,7 @@ def series_runs(circuit):
         for position, (kind, name, value) in enumerate(group.entries):
             if kind == "G":
                 sequence.extend(sequences.get(value, [None]))
-            elif kind in "RCLXP":
+            elif kind in "RCLXZP":
                 sequence.append(by_name.get(name, by_order.get(group.entry_order.get(position))))
             else:
                 sequence.append(None)
@@ -287,7 +287,7 @@ def grounded_bridge(parts, source):
             continue
         terminals = frozenset((part.p, part.n))
         if (
-            part.kind not in {"R", "C", "L", "X"}
+            part.kind not in {"R", "C", "L", "X", "Z"}
             or len(terminals) != 2
             or terminals in branches
         ):
@@ -341,7 +341,7 @@ def _parallel_tees(circuit, source, labels):
         if part is source:
             continue
         edge = frozenset((part.p, part.n))
-        if part.kind not in "RCLX" or len(edge) != 2 or edge in branches:
+        if part.kind not in "RCLXZ" or len(edge) != 2 or edge in branches:
             return None
         branches[edge] = part
         neighbors.setdefault(part.p, set()).add(part.n)
@@ -580,7 +580,7 @@ def compact(circuit, labels=None):
     if (
         source
         and bool(set(terminals) & circuit.grounds)
-        and all(part.kind in "RCLX" for part in parts if part is not source)
+        and all(part.kind in "RCLXZ" for part in parts if part is not source)
     ):
         return _grounded_tree(circuit, source, tree, labels)
     layout = Layout()
@@ -649,7 +649,7 @@ def compact_amplifier(circuit):
         chain.append(candidates[0])
         previous = chain[-1].p
     branches = [e for e in parts if e.kind not in "VO"]
-    if any(e.kind not in "RCLX" for e in branches):
+    if any(e.kind not in "RCLXZ" for e in branches):
         return None
     inputs = _paths(branches, source.p, terminals)
     feedback = _paths(
@@ -696,10 +696,9 @@ def compact_amplifier(circuit):
         (out_x, 0),
         (chip_x + 4.3, 0),
     )
-    add_wire(
-        d, "0", (chip_x, -0.35), (chip_x - 0.55, -0.35), (chip_x - 0.55, gy), (0, gy)
-    )
-    ground_at(d, (chip_x - 0.55, gy))
+    add_wire(d, "0", (chip_x, -0.35), (chip_x - 0.55, -0.35), (chip_x - 0.55, -1.2))
+    ground_at(d, (chip_x - 0.55, -1.2))
+    ground_at(d, (0, gy))
     label_node(d, circuit, (0, 0.35), source.p)
     label_node(d, circuit, (x, 0.35), chip.in_minus)
     d.junctions.setdefault(chip.p, []).append((out_x, 0))
@@ -753,7 +752,7 @@ def _summing_amplifier(circuit, sources, amp):
         or any(source.n != ground for source in sources)
     ):
         return None
-    passive = [part for part in circuit.components if part.kind in "RCLX"]
+    passive = [part for part in circuit.components if part.kind in "RCLXZ"]
     if len(passive) + len(sources) + 1 != len(circuit.components):
         return None
     legs = []

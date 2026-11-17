@@ -34,6 +34,7 @@ def solve_input(source, mode="auto", *, backend: SimulationBackend | None = None
 def analyze(circuit, backend=None):
     """Dispatch to quantity rules or the network backend as appropriate."""
     circuit.require_models()
+    circuit.require_values()
     circuit = replace(
         circuit, known=dict(circuit.known), equations=dict(circuit.equations)
     )
@@ -184,6 +185,7 @@ def diagnostics(source, result):
 
 def group_impedances(circuit, omega):
     """Reduce legacy groups from the deepest branch back to the root."""
+    circuit.require_values()
     ac = circuit.mode == "ac"
     equivalents = {}
     impedances = {}
@@ -210,6 +212,11 @@ def group_impedances(circuit, omega):
                     z = math.inf if kind == "C" else 0
             elif kind == "X":
                 z = 1j * value
+            elif kind == "Z":
+                if not ac or not value or not cmath.isfinite(value):
+                    raise CircuitError("Theoretical impedance Z requires a finite, nonzero value in AC steady state.",
+                                       group.line, code="UnsupportedComponent")
+                z = value
             else:
                 z = value
             branches.append(z)
@@ -238,6 +245,7 @@ def group_impedances(circuit, omega):
 
 def reduce_groups(result, known):
     c = result.circuit
+    c.require_values()
     kinds = {kind for g in c.groups for kind, _, _ in g.entries}
     ac = c.mode == "ac"
     omega = 0

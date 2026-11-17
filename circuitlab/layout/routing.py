@@ -155,7 +155,7 @@ def _channel_layout(
     rotated = {}
     if rotate:
         for i, part in enumerate(parts):
-            if part.kind not in "RCLX" or part.p == part.n:
+            if part.kind not in "RCLXZ" or part.p == part.n:
                 continue
             if rotate is not True and i not in rotate:
                 continue
@@ -695,7 +695,7 @@ def _compact_channels(
     }
     shunts = [
         i for i, part in enumerate(parts)
-        if part.kind in "RCLX" and {part.p, part.n} & anchors
+        if part.kind in "RCLXZ" and {part.p, part.n} & anchors
     ]
     for i in shunts[:12]:
         try_layout(best_cells, (rotations or set()) ^ {i})
@@ -751,7 +751,7 @@ def _compact_channels(
         trial_count = 7 if len(parts) <= 24 else 3
         for _, trial in sorted(trials, key=lambda candidate: candidate[0])[:trial_count]:
             try_layout(trial, rotations)
-            if len(unit) == 1 and parts[unit[0]].kind in "RCLX":
+            if len(unit) == 1 and parts[unit[0]].kind in "RCLXZ":
                 try_layout(trial, (rotations or set()) | {unit[0]})
                 # Two vertical branches can compete for the same drop. Give
                 # the newly rotated part a trial with the other one horizontal.
@@ -787,7 +787,7 @@ def _compact_channels(
     }
     for i in sorted(singles):
         part = parts[i]
-        if part.kind not in "RCLX" or not {part.p, part.n} & floating:
+        if part.kind not in "RCLXZ" or not {part.p, part.n} & floating:
             continue
         row, col = best_cells[i]
         occupied = {pos: j for j, pos in best_cells.items() if j != i}
@@ -829,7 +829,7 @@ def _shorten_rail_branches(circuit, drawing, cost, clear_symbols):
         return sum(math.dist(a, b) for a, b in edges)
 
     for index, (part, a, b, top) in enumerate(drawing.symbols):
-        if part.kind not in "RCLX" or part.p == part.n or not {part.p, part.n} <= rails.keys():
+        if part.kind not in "RCLXZ" or part.p == part.n or not {part.p, part.n} <= rails.keys():
             continue
         p_rail, n_rail = rails[part.p], rails[part.n]
         py, ny = p_rail[0][1], n_rail[0][1]

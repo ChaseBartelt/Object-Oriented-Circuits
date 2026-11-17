@@ -209,10 +209,10 @@
       "patterns": [
         {
           "name": "entity.name.function.component.ooc",
-          "match": "(?i)\\b[RCLVI][A-Za-z0-9_]*(?=(?:\\$\\{[^}\\r\\n]*\\}[A-Za-z0-9_]*)*\\s*\\([^;#\\r\\n]*\\)\\s+between\\s*\\()"
+          "match": "(?i)\\b[RCLZVI][A-Za-z0-9_]*(?=(?:\\$\\{[^}\\r\\n]*\\}[A-Za-z0-9_]*)*(?:\\s*\\([^;#\\r\\n]*\\)\\s+|\\s+)between\\s*\\()"
         },
         {
-          "match": "(?:^|(?<=[;{]))\\s*([RCLXVI][A-Za-z0-9_]+)(?=\\s*=\\s*[+\\-−.0-9]|\\s+[A-Za-z0-9_.-]+\\s+[A-Za-z0-9_.-]+\\s+[+\\-−.0-9])",
+          "match": "(?:^|(?<=[;{]))\\s*([RCLXZVI][A-Za-z0-9_]+)(?=\\s*=\\s*[+\\-−.0-9]|\\s+[A-Za-z0-9_.-]+\\s+[A-Za-z0-9_.-]+\\s+[+\\-−.0-9])",
           "captures": {
             "1": { "name": "entity.name.function.component.ooc" }
           }

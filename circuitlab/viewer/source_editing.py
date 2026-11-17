@@ -72,9 +72,12 @@ class SourceTools:
             _, _, _, match = source_target(circuit, name, root, source, reader)
             if 'value' not in match.groupdict():
                 raise ValueError('This value is generated. Edit its parameter or definition in the IDE.')
+            part = next(part for part in circuit.components if part.name == name)
+            hint = ' in ohms (e.g. 2-j2 or 4+j4)' if part.kind == 'Z' else ''
+            previous = (match['value'] or '').strip()
             value, ok = QInputDialog.getText(self.window, 'Edit component value',
-                f'{name} value (shared definitions update all their instances):', text=match['value'].strip())
-            if ok and value.strip() != match['value'].strip():
+                f'{name} value{hint} (blank = unspecified):\nShared definitions update all their instances.', text=previous)
+            if ok and value.strip() != previous:
                 self.apply(edit_value(circuit, name, value, root, source, reader))
         except (ValueError, OSError, CircuitError, StopIteration) as error:
             self.error(error)

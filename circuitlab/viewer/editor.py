@@ -41,7 +41,8 @@ class CircuitHighlighter(QSyntaxHighlighter):
             ),
             "#92bfff",
         ),
-        (re.compile(r"\b(?:[RCLXVIQ]\d[\w]*|op\d+)\b"), "#e3b5f5"),
+        (re.compile(r"\b(?:[RCLXZVIQ]\d[\w]*|op\d+)\b"), "#e3b5f5"),
+        (re.compile(r"\b[RCLZVI]\w*(?=\s*(?:\([^()]*\)\s*)?between\s*\()", re.I), "#e3b5f5"),
         (re.compile(rf"(?<![\w.])[+-]?{NUMBER}(?:[A-Za-zµμΩ°]+)?"), "#ffd18b"),
         (BUILTIN_CALL, "#e3b5f5"),
     )

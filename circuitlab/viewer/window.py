@@ -24,6 +24,7 @@ from circuitlab.tooling.session import CircuitSession, includes_files, issue_for
 from circuitlab.tooling.source_edits import SourceEdit
 from circuitlab.viewer.exports import export_file, hierarchy_layouts
 from circuitlab.viewer.device_layouts import DeviceLayoutDialog
+from circuitlab.viewer.digital import DigitalSimulator
 from circuitlab.viewer.schematic import SchematicView
 from circuitlab.viewer.scope import Oscilloscope
 from circuitlab.viewer.source_editing import SourceTools
@@ -68,6 +69,10 @@ class ViewerWindow(QMainWindow):
         self.scope = Oscilloscope()
         self.results.layout().insertWidget(0, self.scope)
         self.views.addTab(self.results, "Results")
+        self.digital = DigitalSimulator()
+        self.digital.values_changed.connect(self.update_logic_colors)
+        self.digital_tab = self.views.addTab(self.digital, "Logic simulation")
+        self.views.setTabVisible(self.digital_tab, False)
         self.issues = QListWidget()
         self.issues.setMaximumHeight(100)
         self.issues.itemDoubleClicked.connect(self.select_diagnostic)
@@ -86,6 +91,11 @@ class ViewerWindow(QMainWindow):
         self.mode.currentIndexChanged.connect(self.compile_source)
         self.update_title()
         self.show_issues([])
+        self.views.currentChanged.connect(self.update_diagnostics_visibility)
+        self.update_diagnostics_visibility()
+
+    def update_diagnostics_visibility(self, *_):
+        self.issues.setVisible(self.views.currentWidget() is not self.digital)
 
     @property
     def path(self):
@@ -235,6 +245,7 @@ class ViewerWindow(QMainWindow):
         dialog.deleteLater()
 
     def compile_source(self):
+        show_logic = self.views.currentWidget() is self.digital
         if getattr(self, "fpga_window", None):
             self.fpga_window.refresh_source()
         self.scope.set_circuit(None)
@@ -244,14 +255,19 @@ class ViewerWindow(QMainWindow):
         if self.session.drawing is not None:
             self.schematic.draw(self.session.drawing, self.pins)
             self.scope.set_circuit(self.session.drawing)
+        self.update_digital()
         self.pin_button.setChecked(False)
         self.schematic.set_pin_tool(False)
         self.show_issues(self.session.issues)
         if self.session.issues:
             self.status.setText(self.session.issues[0].message)
         elif self.session.preview_only:
-            self.views.setCurrentIndex(0)
-            self.status.setText("Schematic rendered.")
+            self.views.setCurrentIndex(self.digital_tab if show_logic and self.views.isTabVisible(self.digital_tab) else 0)
+            self.status.setText(
+                "Open Logic simulation to toggle inputs, step the clock, and inspect signals. "
+                "Wire colors: green = 1, gray = 0; blue = selected."
+                if self.views.isTabVisible(self.digital_tab) else "Schematic rendered."
+            )
         elif self.solution and self.solution.network:
             self.status.setText(
                 f"{MODES[self.solution.circuit.mode]} · Click a wire to trace it or add a named pin."
@@ -268,14 +284,32 @@ class ViewerWindow(QMainWindow):
         except CircuitError as error:
             self.schematic.clear(preserve_placement=True)
             self.scope.set_circuit(None)
+            self.digital.set_source("")
+            self.views.setTabVisible(self.digital_tab, False)
             self.show_issues([issue_for(error)])
             self.status.setText(error.message)
             return False
         self.schematic.draw(circuit, self.pins)
         self.scope.set_circuit(circuit)
+        self.update_digital()
         self.views.setCurrentIndex(0)
         self.status.setText("Schematic rendered.")
         return True
+
+    def update_digital(self):
+        """Keep the digital runtime separate from electrical model previews."""
+        try:
+            digital = has_chip(self.session.source) and not includes_files(self.session.source)
+        except CircuitError:
+            digital = False
+        self.digital.set_source(self.session.source if digital else "")
+        self.views.setTabVisible(self.digital_tab, digital)
+
+    def update_logic_colors(self, values):
+        # Samples are taken between complete cycles. Leave clock wires neutral
+        # instead of presenting their sampled low phase as a constant logic 0.
+        clocks = self.digital.simulation.clocks if self.digital.simulation else ()
+        self.schematic.set_logic_values({name: value for name, value in values.items() if name not in clocks})
 
     def update_results(self):
         rows = result_rows(self.solution) if self.solution else []
@@ -315,6 +349,15 @@ class ViewerWindow(QMainWindow):
         self.analysis_window.activateWindow()
 
     def probe(self, kind, name):
+        simulation = self.digital.simulation
+        if simulation is not None and kind in {"node", "pin"} and name in simulation.values:
+            if name in simulation.clocks:
+                rate = f" ({simulation.frequency:g} Hz)" if simulation.frequency else ""
+                self.status.setText(f"{name}: simulated clock{rate} · Step advances one complete cycle.")
+                return
+            self.digital.probe.setCurrentText(name)
+            self.status.setText(f"{name} = {simulation.values[name]} · simulated logic level")
+            return
         if kind == "pin" and name in self.pins:
             self.results.search.setText(self.pins[name])
             self.views.setCurrentWidget(self.results)
@@ -518,4 +561,5 @@ class ViewerWindow(QMainWindow):
             event.ignore()
             return
         self.scope.shutdown()
+        self.digital.shutdown()
         event.accept()

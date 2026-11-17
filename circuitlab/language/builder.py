@@ -34,6 +34,7 @@ from circuitlab.language.syntax import (
     FREQUENCY,
     INLINE,
     OP,
+    PART_PLACEMENT,
     PLACEMENT,
     PULSE,
     SECTION,
@@ -68,6 +69,7 @@ class Group:
     ground: str | None = None
     branch_grounds: dict[int, str] = field(default_factory=dict)
     entry_order: dict[int, int] = field(default_factory=dict)
+    entry_sources: dict[int, tuple[int, object]] = field(default_factory=dict)
 
 
 @dataclass
@@ -162,6 +164,9 @@ def compile_program(program, mode, *, render_only=False):
                 raise
             raise CircuitError(str(error), line, error.code, path=binding.path) from None
     circuit = compiler.finish(render_only)
+    for group in circuit.groups:
+        group.entry_sources = {index: (lines[order], paths.get(order))
+                               for index, order in group.entry_order.items()}
     for pin, line in connectors.items():
         if circuit.resolve_wire(pin) not in circuit.nodes:
             raise CircuitError(f'Connector pin "{pin}" is not a net in this file.', line)
@@ -220,6 +225,7 @@ class Compiler:
 
     def read(self, text, line, binding):
         """Consume a statement in the current device, source, or group context."""
+        text = text.removesuffix(";").rstrip()
         if self.transistor:
             self.transistor_field(text, binding)
             return
@@ -715,7 +721,9 @@ class Compiler:
         return name
 
     def group_entry(self, assignment, binding):
-        if not assignment or not assignment[2] or assignment[1][0].upper() not in UNITS:
+        if not assignment or assignment[1][0].upper() not in UNITS or (
+            not assignment[2].strip() and assignment[1][0].upper() == "X"
+        ):
             raise CircuitError(
                 "Use component assignments inside a group, such as R1 = 50."
             )
@@ -729,10 +737,14 @@ class Compiler:
                 name
                 or f"{'Battery' if kind == 'V' else 'Current source'} {len(self.sources) + 1}"
             )
-            self.add_source(kind, label, *_source(raw, kind, self.mode, group=True))
+            values = _source(raw, kind, self.mode, group=True) if raw.strip() else (None, 0, "Unspecified value")
+            self.add_source(kind, label, *values)
             return
-        value = real(scalar(raw, UNITS[kind]))
-        if (kind == "R" and value < 0) or (kind in "CL" and value <= 0):
+        if kind == "Z":
+            value = self.impedance_value(raw)
+        else:
+            value = real(scalar(raw, UNITS[kind])) if raw.strip() else None
+        if value is not None and ((kind == "R" and value < 0) or (kind in "CL" and value <= 0)):
             raise CircuitError("Use a real X, nonnegative R, or positive C or L.")
         self.group.entry_order[len(self.group.entries)] = self.order
         self.group.entries.append((kind, name, value))
@@ -756,7 +768,7 @@ class Compiler:
             self.mode == "ac"
             and not self.group
             and not self.circuit.legacy_measure
-            and re.fullmatch(r"[RCLX][A-Za-z0-9_]+", raw, re.I)
+            and re.fullmatch(r"[RCLXZ][A-Za-z0-9_]+", raw, re.I)
         ):
             self.circuit.legacy_measure = raw
         else:
@@ -816,6 +828,10 @@ class Compiler:
         if placement := PLACEMENT.fullmatch(text.removesuffix(";").rstrip()):
             name, raw, wires = placement.groups()
             p, n = parse_wires(wires, 2)
+        elif placement := PART_PLACEMENT.fullmatch(text.removesuffix(";").rstrip()):
+            name, wires = placement.groups()
+            raw = ""
+            p, n = parse_wires(wires, 2)
         else:
             match = re.fullmatch(
                 r"([A-Za-z][A-Za-z0-9_]*)\s+(\S+)\s+(\S+)\s+(.+)", text
@@ -828,17 +844,21 @@ class Compiler:
         self.add_node_component(name, raw, p, n, binding)
 
     def add_node_component(self, name, raw, p, n, binding):
+        kind = name[0].upper()
+        if kind == "Z":
+            value = self.impedance_value(raw)
         if self.mode == "transient":
             raise CircuitError(
                 "Use known quantities with model = rc or model = rl for a series step response."
             )
-        kind = name[0].upper()
-        if kind not in "RCLVI":
+        if kind not in "RCLZVI":
             raise CircuitError(
-                f'Component "{name}" needs a name beginning R, C, L, V, or I.'
+                f'Component "{name}" needs a name beginning R, C, L, Z, V, or I.'
             )
         pulse = None
-        if signal := PULSE.fullmatch(raw.strip()):
+        if not raw.strip():
+            value, dc, equation = None, 0, "Unspecified value"
+        elif signal := PULSE.fullmatch(raw.strip()):
             if self.mode != "dc" or kind != "V":
                 raise CircuitError("Pulse sources use a voltage source in DC mode. Run the waveform in Results.")
             fields = signal[1].split(",")
@@ -852,6 +872,8 @@ class Compiler:
                 raise CircuitError("Use a nonnegative pulse delay, positive rise, fall and width, and a period that fits all three.")
             pulse = Pulse(low, high, delay, rise, fall, width, period)
             value, dc, equation = low, low, "Pulse initial level"
+        elif kind == "Z":
+            dc, equation = 0, "Specified complex impedance (AC only)"
         elif kind in "VI":
             value, dc, equation = _source(raw, kind, self.mode)
         else:
@@ -864,6 +886,19 @@ class Compiler:
         if binding.scope:
             self.method_parts = True
             self.circuit.named_wires.update((p, n))
+
+    def impedance_value(self, raw):
+        """Z is a specified phasor-domain impedance, not a time-domain device."""
+        if self.mode != "ac":
+            raise CircuitError("Use AC steady state for a theoretical impedance Z. "
+                               "DC, mixed and transient analyses require physical R/L/C components.",
+                               code="UnsupportedComponent")
+        if not raw.strip():
+            return None
+        value = scalar(raw, "ohm")
+        if not value:
+            raise CircuitError("Impedance Z must be nonzero. Use the same wire name or an explicit zero-volt source for a short.")
+        return value
 
     def finish(self, render_only):
         """Choose graph elaboration or legacy group reduction after parsing."""
@@ -918,6 +953,11 @@ class Compiler:
                 "Use groups with known quantities, or enter a circuit with node names."
             )
         if self.offset:
+            if any(p.kind == "Z" for p in c.components) or any(
+                kind == "Z" for g in c.groups for kind, _, _ in g.entries
+            ):
+                raise CircuitError("Theoretical impedance Z is AC-only and cannot be combined with a DC offset.",
+                                   code="UnsupportedComponent")
             if any(kind == "X" for g in c.groups for kind, _, _ in g.entries):
                 raise CircuitError(
                     "Use C or L to specify reactance in a circuit with a DC offset."

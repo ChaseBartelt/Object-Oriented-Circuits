@@ -1,0 +1,25 @@
+
+# Inverting amplifier with source impedance,
+# feedback impedance, and output load.
+
+f = 60
+
+Vac(1 Vpk) between(input, 0);
+
+# Source impedance (Zs)
+R2(1k) between(input, n1);
+C1(10n) between(n1, inv);
+
+# Op-amp: negative, positive, output
+op1(0, inv, output);
+
+# Feedback impedance (Zf)
+R1(10k) between(output, inv);
+
+# Output load
+RLoad(100k) between(output, 0);
+
+
+# @ooc-layout-begin padding=2
+# {"version":1,"mode":"auto","layouts":[[null,"auto",{"symbols":[["R2","R",["input","n1"],[0.25,0.25],[4.25,0.25],"+"],["C1","C",["n1","inv"],[4.5,0.25],[8.5,0.25],"+"],["Vac","V",["input","0"],[0.25,0.25],[0.25,-3.25],"+"],["op1","O",["0","inv","output","0"],[8.75,0.0],[12.75,0.0],"-"],["R1","R",["output","inv"],[12.75,2.25],[8.75,2.25],"+"],["RLoad","R",["output","0"],[13.5,-3.5],[17.5,-3.5],"+"]],"wires":{"inv":[[[8.5,0.25],[8.5,2.25]],[[8.5,0.25],[8.75,0.25]],[[8.5,2.25],[8.75,2.25]]],"output":[[[12.75,0.0],[12.75,2.25]],[[12.75,0.0],[13.5,0.0]],[[13.5,-3.5],[13.5,0.0]]],"0":[[[0.25,-3.25],[8.5,-3.25]],[[8.5,-3.25],[8.5,-0.25]],[[8.5,-0.25],[8.75,-0.25]],[[17.5,-3.5],[20.5,-3.5]]],"n1":[[[4.25,0.25],[4.5,0.25]]]},"junctions":{},"labels":{},"grounds":[[8.5,-3.25],[20.5,-3.5]],"ground_names":[],"ground_rotations":[],"connectors":[],"boundary":{},"rotations":{},"crossings":[],"label_offsets":[],"pin_grid":0.25}]]}
+# @ooc-layout-end

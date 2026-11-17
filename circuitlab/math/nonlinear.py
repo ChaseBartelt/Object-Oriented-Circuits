@@ -23,6 +23,7 @@ class TimeDomain:
 
     def __init__(self, circuit, step=None):
         circuit.require_models()
+        circuit.require_values()
         self.circuit = circuit
         self.parts = circuit.components
         self.nodes = circuit.nodes
@@ -30,6 +31,9 @@ class TimeDomain:
         if step is not None and (not math.isfinite(step) or step <= 0):
             raise CircuitError("Enter a positive time step.")
         self.time = 0.0
+        if any(part.kind == "Z" for part in self.parts):
+            raise CircuitError("Theoretical impedance Z has no time-domain model. "
+                               "Use physical R/L/C components for transient or nonlinear simulation.", code="UnsupportedComponent")
         if not self.parts or circuit.mode != "dc":
             raise CircuitError("Run time simulation on a circuit with DC sources.")
         if len({part.name.casefold() for part in self.parts}) != len(self.parts):

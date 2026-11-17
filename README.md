@@ -24,6 +24,7 @@ Open existing `.ckt` or `.txt` files with **File → Open**. Click **Compile / S
 
 - **Schematic** shows the circuit. Click a wire or connector to highlight the whole node. Click a component label for its voltage and current. Junction dots show connections and gaps show unconnected crossings. Use **Fit**, the zoom buttons, or the mouse wheel to explore the drawing.
 - Drag components, packages, grounds, and labeled connectors to move them. Drag a horizontal wire up or down or a vertical wire left or right. Hold **Shift** while moving a symbol for diagonal leads. Right-click a part or ground and choose **Rotate clockwise** or **Rotate counterclockwise** to turn it 90°. Press **Ctrl+Z** in the schematic to undo a placement edit. **Reset placement** restores the automatic layout.
+- Right-click a wire and choose **Split** to replace its continuous connection with matching labels. On a ground wire, this creates separate ground symbols instead. Drag a split end onto another segment of the **same node** to reconnect it; redundant split labels disappear. A wire on the other side of a resistor or another component is a different node and cannot be joined this way. These are layout edits, including undo and saved placement; the circuit source connections stay intact.
 - **Ctrl+click** components and packages to toggle their selection, or hold **Ctrl** and drag from empty space to draw a selection box. Drag any selected item to move the group. Click empty space to clear the selection.
 - **Grid** shows faint snap rows and columns, with a darker line every four intervals and no dots. Parts, grounds, pin ends, and wire segments always snap to grid steps, even with **Alt** held or the grid hidden. Alignment magnets only choose positions on the grid. Labels remain freely movable. Blocked moves show a prohibited cursor and keep the last valid position; releasing commits that position. Placement edits leave circuit values and connections unchanged.
 - **Align to grid** adjusts the whole visible circuit, including opened chip contents, in one undoable step. It trims component leads to grid-sized lengths, spaces device pins on the grid, and reconnects wires, grounds and connector ends. **Ctrl+Z** restores the previous arrangement; **Save layout** keeps the aligned geometry for next time. New automatic drawings use the same alignment when the connection checks succeed. Saved circuit and shared gate layouts are kept until you explicitly align them. If a crowded drawing cannot align without joining different nets, the action leaves it unchanged. Zoom in to see the finer rows. Customize grid colors, line width and major spacing at the top of `circuitlab/viewer/schematic.py`; movement spacing and magnet strength are in `circuitlab/viewer/snapping.py`.
@@ -32,6 +33,8 @@ Open existing `.ckt` or `.txt` files with **File → Open**. Click **Compile / S
 - Chip defaults persist in the same per-user app settings as gate defaults, under `device-layouts/v1/<name>` (gate keys remain unchanged). **Restore automatic → Apply to all instances** disables only the selected default and keeps its saved design for **Use saved layout**. Previews connect a declared `gnd` pin to `0`. If an override or different exposed-pin structure does not fit the saved geometry, the viewer uses automatic placement instead of changing connections. Applying a shared default does not rewrite circuit source or circuit-specific saved layouts. The browser is implemented in `circuitlab/viewer/device_layouts.py`; library discovery, persistence and instance mapping are in `circuitlab/layout/devices.py`.
 - **Save layout** stores drawing edits inside the `.ckt` file in a managed `# @ooc-layout-begin` / `# @ooc-layout-end` comment block. Carry the `.ckt` file when moving the project. Existing `.ckt.layout.json` files still load and are copied into comments on save; the old JSON is retained as a backup. Embedded layouts take priority when both exist. In VS Code, hover over a wire argument to see a representative connected path with the hovered net in blue, or over a gate/chip name for its reference symbol or declared package pinout.
 - **Results** and **Analysis window** display the same quantities, equations, and values. Search by quantity. Labels display spaces in place of underscores, while circuit code uses the original identifiers.
+- **Logic simulation** appears for digital OOC chips in the IDE viewer. Toggle inputs, watch output indicators, use **Step** for one clock cycle, or **Run / Pause** for continuous simulation. **Reset** restores initial state and clears the trace. Select a signal to inspect its digital waveform and value. The schematic's live wire colors show logical **1** in green and **0** in gray; selected wires remain blue. These controls do not edit the source or saved layout.
+- In **Logic simulation → Schematic**, click an input switch directly on the diagram; output lights and wires update in the same view. Clocked outputs advance with **Run** or **Step**, including the two-stage DE10-Lite input delay. Click the chip to open its hood and see compiled signal dependencies, register stages and live internal values; click its header to close it. Hover internal nodes for their expressions and clock information, or click a signal to select its trace. Zoom with the wheel and drag empty space to pan. The **Inputs** and **Outputs** arrow buttons beside **Run / Step / Reset** independently collapse the duplicate control panels. Routine status text and compiler diagnostics stay hidden on this tab; a message appears only if simulation fails.
 - **Render schematic** draws a parseable circuit when the solver cannot calculate its voltages and currents.
 - **FPGA…** opens the DE10-Lite `HYBRID01` workflow: **Build from OOC**, **Refresh cables**, select **USB-Blaster**, then **Program FPGA**. The viewer builds its currently loaded saved file with Quartus and displays progress in a log. **Open build folder** opens generated files and reports. Source changes invalidate the build; saving never programs hardware automatically. Quartus with MAX 10 support and the USB-Blaster driver must be installed separately. This profile uses the `HYBRID01` chip name, the onboard 50 MHz clock, any subset of SW0–SW9 and LEDR0–LEDR9, and optional `AUDIO_OUT`; it programs a volatile `.sof`, not power-on flash. See the [board guide](fpga/de10_lite/README.md).
 
@@ -118,6 +121,7 @@ Chips and gates export as hierarchical blocks. Saved internal placements are use
 | `series name { … }` | Defines a two-terminal section. `parallel name { … }` connects every branch across the two terminals. Both also accept explicit headers. A direct section can specify one input and end with `return wire;`. |
 | `circuit name { … }` | Defines a reusable circuit with default terminals `a` and `b`. For a different terminal list, write a header such as `circuit name(input, output, ground) { … }`. |
 | `R1(1k) between(a, b);` | Places a component between two wires at the top level or inside a method. Existing node rows also work. |
+| `R1 between(a, b);`, `Z1 between(a, b);` | Place a component with an unspecified value. Value parentheses are optional for R, C, L, V, I, and Z; write `(value)` when assigning one. Numerical analysis requires values. |
 | `main { name(in, out); }` | Calls section definitions using actual wires. Every call has its own component and internal wire names. |
 | `op1(0, sum, out);` | Places an ideal op amp with `in+`, `in-`, and `out` in that order. `(opamp U1)` … `(end opamp)` also accepts named pin assignments. |
 | `transQ1(b, c, e, npn);` | Places transistor Q1 with base, collector, emitter, and polarity in that order. |
@@ -130,6 +134,26 @@ Chips and gates export as hierarchical blocks. Saved internal placements are use
 | `#`, `## @param input` | Line comments and highlighted comment annotations. |
 
 Bare numbers use base SI units. Common prefixes include `k`, `m`, `u`, and `n`. Use `examples/rc_lowpass.ckt` for an AC filter and `examples/three_band_mixer.ckt` for a 63-component DC + AC circuit.
+
+### Theoretical complex impedances
+
+Use `Zname(R+jX) between(a,b);` to place a fixed complex impedance in ohms for AC phasor analysis. The schematic shows an impedance block. Positive reactance is inductive; negative reactance is capacitive. For example:
+
+```text
+f = 1k
+Vac(1 Vpk) between(input, 0);
+Zs(2-j2) between(input, inv);
+Zf(4+j4) between(output, inv);
+op1(0, inv, output);
+```
+
+The ideal inverting amplifier has gain `-Zf/Zs = -2j`, so the output is **2 V peak at −90°**, or **1.414214 V RMS at −90°**. The op-amp pin order is `in+, in-, out`. Open [the complete example](examples/theoretical/complex_impedance_amplifier.ckt) to solve or render it.
+
+Leave a theoretical impedance unspecified with `Z1 between(output, 0);`. It remains connected in the schematic and displays just its title, with no value or unit line. Defined complex values remain visible. The same optional-value syntax works for resistors, capacitors, inductors, voltage sources and current sources. Empty parentheses such as `Z1()` also remain accepted. Numerical analysis lists the parts that still need values; an unspecified value does not mean a short circuit or an open circuit. This also works in reusable circuits. Open [the unspecified-impedance example](examples/theoretical/unspecified_impedance.ckt) for a drawing to fill in later.
+
+Right-click a Z block and choose **Edit value…** to enter a complex value such as `2-j2` or `4+j4`, or clear the field to make it unspecified again. Filling a value adds its parentheses in the source; clearing a placed R/C/L/Z value removes the parentheses. The edit recalculates the circuit when all required values are present. **Ctrl+Z** restores the previous value and source; Save/Discard works the same way as resistor value edits.
+
+`Z` is a theoretical AC-only component: its value stays fixed when frequency changes. It does not define a DC or transient response and cannot be exported to SPICE/LTspice. Use explicit physical R/L/C parts for those workflows. Zero impedance is rejected; use the same wire name for a direct connection. Existing standalone `Z = ...` quantity calculations remain available.
 
 ### Bipolar transistors
 
@@ -303,7 +327,7 @@ Chips with `input` and `output` declarations export to Verilog. Chips and gates 
 
 ### Clocked digital logic
 
-[`examples/digital/HYBRID01.ckt`](examples/digital/HYBRID01.ckt) implements the complete 50 MHz switch-controlled 440/880 Hz phase accumulator and blinking LED example in OOC. Use the digital Verilog exporter; the electrical solver does not simulate clocked HDL.
+[`examples/digital/HYBRID01.ckt`](examples/digital/HYBRID01.ckt) implements the complete 50 MHz switch-controlled 440/880 Hz phase accumulator and blinking LED example in OOC. Use **Logic simulation** in the IDE viewer to inspect its digital behavior, or export Verilog for synthesis. The electrical solver remains separate from the digital simulator.
 
 The [DE10-Lite project and programming guide](fpga/de10_lite/README.md) supplies
 HYBRID01's board pin assignments, 50 MHz timing constraint, the viewer's
@@ -373,6 +397,20 @@ Inside `every(...)`, Hz increments use the effective update rate: input clock fr
 - Ports and combinational output assignments retain their existing one-bit syntax. Internal vectors are unsigned; `phase[32]` declares 32 bits and `phase[31]` reads its most significant bit.
 
 The exporter uses initialized registers and nonblocking Verilog assignments. Provide the actual board's pin assignments, I/O standards, and clock timing constraints in your FPGA project. A two-stage switch synchronizer does not debounce the switch. Tests compare HYBRID01 state updates against its VHDL behavior using a test-only evaluator of the emitted subset; this is not a substitute for an independent HDL simulation, synthesis, or board validation.
+
+### Interactive digital simulation
+
+Open [`examples/digital/logic_playground.ckt`](examples/digital/logic_playground.ckt) and select **Logic simulation**. Toggle `a` and `b` to test AND/XOR outputs. Run the 1 kHz clock to see the counter and `every(500ms)` blink, or step through individual cycles. The trace counts simulated cycles; simulation speed depends on your computer and is not the physical clock speed.
+
+The trace shows the selected signal and its upstream dependencies; **All ports** adds the remaining inputs and outputs. Repeated levels are compressed while retaining transition points, with a bounded history of 512 points. The horizontal axis uses clock cycles, or input events for combinational chips. Clock pins are omitted from traces and stay neutral in the schematic because samples are taken between full clock cycles. Click a clock pin to see its declared rate.
+
+For [`examples/digital/de10_switch_led.ckt`](examples/digital/de10_switch_led.ckt), the **DE10-Lite** profile uses the same generated synchronization wrapper as **Build from OOC**. Toggle `SW0` and step twice: `LEDR0` follows after two rising edges. The other nine switch/LED pairs behave independently. The **OOC** profile runs the chip's literal declarations without the board wrapper; direct combinational assignments then update immediately. A compatible board design initially selects DE10-Lite; you can choose the profile explicitly.
+
+The simulator evaluates only the Verilog subset emitted by OOC, with unsigned widths, initialized state, simultaneous clocked updates, `if/else`, Hz increments, and `every(...)` timers. It supports one chip with at most one clock input. It does not load arbitrary Verilog or emulate an ARM processor. Signal displays and traces represent ideal two-state logic, sampled after each full clock cycle; they do not model analog voltage/current, propagation delays, unknown/high-impedance states, switch bounce or metastability. They are software simulation, not readings from a connected FPGA. Large physical clock rates such as 50 MHz require many simulated cycles; use the small-clock playground for quick visual demonstrations.
+
+For an electrical circuit, the **Results** tab instead contains the existing voltage oscilloscope: choose a node, time step and optional initial capacitor voltage, then **Run**. For example, open `examples/bjt_oscillator.ckt` and follow its initial-condition instructions. Its voltages come from the native electrical model, with that model's convergence and accuracy limits. Digital traces never substitute logic 0/1 for those voltage measurements.
+
+Implementation: `circuitlab/math/digital.py` evaluates compiled logic; `circuitlab/viewer/digital.py` contains the controls, indicators and digital traces; `circuitlab/viewer/schematic.py` paints live logic colors; `circuitlab/viewer/window.py` connects them. The analog oscilloscope remains in `circuitlab/viewer/scope.py`.
 
 ## Compact circuit examples
 

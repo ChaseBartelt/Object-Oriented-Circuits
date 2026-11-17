@@ -64,7 +64,9 @@ def elaborate_document(source, *, path=None, definitions=None):
     ]
     instances = []
     expanded = expand_main(rows, instances, imports=imports)
-    mode_source = source
+    # Typed and imported methods may introduce AC impedances or source units.
+    expanded_source = "\n".join(text for text, _, _ in expanded)
+    mode_source = source + "\n" + expanded_source
     if any(is_control_statement(text) for section in (rows, imports) for text, _, _ in section):
-        mode_source = "\n".join(text for text, _, _ in expanded)
+        mode_source = expanded_source
     return CircuitProgram(expanded, connectors, instances, mode_source)

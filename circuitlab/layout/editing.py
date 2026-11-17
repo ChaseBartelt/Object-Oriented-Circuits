@@ -299,38 +299,77 @@ def move_ground(circuit, original, point, delta, *, diagonal=False, align_axis=N
     )
 
 
-def move_connector(circuit, original, index, end, *, join=None, diagonal=False):
-    """Move a labeled wire end, optionally joining it to a matching end."""
+def _physical_islands(drawing, net, extra=()):
+    """Identify wire connectivity without treating matching labels as wires."""
+    anchors = route_anchors(drawing, net) | set(map(clean_point, extra))
+    graph = wire_graph(drawing.wires.get(net, ()), anchors)
+    islands = {}
+    for point in sorted(graph.keys() | anchors):
+        if point in islands:
+            continue
+        island = len(islands)
+        pending = [point]
+        while pending:
+            current = pending.pop()
+            if current not in islands:
+                islands[current] = island
+                pending.extend(graph.get(current, ()))
+    return graph, islands
+
+
+def _prune_joined_connectors(circuit, drawing, net):
+    """Keep one label per disconnected island, or none once fully wired."""
+    _, islands = _physical_islands(drawing, net)
+    disconnected = len(set(islands.values())) > 1
+    retained, removed, seen = [], {}, set()
+    for port in drawing.connectors:
+        wire, pos, *_ = port
+        island = islands.get(clean_point(pos)) if wire == net else None
+        if wire != net or (disconnected and island not in seen):
+            retained.append(port)
+            if wire == net:
+                seen.add(island)
+        else:
+            removed[pos] = None
+    # Coincident markers may leave a retained label at the same coordinate.
+    for _, pos, *_ in retained:
+        removed.pop(pos, None)
+    drawing = replace(drawing, connectors=retained,
+                      label_offsets=_move_endpoint_labels(drawing, connectors=removed))
+    replace_route(drawing, net, drawing.wires.get(net, ()))
+    drawing.crossings = {}
+    _mark_crossings(drawing)
+    return drawing if preserves_nets(circuit, drawing) else None
+
+
+def move_connector(circuit, original, index, end, *, join=None, join_wire=False, diagonal=False):
+    """Move a label; join a matching label or a different island of its exact net."""
     net, start, name, left, below = original.connectors[index]
     end = clean_point(end)
-    if join is None and end == clean_point(start):
+    if join is None and not join_wire and end == clean_point(start):
         return original
+    if join_wire:
+        if join is not None or not any(
+            segments_intersect((end, end), edge) for edge in original.wires.get(net, ())
+        ):
+            return None
+        _, islands = _physical_islands(original, net, (start, end))
+        if islands[clean_point(start)] == islands[end]:
+            return None
     if join is not None:
         other_net, other_end, other_name, *_ = original.connectors[join]
         if index == join or net != other_net or name != other_name or end != clean_point(other_end):
             return None
-    if join is None:
-        ports = list(original.connectors)
-        ports[index] = net, end, name, left, below
-        endpoints = {start: end}
-    else:
-        ports = [port for i, port in enumerate(original.connectors) if i not in (index, join)]
-        endpoints = {start: None, end: None}
+    ports = list(original.connectors)
+    ports[index] = net, end, name, left, below
     drawing = _reroute_move(
         circuit, original, replace(
-            original, connectors=ports, label_offsets=_move_endpoint_labels(original, connectors=endpoints)
+            original, connectors=ports, label_offsets=_move_endpoint_labels(original, connectors={start: end})
         ),
         ((net, start),), ((net, end),), start[0], moving_connector=index, diagonal=diagonal,
     )
-    if drawing is None and join is not None and any(port[0] == net for port in ports):
-        # A third disconnected end still needs a label on the newly joined run.
-        drawing = _reroute_move(
-            circuit, original, replace(
-                original, connectors=[*ports, original.connectors[join]],
-                label_offsets=_move_endpoint_labels(original, connectors={start: None}),
-            ),
-            ((net, start),), ((net, end),), start[0], moving_connector=index, diagonal=diagonal,
-        )
+    if drawing is not None and (join is not None or join_wire):
+        drawing = _prune_joined_connectors(circuit, drawing, net)
     return drawing
 
 
@@ -371,9 +410,9 @@ def _move_endpoint_labels(layout, *, grounds=None, connectors=None):
 
 
 def split_wire(circuit, original, net, edge, at, *, grid=0, origin=(0, 0)):
-    """Replace a short span of wire with two matching labeled ends."""
+    """Cut a wire into matching labeled ends, or local ground symbols."""
     a, b = sorted(map(clean_point, edge))
-    if a == b or net in circuit.grounds:
+    if a == b or net not in original.wires:
         return None
     anchors = route_anchors(original, net) | {a, b}
     graph = wire_graph(original.wires[net], anchors)
@@ -394,7 +433,15 @@ def split_wire(circuit, original, net, edge, at, *, grid=0, origin=(0, 0)):
     direction = tuple((v - u) / length for u, v in zip(a, b))
     along_run = sum((coordinate - origin) * step for coordinate, origin, step in zip(at, a, direction))
     margin = min(0.6, length / 4)
-    center = max(margin, min(length - margin, along_run))
+    wide_ground = net in circuit.grounds and length >= 2.5 + grid
+    if wide_ground:
+        # Two inward-facing ground glyphs and captions need substantially more
+        # space than connector dots. Include a grid cell for rounding clearance.
+        margin = 2.0 + grid
+        padding = margin / 2 + min(.25, (length - margin) / 2)
+    else:
+        padding = margin
+    center = max(padding, min(length - padding, along_run))
     low, high = (
         clean_point(along(a, b, (center + side * margin / 2) / length))
         for side in (-1, 1)
@@ -418,15 +465,51 @@ def split_wire(circuit, original, net, edge, at, *, grid=0, origin=(0, 0)):
             name = f"N{suffix}"
             suffix += 1
     drawing = replace(
-        original, wires=dict(original.wires), junctions=dict(original.junctions),
+        original, wires=dict(original.wires), junctions={wire: list(dots) for wire, dots in original.junctions.items()},
         labels=dict(original.labels), crossings={},
-        connectors=[*original.connectors, (net, low, name, True, False),
-                    (net, high, name, False, True)],
+        connectors=list(original.connectors),
     )
+    if net in circuit.grounds:
+        drawing.grounds = list(dict.fromkeys([*original.grounds, low, high]))
+        drawing.ground_names = {**original.ground_names, low: net, high: net}
+        if wide_ground and math.dist(low, high) >= 2.0 - 1e-8:
+            rotations = (3, 1) if axis == 0 else (2, 0)
+        else:
+            # Short wires cannot fit two facing symbols: point their grounds
+            # toward opposite sides of the wire instead of overlapping them.
+            rotations = (0, 2) if axis == 0 else (1, 3)
+        drawing.ground_rotations = {**original.ground_rotations, low: rotations[0], high: rotations[1]}
+    else:
+        drawing.connectors.extend([(net, low, name, True, False), (net, high, name, False, True)])
     edges = [(p, q) for p, neighbors in graph.items() for q in neighbors if p < q]
     replace_route(drawing, net, [*edges, (a, low), (high, b)])
+    if net in circuit.grounds:
+        _prune_split_grounds(drawing, net, (low, high))
     _mark_crossings(drawing)
     return drawing if preserves_nets(circuit, drawing) else None
+
+
+def _prune_split_grounds(drawing, net, added):
+    """Discard ground-only cutoffs and old dangling ground leads now replaced."""
+    graph, islands = _physical_islands(drawing, net)
+    pins = {clean_point(pos) for wire, pos in drawing.pins() if wire == net}
+    pins.update(clean_point(pos) for wire, pos in drawing.boundary.items() if wire == net)
+    useful = {islands[pos] for pos in pins}
+    changed = {islands[point] for point in added if point in islands}
+    removed = {
+        pos: None for pos in drawing.grounds
+        if drawing.ground_names.get(pos, "0") == net and (
+            islands[clean_point(pos)] not in useful
+            or (pos not in added and pos not in pins
+                and islands[clean_point(pos)] in changed and len(graph.get(clean_point(pos), ())) == 1)
+        )
+    }
+    drawing.grounds = [pos for pos in drawing.grounds if pos not in removed]
+    drawing.ground_names = {pos: wire for pos, wire in drawing.ground_names.items() if pos not in removed}
+    drawing.ground_rotations = {pos: turns for pos, turns in drawing.ground_rotations.items() if pos not in removed}
+    drawing.label_offsets = _move_endpoint_labels(drawing, grounds=removed)
+    edges = [edge for edge in drawing.wires.get(net, ()) if islands[clean_point(edge[0])] in useful]
+    replace_route(drawing, net, edges)
 
 
 def _reroute_move(

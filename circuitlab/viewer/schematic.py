@@ -30,6 +30,8 @@ INK = QColor("#192633")
 NET = QColor("#006565")
 ACCENT = QColor("#006dab")
 PROBE = QColor("#974616")
+LOGIC_HIGH = QColor("#159b71")
+LOGIC_LOW = QColor("#718096")
 SCALE = 38
 
 # Grid appearance. Movement spacing and magnet strength are in snapping.py.
@@ -114,6 +116,7 @@ class SchematicView(QGraphicsView):
         self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.highlight = None
         self.trace_nets = set()
+        self.logic_values = {}
         self.paths = {}
         self.net_items = defaultdict(list)
         self.anchors = {}
@@ -199,6 +202,7 @@ class SchematicView(QGraphicsView):
 
     def clear(self, *, preserve_placement=False):
         self.placement_records = self.placements() if preserve_placement else {}
+        self.logic_values.clear()
         self._clear_scene()
         self.circuit = None
         self.layout = None
@@ -312,6 +316,8 @@ class SchematicView(QGraphicsView):
         self.label_offsets = self.layout.label_offsets
         self.paint_selection(preview)
         self.update_pins(self.saved_pins, fit=False, resize_scene=False)
+        for net in self.logic_values:
+            self.paint_highlight(net, False)
         scene = self.scene()
         if preview is not None:
             if selected:
@@ -729,7 +735,7 @@ class SchematicView(QGraphicsView):
     def redraw(self, pins):
         if self.circuit is not None:
             self.saved_pins = pins
-            self._redraw()
+            self._redraw(selected=self.highlight)
 
     def reset_placement(self):
         if not self.isEnabled() or self.drag is not None:
@@ -888,16 +894,30 @@ class SchematicView(QGraphicsView):
         self.highlight = name
 
     def paint_highlight(self, net, selected):
-        color = ACCENT if selected else INK
+        level_color = (
+            LOGIC_HIGH if self.logic_values[net] else LOGIC_LOW
+        ) if net in self.logic_values else None
+        color = ACCENT if selected else level_color or INK
+        label_color = ACCENT if selected else level_color or NET
         if net in self.paths:
             self.paths[net].setPen(self.pen(color, 2.6 if selected else 1.15))
         for item in self.net_items.get(net, ()):
             if item.data(0) == "ground_stroke":
                 item.setPen(self.pen(color, 2.6 if selected else 1.55))
             elif isinstance(item, QGraphicsSimpleTextItem):
-                item.setBrush(ACCENT if selected else NET)
+                item.setBrush(label_color)
             else:
-                item.setPen(self.pen(ACCENT if selected else NET, 1.8 if selected else 1.2))
+                item.setPen(self.pen(label_color, 1.8 if selected else 1.2))
+
+    def set_logic_values(self, values):
+        """Overlay simulated 0/1 levels without changing layout or source."""
+        previous = self.logic_values
+        self.logic_values = {
+            name: value for name, value in values.items()
+            if (name in self.paths or name in self.net_items) and value in (0, 1)
+        }
+        for net in previous.keys() | self.logic_values.keys():
+            self.paint_highlight(net, net == self.highlight or net in self.trace_nets)
 
     def probe_wire(self, net):
         self.highlight_net(None if net == self.highlight else net)
@@ -1088,6 +1108,8 @@ class SchematicView(QGraphicsView):
                     for i in range(10)
                 ]
             )
+        elif part.kind == "Z":
+            path([(-end, -0.3), (end, -0.3), (end, 0.3), (-end, 0.3), (-end, -0.3)])
         elif part.kind == "C":
             end = 0.13
             for xx in (-end, end):
@@ -1387,6 +1409,32 @@ class SchematicView(QGraphicsView):
             if drawing is not None:
                 drag.preview = drawing
                 return
+        # A split end may rejoin anywhere on its own net, including a branch
+        # before the other label. The layout editor checks physical islands;
+        # equal voltages or wires across a component are never enough to join.
+        candidates = set()
+        for a, b in drag.original.wires.get(net, ()):
+            if a[0] == b[0]:
+                pos = (a[0], min(max(end[1], min(a[1], b[1])), max(a[1], b[1])))
+            elif a[1] == b[1]:
+                pos = (min(max(end[0], min(a[0], b[0])), max(a[0], b[0])), a[1])
+            else:
+                dx, dy = b[0] - a[0], b[1] - a[1]
+                t = min(1, max(0, ((pointer[0] - a[0]) * dx + (pointer[1] - a[1]) * dy) / (dx * dx + dy * dy)))
+                pos = (round(a[0] + t * dx, 8), round(a[1] + t * dy, 8))
+            candidates.add(pos)
+        for pos in sorted(candidates, key=lambda p: math.dist(pointer, p)):
+            distance = math.dist(pointer, pos)
+            if distance > acquire:
+                break
+            if distance >= math.dist(start, pos) or not drag.accepts_offset(tuple(p - s for p, s in zip(pos, start))):
+                continue
+            drawing = move_connector(
+                drag.circuit, drag.original, index, pos, join_wire=True, diagonal=drag.diagonal
+            )
+            if drawing is not None:
+                drag.preview = drawing
+                return
         drag.preview = move_connector(
             drag.circuit, drag.original, index, end, diagonal=drag.diagonal
         )
@@ -1570,7 +1618,7 @@ class SchematicView(QGraphicsView):
                     menu = QMenu(self)
                     if self.source_editing and kind == 'component':
                         part = next((p for p in self.circuit.components if p.name == name), None)
-                        if part and part.kind in {'R', 'C', 'L'}:
+                        if part and part.kind in {'R', 'C', 'L', 'Z'}:
                             menu.addAction('Edit value…', lambda: self.value_requested.emit(name))
                     if kind == "hood" and name.startswith(METHOD_PREFIX):
                         instance = self.circuit.instances[int(name.removeprefix(METHOD_PREFIX))]
@@ -1607,7 +1655,7 @@ class SchematicView(QGraphicsView):
             menu.addAction("Remove pin", lambda: self.pin_removed.emit(net))
         else:
             menu.addAction("Add pin…", lambda: self.pin_requested.emit(net))
-            if wire and wire[1] == net and net not in self.levels[wire[0]].grounds:
+            if wire and wire[1] == net:
                 pos = self.mapToScene(event.pos()) - self.level_offsets[wire[0]]
                 location = pos.x() / SCALE, -pos.y() / SCALE
                 menu.addAction("Split", lambda: self.split_connection(*wire, location))

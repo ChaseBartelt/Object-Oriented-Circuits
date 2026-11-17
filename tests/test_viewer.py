@@ -432,6 +432,143 @@ window.close()
             self.assertTrue(self.window.export_verilog())
         self.assertIn("assign y = !a;", target.read_text())
 
+    def open_logic_playground(self):
+        source = (ROOT / 'examples/digital/logic_playground.ckt').read_text(encoding='utf-8')
+        self.path.write_text(source, encoding='utf-8')
+        self.assertTrue(self.window.open_path(self.path))
+        self.assertFalse(self.window.session.issues)
+        self.assertIsNotNone(self.window.digital.simulation)
+        self.assertTrue(self.window.views.isTabVisible(self.window.digital_tab))
+        return source
+
+    def test_digital_inputs_color_wires_and_probe_without_an_editor(self):
+        from circuitlab.viewer.schematic import ACCENT, LOGIC_HIGH, LOGIC_LOW
+
+        self.open_logic_playground()
+        digital, schematic = self.window.digital, self.window.schematic
+        self.assertFalse(self.window.findChildren(QPlainTextEdit))
+        self.assertNotIn('clk', schematic.logic_values)
+        self.window.probe('node', 'clk')
+        self.assertIn('simulated clock (1000 Hz)', self.window.status.text())
+        self.assertEqual(schematic.logic_values['and_led'], 0)
+        self.assertEqual(schematic.paths['and_led'].pen().color(), LOGIC_LOW)
+        digital.input_buttons['a'].click()
+        self.assertEqual(digital.simulation.values['xor_led'], 1)
+        digital.input_buttons['b'].click()
+        self.assertEqual(digital.simulation.values['and_led'], 1)
+        self.assertEqual(schematic.paths['and_led'].pen().color(), LOGIC_HIGH)
+        schematic.probe_wire('and_led')
+        self.assertEqual(digital.probe.currentText(), 'and_led')
+        self.assertEqual(schematic.paths['and_led'].pen().color(), ACCENT)
+        digital.set_input('a', 0)
+        self.assertEqual(schematic.logic_values['and_led'], 0)
+        self.assertEqual(schematic.paths['and_led'].pen().color(), ACCENT)
+        schematic.redraw(self.window.pins)
+        self.assertEqual(schematic.highlight, 'and_led')
+        self.assertEqual(schematic.paths['and_led'].pen().color(), ACCENT)
+        self.assertEqual(schematic.paths['xor_led'].pen().color(), LOGIC_HIGH)
+        schematic.probe_wire('and_led')
+        self.assertEqual(schematic.paths['and_led'].pen().color(), LOGIC_LOW)
+
+    def test_digital_run_step_and_probe_preserve_source_and_placement(self):
+        self.open_logic_playground()
+        source = self.window.session.source
+        digital, schematic = self.window.digital, self.window.schematic
+        original_layout = pack_layout(schematic.layout)
+        original_records = schematic.placements()
+        original_disk = self.path.read_bytes()
+        digital.set_input('a', 1)
+        digital.step()
+        self.assertEqual(digital.simulation.values['counter'], 1)
+        self.assertEqual(digital.simulation.cycles, 1)
+        digital.probe.setCurrentText('counter')
+        self.assertIn('counter', digital.waveform.traces)
+        self.assertEqual(digital.waveform.history[-1][1]['counter'], 1)
+        digital.toggle()
+        self.assertTrue(digital.timer.isActive())
+        digital.advance()
+        digital.toggle()
+        self.assertFalse(digital.timer.isActive())
+        self.assertGreater(digital.simulation.cycles, 1)
+        self.assertEqual(self.path.read_bytes(), original_disk)
+        self.assertEqual(self.window.session.source, source)
+        self.assertEqual(pack_layout(schematic.layout), original_layout)
+        self.assertEqual(schematic.placements(), original_records)
+        self.assertFalse(self.window.placement_dirty)
+        self.assertFalse(self.window.source_tools.value_changes)
+
+    def test_digital_source_refresh_resets_state_and_keeps_selected_tab(self):
+        source = self.open_logic_playground()
+        digital = self.window.digital
+        self.window.views.setCurrentWidget(digital)
+        digital.set_input('a', 1)
+        digital.step()
+        original = digital.simulation
+        self.assertEqual(original.values['counter'], 1)
+        digital.toggle()
+        self.path.write_text(source.replace('counter[4];', 'counter[4] = 3;'), encoding='utf-8')
+        self.assertTrue(self.window.refresh_from_editor(self.path))
+        self.assertIsNot(digital.simulation, original)
+        self.assertFalse(digital.timer.isActive())
+        self.assertEqual(digital.simulation.cycles, 0)
+        self.assertEqual(digital.simulation.values['counter'], 3)
+        self.assertEqual(digital.simulation.values['a'], 0)
+        self.assertIs(self.window.views.currentWidget(), digital)
+        self.assertTrue(all(cycle == 0 for cycle, _ in digital.waveform.history))
+
+    def test_digital_to_analog_or_invalid_clears_running_simulation_and_colors(self):
+        invalid = 'chip broken(a,y) { a=input; y=output; y=missing; }'
+        for source in (DIVIDER, invalid):
+            with self.subTest(source=source):
+                self.open_logic_playground()
+                digital = self.window.digital
+                digital.set_input('a', 1)
+                digital.toggle()
+                self.assertTrue(digital.timer.isActive())
+                self.path.write_text(source, encoding='utf-8')
+                self.assertTrue(self.window.open_path(self.path))
+                self.assertFalse(digital.timer.isActive())
+                self.assertIsNone(digital.simulation)
+                self.assertEqual(digital.input_buttons, {})
+                self.assertEqual(digital.output_labels, {})
+                self.assertEqual(list(digital.waveform.history), [])
+                self.assertEqual(self.window.schematic.logic_values, {})
+                if source == DIVIDER:
+                    self.assertFalse(self.window.views.isTabVisible(self.window.digital_tab))
+                    self.assertIsNotNone(self.window.solution)
+                else:
+                    self.assertTrue(self.window.session.issues)
+
+    def test_closing_viewer_stops_digital_clock(self):
+        self.open_logic_playground()
+        digital = self.window.digital
+        digital.toggle()
+        self.assertTrue(digital.timer.isActive())
+        self.assertTrue(self.window.close())
+        self.assertFalse(digital.timer.isActive())
+
+    def test_logic_tab_hides_diagnostics_and_other_tabs_restore_them(self):
+        self.open_logic_playground()
+        self.assertTrue(self.window.issues.isVisible())
+        self.window.views.setCurrentWidget(self.window.digital)
+        self.assertTrue(self.window.issues.isHidden())
+        self.window.views.setCurrentWidget(self.window.results)
+        self.assertTrue(self.window.issues.isVisible())
+        self.window.views.setCurrentWidget(self.window.digital)
+        self.path.write_text('chip broken(a,y) { a=input; y=output; y=missing; }', encoding='utf-8')
+        self.assertTrue(self.window.open_path(self.path))
+        self.assertIs(self.window.views.currentWidget(), self.window.digital)
+        self.assertTrue(self.window.issues.isHidden())
+        self.assertIn('missing', self.window.digital.status.text())
+        self.window.views.setCurrentIndex(0)
+        self.assertTrue(self.window.issues.isVisible())
+        self.assertIn('missing', self.window.issues.item(0).text())
+        self.window.views.setCurrentWidget(self.window.digital)
+        self.path.write_text(DIVIDER, encoding='utf-8')
+        self.assertTrue(self.window.open_path(self.path))
+        self.assertFalse(self.window.views.isTabVisible(self.window.digital_tab))
+        self.assertTrue(self.window.issues.isVisible())
+
     def test_included_chip_export_restores_saved_collapsed_child_layout(self):
         definition = self.path.with_name("block.ckt")
         definition.write_text("chip block(a,b) { R1(1k) between(a,b); }")

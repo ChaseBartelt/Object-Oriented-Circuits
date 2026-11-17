@@ -163,6 +163,15 @@ class SourceInfo:
                 if method:
                     kind, declared, pins = method
                     return f"{declared}({pins})\nCall this {kind} section with wires in the listed order."
+                if name.upper().startswith("Z") and re.match(r"\s*(?:\([^()]*\)\s*)?between\s*\(", code[match.end():], re.I):
+                    return (
+                        f"{name}(R + jX) between(positive, negative)\n"
+                        "Theoretical complex impedance in ohms for AC phasor analysis. "
+                        "R is resistance; X is reactance (positive inductive, negative capacitive). "
+                        "This fixed value does not vary with frequency. "
+                        "Omit the value parentheses for an unspecified schematic block; fill in a value before numerical analysis. "
+                        "Use physical R/L/C parts for DC, transient simulation, or SPICE export."
+                    )
                 if TRANS_CALL.fullmatch(name) and re.match(r"\s*\(", code[match.end():]):
                     return (
                         f"{name}(base, collector, emitter, npn or pnp, [model])\n"
@@ -226,7 +235,7 @@ class SourceInfo:
         start = max(code.rfind(mark, 0, column) for mark in ";{}") + 1
         code, column = re.split(r"[;{}]", code[start:], maxsplit=1)[0], column - start
         match = re.fullmatch(
-            r"\s*([A-Za-z][\w]*)\s*(?:\([^()]*\)\s+between\s*)?"
+            r"\s*([A-Za-z][\w]*)\s*(?:(?:\([^()]*\)\s*)?between\s*)?"
             r"\(((?:[^()]|\([^()]*\))*)\)\s*", code, re.I,
         )
         if match:
@@ -239,7 +248,7 @@ class SourceInfo:
                 if first <= column < last:
                     return line + 1, match[1], index, token[0].strip()
         else:
-            match = re.match(r"\s*([RCLVI][\w]*)\s+(\S+)\s+(\S+)\s+\S", code, re.I)
+            match = re.match(r"\s*([RCLZVI][\w]*)\s+(\S+)\s+(\S+)\s+\S", code, re.I)
             if match:
                 for index in (0, 1):
                     if match.start(index + 2) <= column < match.end(index + 2):

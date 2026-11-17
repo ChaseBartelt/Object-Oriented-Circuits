@@ -48,7 +48,15 @@ class NodalBackend:
     """Solve linear DC or AC networks by modified nodal analysis."""
 
     def solve(self, circuit, *, ac, frequency=None, port=None):
+        circuit.require_values()
         parts = circuit.components
+        if any(part.kind == "Z" for part in parts):
+            if not ac or circuit.mode != "ac":
+                raise CircuitError("Theoretical impedance Z supports AC steady state only; "
+                                   "use physical R/L/C components for DC or transient analysis.", code="UnsupportedComponent")
+            if any(part.kind in {"Q", "S"} for part in parts):
+                raise CircuitError("Theoretical impedance Z cannot be combined with native BJTs or switches: "
+                                   "their native solver supports DC and time-domain analysis, not AC.", code="UnsupportedComponent")
         if any(part.kind in {"Q", "S"} for part in parts):
             if ac or port or circuit.mode != "dc":
                 raise CircuitError("Use DC for the built-in nonlinear operating point. Use SPICE for AC or port analysis.",
@@ -101,7 +109,7 @@ class NodalBackend:
                 if circuit.mode == "mixed" and not ac and kind in "VI"
                 else part.value
             )
-            if kind not in {"R", "C", "L", "X", "V", "I", "O"}:
+            if kind not in {"R", "C", "L", "X", "Z", "V", "I", "O"}:
                 raise CircuitError(
                     f"Unsupported component type {kind}.", code="UnsupportedComponent"
                 )
@@ -122,6 +130,14 @@ class NodalBackend:
                 currents[k] = value
             elif kind == "R":
                 y[k] = 1 / value
+            elif kind == "Z":
+                if not value or not np.isfinite(value):
+                    raise CircuitError(f"{part.name} requires a finite, nonzero AC impedance.")
+                try:
+                    y[k] = 1 / value
+                except (OverflowError, ZeroDivisionError):
+                    raise CircuitError("An element admittance is outside the numeric range.",
+                                       code="NumericalNetwork") from None
             elif kind == "X":
                 if not ac or not value or value.imag:
                     raise CircuitError(
@@ -134,7 +150,7 @@ class NodalBackend:
                 impedance = math.tau * (frequency * value)
                 if impedance:
                     y[k] = -1j / impedance
-            if (kind in "RX" or (ac and kind in "CL")) and (
+            if (kind in "RXZ" or (ac and kind in "CL")) and (
                 not y[k] or not np.isfinite(y[k])
             ):
                 raise CircuitError(

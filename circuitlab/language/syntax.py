@@ -8,7 +8,7 @@ from circuitlab.math.numbers import NUMBER
 
 FREQUENCY = {"f", "T", "w"}
 AC_VOLTAGE = {"V", "Vmag", "Vpk", "Vpp"}
-UNITS = dict(R="ohm", C="F", L="H", X="ohm", V="V", I="A")
+UNITS = dict(R="ohm", C="F", L="H", X="ohm", Z="ohm", V="V", I="A")
 SECTION = re.compile(
     r"(series|parallel|circuit|gate|chip)\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:\(([^()]*)\)\s*)?\{",
     re.I,
@@ -47,11 +47,11 @@ MARKER = re.compile(
 WIRE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_. \t-]*")
 ASSIGNMENT = re.compile(r"([A-Za-z][A-Za-z0-9_]*)\s*=\s*(.*)")
 PIN_DIRECTION = re.compile(r"[\w, \t]+\s*=\s*(input|output)", re.I)
-PARAMETER_TARGET = re.compile(r"[RCLXVI][A-Za-z0-9_]*", re.I)
-PART_ARGUMENT = re.compile(r"([RCL][A-Za-z0-9_]*)\s*\(([^()]+)\)", re.I)
+PARAMETER_TARGET = re.compile(r"[RCLXZVI][A-Za-z0-9_]*", re.I)
+PART_ARGUMENT = re.compile(r"([RCLZ][A-Za-z0-9_]*)(?:\s*\(([^()]*)\))?", re.I)
 PART_PLACEMENT = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)\s+between\s*\(([^()]*)\)", re.I)
 PLACEMENT = re.compile(
-    r"([A-Za-z][A-Za-z0-9_]*)\s*\(((?:[^()]|\([^()]*\))+)\)\s+between\s*\(([^()]*)\)", re.I
+    r"([A-Za-z][A-Za-z0-9_]*)\s*\(((?:[^()]|\([^()]*\))*)\)\s+between\s*\(([^()]*)\)", re.I
 )
 PULSE = re.compile(r"pulse\s*\(([^()]*)\)", re.I)
 SOURCE_WIRE = re.compile(
@@ -108,9 +108,14 @@ def analysis_mode(source):
         )
         if (
             placement
-            and placement[1][0].upper() in "VI"
-            and AC_SOURCE_SUFFIX.search(placement[2])
+            and (placement[1][0].upper() == "Z" or (
+                placement[1][0].upper() in "VI" and AC_SOURCE_SUFFIX.search(placement[2])
+            ))
         ):
+            return "ac"
+        if re.match(r"\s*Z[A-Za-z0-9_]*\s*(?:=|\s+\S+\s+\S+\s+\S)", row, re.I):
+            return "ac"
+        if (bare := PART_PLACEMENT.fullmatch(row.strip())) and bare[1][0].upper() == "Z":
             return "ac"
     return "dc"
 
@@ -172,7 +177,7 @@ def source_rows(source, *, legacy_markers=True):
         if legacy_markers and MARKER.search(line):
             line = MARKER.sub(r"\n\1\n", line)
             line = re.sub(
-                r"[ \t]+((?:[RCLXVI][A-Za-z0-9_]*|measure|wire|ground|f|T|w|phase[VI]|rad\s*/\s*s)[ \t]*=)",
+                r"[ \t]+((?:[RCLXZVI][A-Za-z0-9_]*|measure|wire|ground|f|T|w|phase[VI]|rad\s*/\s*s)[ \t]*=)",
                 r"\n\1",
                 line,
                 flags=re.I,

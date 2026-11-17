@@ -222,7 +222,7 @@ def result_rows(result):
                 "Given" if dc_source else p.equation,
                 p.dc if dc_source else p.value,
                 UNITS[p.kind],
-                source and is_ac,
+                is_ac and (source or p.kind == "Z"),
                 True,
             )
         for node, value in zip(network.nodes, network.voltage):
@@ -278,6 +278,7 @@ def result_rows(result):
                     if is_ac
                     else "Σ I_node = 0 with V_L = 0",
                     "X": "I = Vbranch / (jX)",
+                    "Z": "I = Vbranch / Z",
                 }
                 add(
                     name + " current" + basis,
@@ -300,7 +301,7 @@ def result_rows(result):
                     "P + jQ = V x conj(I), |S| = |P + jQ|",
                     power_text,
                 )
-                if p.kind in "RCLX":
+                if p.kind in "RCLXZ":
                     add(
                         name + " voltage peak",
                         "Vpk = √2 x |Vbranch|",
@@ -390,10 +391,16 @@ def component_labels(circuit):
             labels[p.name] = label
             continue
         unit = UNITS[p.kind]
-        if p.pulse is not None:
+        if p.value is None:
+            if p.kind != "Z":
+                label.append("? " + ("Ω" if unit == "ohm" else unit))
+        elif p.pulse is not None:
             label.append(f"{format_value(p.pulse.low, 'V')} to {format_value(p.pulse.high, 'V')}")
         elif p.equation == "V = I x 0 = 0":
             label.append("short")
+        elif p.kind == "Z":
+            # Keep schematic captions compact; result tables also show polar form.
+            label.append(format_value(p.value, unit, polar=True).split(" · ")[-1])
         elif p.kind not in "VI" or circuit.mode == "dc":
             label.append(format_value(p.value, unit))
         else:

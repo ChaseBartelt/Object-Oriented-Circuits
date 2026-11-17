@@ -11,6 +11,25 @@ from circuitlab.tooling.source_info import SourceInfo, accepts_calls, gate_input
 
 
 class SourceInfoTest(unittest.TestCase):
+    def test_impedance_help_and_wire_hover_keep_the_actual_terminals(self):
+        source = 'Zs(2-j2) between(input, inv);'
+        info = SourceInfo(source)
+        self.assertIn('Theoretical complex impedance', info.hover_help(0, 1))
+        self.assertIn('does not vary with frequency', info.hover_help(0, 1))
+        self.assertEqual(info.wire_at(0, source.index('input')), (1, 'Zs', 0, 'input'))
+        self.assertEqual(info.wire_at(0, source.index('inv')), (1, 'Zs', 1, 'inv'))
+        self.assertEqual(SourceInfo('Zs input inv 2-j2').wire_at(0, 9), (1, 'Zs', 1, 'inv'))
+        declared = SourceInfo('circuit Ztest(a,b) { }\nZtest(a,b);')
+        self.assertIn('Call this circuit', declared.hover_help(1, 1))
+
+    def test_bare_component_values_keep_editor_wire_recognition(self):
+        for kind in 'RCLVIZ':
+            source = f'{kind}load between(input, output);'
+            info = SourceInfo(source)
+            self.assertEqual(info.wire_at(0, source.index('input')), (1, f'{kind}load', 0, 'input'))
+            self.assertEqual(info.wire_at(0, source.index('output')), (1, f'{kind}load', 1, 'output'))
+        self.assertIn('unspecified', SourceInfo('Zload between(a,b);').hover_help(0, 1))
+
     def test_clock_and_timer_headers_are_not_electrical_wire_connections(self):
         for source, token, help_text in (
             ('clock(clk, 50MHz) {', '50MHz', 'external clock'),

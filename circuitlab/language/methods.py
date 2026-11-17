@@ -85,11 +85,13 @@ def _bind_arguments(method, raw, parent):
             component = PART_ARGUMENT.fullmatch(value)
             if not component:
                 raise CircuitError(
-                    f'{name}: argument "{parameter}" expects a resistor, capacitor, or inductor such as R(1k).'
+                    f'{name}: argument "{parameter}" expects a resistor, capacitor, inductor, or AC impedance such as R(1k) or Z(2-j2).'
                 )
             part_name, part_value = component.groups()
+            part_value = part_value or ""
             try:
-                scalar(part_value, UNITS[part_name[0].upper()])
+                if part_value.strip():
+                    scalar(part_value, UNITS[part_name[0].upper()])
             except CircuitError as error:
                 raise CircuitError(
                     f'{name}: argument "{parameter}" for {part_name}. {error}'
