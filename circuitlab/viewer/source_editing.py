@@ -5,12 +5,12 @@ from uuid import uuid4
 
 from PySide6.QtCore import QTimer, QSignalBlocker, QEventLoop
 from PySide6.QtGui import QTextCursor
-from PySide6.QtWidgets import QHBoxLayout, QInputDialog, QMessageBox, QPushButton
+from PySide6.QtWidgets import QHBoxLayout, QInputDialog, QMessageBox
 
 from circuitlab.layout.persistence import pack_layout, embed_placement, strip_placement, layout_payload
 from circuitlab.tooling.source_edits import SourceEdit, edit_value, source_target
 from circuitlab.model.graph import CircuitError
-from circuitlab.viewer.widgets import write_bytes
+from circuitlab.viewer.widgets import button, write_bytes
 from circuitlab.viewer.schematic import PlacementUndo
 
 
@@ -44,14 +44,10 @@ class SourceTools:
         self.view.optimization_finished.connect(lambda message: window.status.setText(message))
         row = QHBoxLayout()
         row.addStretch()
-        optimize = QPushButton('Optimize wiring')
+        optimize = button('Optimize wiring', self.view.optimize_wiring, row)
         optimize.setToolTip('Shorten routes and reposition parts while preserving connections. Ctrl+Z undoes it.')
-        optimize.clicked.connect(self.view.optimize_wiring)
-        row.addWidget(optimize)
-        undo = QPushButton('Undo')
+        undo = button('Undo', self.undo, row)
         undo.setToolTip('Undo the last component edit or layout move (Ctrl+Z).')
-        undo.clicked.connect(self.undo)
-        row.addWidget(undo)
         canvas.addLayout(row)
 
     def context(self):
@@ -181,9 +177,7 @@ class SourceTools:
                     rotations=self.view.rotation_bases))
 
     def undo(self):
-        if self.pending or self.view.drag is not None:
-            return
-        if not self.history:
+        if self.pending or self.view.drag is not None or not self.history:
             return
         entry = self.history[-1]
         if isinstance(entry, PlacementUndo):

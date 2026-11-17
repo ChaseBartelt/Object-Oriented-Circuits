@@ -144,10 +144,8 @@ class FastPlan:
                     elif op in {"==", "!=", "<", "<=", ">", ">="}:
                         value, bound = _comparison(op, left - right, slope - other_slope, bound)
                         result = value, 0, bound
-                    elif slope or other_slope:
-                        result = value, 0, 1
                     else:
-                        result = value, 0, bound
+                        result = value, 0, 1 if slope or other_slope else bound
             if memo is not None:
                 memo[expr] = result
             return result
@@ -184,10 +182,10 @@ class FastPlan:
             # Assignment truncation can wrap before an expression's width does.
             span = min(span, bound, _boundary(value & mask, slope, width, limit + 1))
         for guard in guards:
-            _, slope, bound = evaluate(guard, deltas, limit + 1, memo=memo)
+            value, slope, bound = evaluate(guard, deltas, limit + 1, memo=memo)
             # A vector used as a condition is true until it reaches zero.
             if slope:
-                _, bound = _comparison("!=", evaluate(guard, deltas, limit + 1)[0], slope, bound)
+                _, bound = _comparison("!=", value, slope, bound)
             span = min(span, bound)
         for name in traces:
             expr = self.traces.get(name)

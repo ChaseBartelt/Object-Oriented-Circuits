@@ -7,23 +7,18 @@ Verilog constructs. Board conditioning comes from the same wrapper as FPGA build
 
 from dataclasses import dataclass, field
 from graphlib import CycleError, TopologicalSorter
-import operator
 import re
 from time import perf_counter
 
 from circuitlab.exporters.clocked import PRECEDENCE, frequency
 from circuitlab.exporters.verilog import compile_chips
+from circuitlab.math.digital_fast import BOOLEAN, OPS as BINARY
 from circuitlab.model.graph import CircuitError
 
 
 LEX = re.compile(r"\s+|//[^\n]*|[0-9]+'[bd][0-9]+|[A-Za-z_][A-Za-z0-9_]*|[0-9]+|"
                  r"==|!=|<=|>=|&&|\|\||[!+\-&^|<>()\[\]{}?:;,.=@]")
 IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
-BINARY = {"+": operator.add, "-": operator.sub, "&": operator.and_, "|": operator.or_,
-          "^": operator.xor, "==": operator.eq, "!=": operator.ne, "<": operator.lt,
-          "<=": operator.le, ">": operator.gt, ">=": operator.ge,
-          "&&": lambda a, b: bool(a) and bool(b), "||": lambda a, b: bool(a) or bool(b)}
-BOOLEAN = {"==", "!=", "<", "<=", ">", ">=", "&&", "||"}
 
 
 def _error(message):

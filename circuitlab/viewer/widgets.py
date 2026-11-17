@@ -10,6 +10,7 @@ from PySide6.QtWidgets import (
 
 from circuitlab.language.gates import GATE_HELP, gate_accepts
 from circuitlab.layout.gates import BUNDLED_LAYOUTS, default_gate_layout, gate_preview
+from circuitlab.math.numbers import format_value
 from circuitlab.viewer.schematic import SchematicView
 
 
@@ -66,6 +67,27 @@ def grid_button(view, layout):
 
 def search_text(value):
     return " ".join(value.casefold().replace("_", " ").split())
+
+
+def probe_text(result, kind, name, *, separator=" · "):
+    """Describe a selected node or component in each solved analysis mode."""
+    if not result or not result.network:
+        return "Compile to get probe readings."
+    readings = []
+    for network, ac in ((result.dc_network, False), (result.network, result.circuit.mode != "dc")):
+        if not network:
+            continue
+        prefix = "AC RMS" + separator if ac else "DC" + separator if result.dc_network else ""
+        if kind == "node" and name in network.nodes:
+            value = network.voltage[network.nodes.index(name)]
+            reference = network.references.get(name, "0")
+            readings.append(prefix + f"V({name}) relative to {reference} = " + format_value(value, "V", ac, False))
+        elif kind == "component" and name in network.names:
+            index = network.names.index(name)
+            voltage = format_value(network.branch_voltage[index], "V", ac, False)
+            current = format_value(network.branch_current[index], "A", ac, False)
+            readings.append(prefix + f"{name} voltage = {voltage}   |   current = {current}")
+    return "\n".join(readings) or "No result for this selection."
 
 
 def publish_defaults(parent, layouts):

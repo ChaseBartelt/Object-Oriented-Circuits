@@ -62,8 +62,9 @@ def _fresh_text(path, stamp, notes):
 
 
 def _properties(text):
-    return {line.partition(":")[0].strip(): line.partition(":")[2].strip()
-            for line in text.splitlines() if ":" in line}
+    return {key.strip(): value.strip()
+            for key, separator, value in (line.partition(":") for line in text.splitlines())
+            if separator}
 
 
 def _resource(text):
@@ -75,11 +76,8 @@ def _resource(text):
 
 
 def _timing_sections(text):
-    result = []
-    for match in re.finditer(r"(?m)^Type\s*:\s*(.+)\nSlack\s*:\s*(\S+)", text):
-        kind = match[1].strip()
-        result.append({"type": kind, "slack_ns": _number(match[2])})
-    return result
+    return [{"type": match[1].strip(), "slack_ns": _number(match[2])}
+            for match in re.finditer(r"(?m)^Type\s*:\s*(.+)\nSlack\s*:\s*(\S+)", text)]
 
 
 def _clock_tables(text):
@@ -124,8 +122,7 @@ def _read_paths(project, record, notes):
             if len(cells) != 9 or cells[0] != "PATH":
                 raise ValueError("invalid timing-path row")
             corner, start, end = cells[1:4]
-            numbers = [_number(cell) for cell in cells[4:]]
-            slack, delay, levels, logic, routing = numbers
+            slack, delay, levels, logic, routing = map(_number, cells[4:])
             if not start or not end or slack is None or delay is None:
                 raise ValueError("invalid timing-path measurements")
             paths.append({"corner": corner, "from_node": start, "to_node": end,

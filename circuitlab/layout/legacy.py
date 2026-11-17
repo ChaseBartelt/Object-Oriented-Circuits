@@ -1,6 +1,7 @@
 """Historical MATLAB wire placement retained for reference comparisons."""
 
 import math
+from collections import defaultdict
 from statistics import median
 
 from circuitlab.layout.geometry import Layout, component_pins, placement_order
@@ -18,27 +19,24 @@ def route(circuit, labels):
     cells = {i: divmod(j, columns) for j, i in enumerate(order)}
     pin_rows = [cells[i][0] for i, *_ in pins]
     gutters = [cells[i][1] + (not left) for i, _, left, _ in pins]
+    gutter_pins = [[] for _ in range(columns + 1)]
+    for i, gutter in enumerate(gutters):
+        gutter_pins[gutter].append(i)
     lanes = {}
     widths = []
-    for g in range(columns + 1):
+    for members in gutter_pins:
         indices = sorted(
-            (i for i, x in enumerate(gutters) if x == g),
+            members,
             key=lambda i: (pins[i][2], pin_rows[i], pins[i][3]),
         )
         for j, i in enumerate(indices, 1):
             lanes[i] = 0.6 + j * 0.38
         widths.append(1.2 + len(indices) * 0.38)
-    col_widths = [
-        max(
-            6.3,
-            0.66
-            * max(
-                max(map(len, labels[parts[i].name])) for i in cells if cells[i][1] == j
-            )
-            + 0.8,
+    col_widths = [6.3] * columns
+    for i, (_, column) in cells.items():
+        col_widths[column] = max(
+            col_widths[column], 0.66 * max(map(len, labels[parts[i].name])) + 0.8,
         )
-        for j in range(columns)
-    ]
     lefts, centers = [0], []
     for g in range(columns):
         centers.append(lefts[-1] + widths[g] + col_widths[g] / 2)
@@ -50,7 +48,7 @@ def route(circuit, labels):
     for i, (_, net, _, _) in enumerate(pins):
         nets.setdefault(net, []).append(i)
     direct = set()
-    channels = {}
+    channels = defaultdict(list)
     for net, indices in nets.items():
         if net != "0" and len(indices) == 2:
             a, b = indices
@@ -60,15 +58,12 @@ def route(circuit, labels):
                 and pins[a][3] == pins[b][3]
             ):
                 direct.add(net)
-        channels[net] = math.ceil(median(pin_rows[i] for i in indices))
+        if net not in direct:
+            channels[math.ceil(median(pin_rows[i] for i in indices))].append(net)
     y, track_y = [0], {}
     for row in range(max(pin_rows) + 1):
         tracks = sorted(
-            (
-                net
-                for net, channel in channels.items()
-                if channel == row and net not in direct
-            ),
+            channels[row],
             key=lambda net: (
                 max(lane_x[i] for i in nets[net]) - min(lane_x[i] for i in nets[net])
             ),
@@ -85,9 +80,9 @@ def route(circuit, labels):
     for net, indices in nets.items():
         if net in direct:
             xs = [pin_x[i] for i in indices]
-            ty = pin_y[indices[0]]
-            horizontal.append((net, min(xs), max(xs), ty))
-            layout.labels[net] = ((min(xs) + max(xs)) / 2, ty)
+            left, right, ty = min(xs), max(xs), pin_y[indices[0]]
+            horizontal.append((net, left, right, ty))
+            layout.labels[net] = ((left + right) / 2, ty)
             continue
         xs = [lane_x[i] for i in indices]
         left, right, ty = min(xs), max(xs), track_y[net]

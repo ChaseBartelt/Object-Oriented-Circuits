@@ -83,6 +83,10 @@ class TimeDomain:
                 value.imag or not math.isfinite(value.real) or (part.kind in "RCL" and value.real <= 0)
             ):
                 raise CircuitError(f"{part.label} requires a valid real component value.")
+            if part.kind in {"O", "S"}:
+                sense = np.zeros(len(self.nodes))
+                sense[indices[part.in_plus]] += 1
+                sense[indices[part.in_minus]] -= 1
             if part.kind in "RC":
                 admittance = 1 / value.real if part.kind == "R" else (value.real / step if step else 0)
                 self.conductance[i] = admittance
@@ -96,9 +100,6 @@ class TimeDomain:
                 row = rows[i]
                 self.matrix[:len(line), row] = line
                 if part.kind == "O":
-                    sense = np.zeros(len(self.nodes))
-                    sense[indices[part.in_plus]] += 1
-                    sense[indices[part.in_minus]] -= 1
                     self.matrix[row, :len(line)] = sense[self.unknown]
                 else:
                     self.matrix[row, :len(line)] = line
@@ -111,9 +112,6 @@ class TimeDomain:
                         self.matrix[row, row] = -self.inductors[row]
             elif part.kind == "S":
                 control = np.zeros(size)
-                sense = np.zeros(len(self.nodes))
-                sense[indices[part.in_plus]] += 1
-                sense[indices[part.in_minus]] -= 1
                 control[:len(line)] = sense[self.unknown]
                 branch = np.zeros(size)
                 branch[:len(line)] = line

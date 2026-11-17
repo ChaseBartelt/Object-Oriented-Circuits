@@ -75,7 +75,8 @@ def labeled(circuit, labels):
         return (min(a[0], b[0]) if left else max(a[0], b[0]), a[1] + offset)
 
     for net, group in nets.items():
-        if len(group) == 2 and net not in circuit.grounds:
+        grounded = net in circuit.grounds
+        if len(group) == 2 and not grounded:
             first, second = sorted(group, key=lambda p: cells[p[0]])
             r1, c1 = cells[first[0]]
             r2, c2 = cells[second[0]]
@@ -94,22 +95,21 @@ def labeled(circuit, labels):
                 continue
         for pin in group:
             a = terminal(pin)
-            if net in circuit.grounds and parts[pin[0]].is_source:
+            part = parts[pin[0]]
+            left = pin[2] and not part.is_source
+            if grounded and part.is_source:
                 lower = min(point[1] for point in layout.symbols[pin[0]][1:3])
                 b = (a[0], a[1] - 0.3) if a[1] == lower else (a[0] + 0.72, a[1])
-                add_wire(layout, net, a, b)
-                ground_at(layout, b, net)
-                continue
-            left = pin[2] and not parts[pin[0]].is_source
-            b = (a[0] + (-0.72 if left else 0.72), a[1])
-            if net in circuit.grounds and left and pin[3] > 0:
-                # Keep the ground symbol outside the other input's approach.
-                b = (b[0] - 0.95, b[1])
+            else:
+                b = (a[0] + (-0.72 if left else 0.72), a[1])
+                if grounded and left and pin[3] > 0:
+                    # Keep the ground symbol outside the other input's approach.
+                    b = (b[0] - 0.95, b[1])
             add_wire(layout, net, a, b)
-            if net in circuit.grounds:
+            if grounded:
                 ground_at(layout, b, net)
             else:
-                below = pin[3] < 0 and parts[pin[0]].kind != "H"
+                below = pin[3] < 0 and part.kind != "H"
                 layout.connectors.append((net, b, names[net], left, below))
     return layout
 
@@ -142,7 +142,7 @@ def signal_flow(circuit):
     if (
         len(drivers) != len(amps) + 1
         or len(taps) != len(amps)
-        or bool(circuit.grounds & (drivers | taps))
+        or circuit.grounds & (drivers | taps)
         or drivers & taps
         or any(p.in_minus != p.p or p.n not in circuit.grounds for p in amps)
     ):

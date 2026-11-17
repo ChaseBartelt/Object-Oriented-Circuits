@@ -226,15 +226,9 @@ class SchematicView(QGraphicsView):
             self.drag_timer.stop()
             self.drag = None
         self.scene().clear()
-        self.selection_items.clear()
-        self.paths.clear()
-        self.net_items.clear()
-        self.anchors.clear()
-        self.pin_items.clear()
-        self.captions.clear()
-        self.packages.clear()
-        self.levels.clear()
-        self.level_offsets.clear()
+        for items in (self.selection_items, self.paths, self.net_items, self.anchors,
+                      self.pin_items, self.captions, self.packages, self.levels, self.level_offsets):
+            items.clear()
         self.highlight = None
 
     def draw(self, circuit, pins=None, *, boundary=(), layout=None, detail_root=None):
@@ -759,10 +753,7 @@ class SchematicView(QGraphicsView):
         ], dict(self.level_offsets)))
 
     def undo(self):
-        if self.undo_handler is not None:
-            self.undo_handler()
-        else:
-            self.undo_placement()
+        self.undo_placement()
 
     def align_to_grid(self):
         """Align all displayed levels atomically and retain a single undo step."""

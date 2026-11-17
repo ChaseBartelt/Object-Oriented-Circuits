@@ -5,68 +5,56 @@ from collections import Counter, defaultdict
 from dataclasses import replace
 
 from circuitlab.layout.geometry import add_wire, along, rotate_point, symbol_pins, wire_axis
-from circuitlab.layout.checks import preserves_nets, segments_intersect
+from circuitlab.layout.checks import mark_crossings as _mark_crossings, preserves_nets, segments_intersect
 from circuitlab.layout.wiring import connector_names
 from circuitlab.layout.wire_edit import (
-    clean_point,
-    replace_route,
-    route_anchors,
-    terminal_run,
-    wire_graph,
-    wire_slide_candidates,
+    clean_point, replace_route, route_anchors, terminal_run, wire_graph, wire_slide_candidates,
 )
 
-from circuitlab.layout.checks import mark_crossings as _mark_crossings
+
+def _shift(point, delta):
+    return clean_point(tuple(a + b for a, b in zip(point, delta)))
+
+
+def _graph_edges(graph):
+    """Yield each undirected edge once, retaining routing tie order."""
+    return ((a, b) for a, neighbors in graph.items() for b in neighbors if a < b)
 
 
 def move_symbol(circuit, original, name, delta, *, diagonal=False, rotate=0, align_axis=None):
     """Move or rotate one symbol and reroute the leads to its pins."""
-    drawing = replace(
-        original,
-        symbols=list(original.symbols),
-        positions=dict(original.positions),
-        wires={net: list(edges) for net, edges in original.wires.items()},
-        junctions={net: list(dots) for net, dots in original.junctions.items()},
-        labels=dict(original.labels),
-        crossings={},
-        rotations=dict(original.rotations),
-    )
     i, symbol = next(
-        (i, symbol) for i, symbol in enumerate(drawing.symbols)
+        (i, symbol) for i, symbol in enumerate(original.symbols)
         if symbol[0].name == name
     )
     part, a, b, top = symbol
-
-    def shift(point):
-        return tuple(round(coordinate + change, 8) for coordinate, change in zip(point, delta))
-
-    moved = part, shift(a), shift(b), top
+    moved = part, _shift(a, delta), _shift(b, delta), top
     previous_turns = original.rotations.get(name, 0)
     turns = (previous_turns + rotate) % 4
     if moved == symbol and not rotate and align_axis is None:
         return original
+    new_pins = _routed_pins(moved, turns, original.pin_grid)
+    endpoints = {(net, clean_point(point)) for net, point in new_pins}
+    bounds = _symbol_bounds(moved, turns, body_only=True)
+    docked_pins, stationary_pins = set(), []
+    for j, other in enumerate(original.symbols):
+        if i == j:
+            continue
+        other_turns = original.rotations.get(other[0].name, 0)
+        # Same-net endpoints may touch. Keep the symbol bodies clear of each other.
+        if boxes_overlap(bounds, _symbol_bounds(other, other_turns, body_only=True)):
+            return None
+        other_pins = _routed_pins(other, other_turns, original.pin_grid)
+        docked_pins.update(endpoints.intersection((net, clean_point(p)) for net, p in other_pins))
+        stationary_pins.extend(other_pins)
+
+    # Route candidates copy their own mutable geometry in _shortest_move.
+    drawing = replace(original, symbols=list(original.symbols),
+                      positions=dict(original.positions), rotations=dict(original.rotations))
     if turns:
         drawing.rotations[name] = turns
     else:
         drawing.rotations.pop(name, None)
-
-    new_pins = _routed_pins(moved, turns, drawing.pin_grid)
-    endpoints = {(net, clean_point(point)) for net, point in new_pins}
-    docked_pins, stationary_pins = set(), []
-    for j, other in enumerate(drawing.symbols):
-        if i == j:
-            continue
-        other_turns = original.rotations.get(other[0].name, 0)
-        other_pins = _routed_pins(other, other_turns, drawing.pin_grid)
-        shared = endpoints.intersection((net, clean_point(point)) for net, point in other_pins)
-        # Same-net endpoints may touch. Keep the symbol bodies clear of each other.
-        if boxes_overlap(
-            _symbol_bounds(moved, turns, body_only=True),
-            _symbol_bounds(other, other_turns, body_only=True),
-        ):
-            return None
-        docked_pins.update(shared)
-        stationary_pins.extend(other_pins)
     drawing.symbols[i] = moved
     drawing.positions[name] = moved[1]
 
@@ -109,7 +97,7 @@ def move_symbols(circuit, original, names, delta, *, diagonal=False):
         return original
 
     def shift(point):
-        return clean_point(tuple(a + b for a, b in zip(point, delta)))
+        return _shift(point, delta)
 
     def turns(symbol):
         return original.rotations.get(symbol[0].name, 0)
@@ -128,22 +116,20 @@ def move_symbols(circuit, original, names, delta, *, diagonal=False):
             fixed.append(symbol)
         symbols.append(symbol)
 
-    selected_ends = [(key, net, pos) for key, net, pos in selection_ends(original) if key in names]
-    if not old and not selected_ends:
+    end_pins = [(net, pos) for key, net, pos in selection_ends(original) if key in names]
+    if not old and not end_pins:
         return original
     fixed_boxes = [_symbol_bounds(symbol, turns(symbol), body_only=True) for symbol in fixed]
     moved_boxes = [_symbol_bounds(symbol, turns(symbol), body_only=True) for symbol in moved]
-    if any(
-        boxes_overlap(body, box) for body in moved_boxes for box in fixed_boxes
-    ):
+    if any(boxes_overlap(body, box) for body in moved_boxes for box in fixed_boxes):
         return None
 
     old_pins, new_pins, stationary_pins = pins(old), pins(moved), pins(fixed)
-    end_pins = [(net, pos) for _, net, pos in selected_ends]
     old_pins += end_pins
     new_pins += [(net, shift(pos)) for net, pos in end_pins]
-    stationary_ends = [(net, pos) for key, net, pos in selection_ends(original) if key not in names]
-    internal = {net for net, _ in old_pins} - ({net for net, _ in stationary_pins} | ({net for net, _ in stationary_ends} if selected_ends else original.boundary.keys()))
+    fixed_ends = ({net for key, net, _ in selection_ends(original) if key not in names}
+                  if end_pins else original.boundary.keys())
+    internal = {net for net, _ in old_pins} - ({net for net, _ in stationary_pins} | fixed_ends)
     grounds = {
         pos: shift(pos) if original.ground_names.get(pos, "0") in internal or ("ground", pos) in names else pos
         for pos in original.grounds
@@ -271,7 +257,7 @@ def _terminal_wire_alignments(drawing, moving_pins, axis, stationary_pins=None, 
 
 def move_ground(circuit, original, point, delta, *, diagonal=False, align_axis=None):
     """Move one ground symbol and reconnect its existing branch."""
-    end = clean_point((point[0] + delta[0], point[1] + delta[1]))
+    end = _shift(point, delta)
     if end == clean_point(point) and align_axis is None:
         return original
     if any(other != point and end == clean_point(other) for other in original.grounds):
@@ -288,10 +274,9 @@ def move_ground(circuit, original, point, delta, *, diagonal=False, align_axis=N
         boundary=boundary,
         label_offsets=_move_endpoint_labels(original, grounds={point: end}),
     )
-    if point in drawing.ground_names:
-        drawing.ground_names[end] = drawing.ground_names.pop(point)
-    if point in drawing.ground_rotations:
-        drawing.ground_rotations[end] = drawing.ground_rotations.pop(point)
+    for mapping in (drawing.ground_names, drawing.ground_rotations):
+        if point in mapping:
+            mapping[end] = mapping.pop(point)
     return _reroute_move(
         circuit, original, drawing, ((net, point),), ((net, end),), point[0],
         moving_ground=point, diagonal=diagonal, align_axis=align_axis,
@@ -376,7 +361,7 @@ def move_connector(circuit, original, index, end, *, join=None, join_wire=False,
 def move_boundary(circuit, original, net, delta, *, diagonal=False):
     """Move a package port and trim its old lead back to the connected circuit."""
     start = original.boundary[net]
-    end = clean_point(tuple(a + b for a, b in zip(start, delta)))
+    end = _shift(start, delta)
     if end == clean_point(start):
         return original
     connectors = list(original.connectors)
@@ -417,8 +402,7 @@ def split_wire(circuit, original, net, edge, at, *, grid=0, origin=(0, 0)):
     anchors = route_anchors(original, net) | {a, b}
     graph = wire_graph(original.wires[net], anchors)
     runs = [
-        (p, q) for p, neighbors in graph.items() for q in neighbors if p < q
-        and math.dist(p, q) >= 0.25
+        (p, q) for p, q in _graph_edges(graph) if math.dist(p, q) >= 0.25
         and all(segments_intersect((point, point), (a, b)) for point in (p, q))
     ]
     if not runs:
@@ -481,8 +465,7 @@ def split_wire(circuit, original, net, edge, at, *, grid=0, origin=(0, 0)):
         drawing.ground_rotations = {**original.ground_rotations, low: rotations[0], high: rotations[1]}
     else:
         drawing.connectors.extend([(net, low, name, True, False), (net, high, name, False, True)])
-    edges = [(p, q) for p, neighbors in graph.items() for q in neighbors if p < q]
-    replace_route(drawing, net, [*edges, (a, low), (high, b)])
+    replace_route(drawing, net, [*_graph_edges(graph), (a, low), (high, b)])
     if net in circuit.grounds:
         _prune_split_grounds(drawing, net, (low, high))
     _mark_crossings(drawing)
@@ -552,11 +535,9 @@ def _reroute_move(
         if direct or docked:
             stop = len(run) - 1
         elif align_axis is not None:
-            aligned = next((
+            stop = next((
                 i for i in range(stop, len(run)) if run[i][align_axis] == end[align_axis]
-            ), None)
-            if aligned is not None:
-                stop = aligned
+            ), stop)
         attachment = run[stop]
         if align_axis is not None and attachment[align_axis] != end[align_axis]:
             junction = run[-1]
@@ -576,10 +557,7 @@ def _reroute_move(
             graph[neighbor].remove(previous)
         if not docked:
             connections.append((net, attachment, end))
-    fixed_edges = {
-        net: [(a, b) for a, neighbors in graph.items() for b in neighbors if a < b]
-        for net, graph in graphs.items()
-    }
+    fixed_edges = {net: list(_graph_edges(graph)) for net, graph in graphs.items()}
     bends = (
         ("x", 0.5), ("y", 0.5), ("x", 0), ("y", 0),
         ("x", 1), ("y", 1), ("x", 0.25), ("y", 0.25),

@@ -13,6 +13,7 @@ from circuitlab.model.graph import CircuitError
 from circuitlab.tooling import fpga
 from circuitlab.tooling import fpga_performance
 from circuitlab.viewer.fpga_performance import PerformancePanel
+from circuitlab.viewer.widgets import button
 
 
 class FpgaDialog(QDialog):
@@ -58,24 +59,16 @@ class FpgaDialog(QDialog):
         self.quartus = QLineEdit(self.settings.value("fpga/quartus_bin", "", type=str))
         self.quartus.setPlaceholderText("Auto-detect installed Quartus")
         tool_row.addWidget(self.quartus, 1)
-        self.browse_button = QPushButton("Browse…")
-        self.browse_button.clicked.connect(self._browse)
-        tool_row.addWidget(self.browse_button)
+        self.browse_button = button("Browse…", self._browse, tool_row)
         layout.addLayout(tool_row)
         actions = QHBoxLayout()
-        self.build_button = QPushButton("Build from OOC")
-        self.build_button.clicked.connect(self.build)
-        actions.addWidget(self.build_button)
-        self.refresh_button = QPushButton("Refresh cables")
-        self.refresh_button.clicked.connect(self.refresh_cables)
-        actions.addWidget(self.refresh_button)
+        self.build_button = button("Build from OOC", self.build, actions)
+        self.refresh_button = button("Refresh cables", self.refresh_cables, actions)
         self.cables = QComboBox()
         self.cables.setMinimumContentsLength(20)
         self.cables.currentIndexChanged.connect(self._update_controls)
         actions.addWidget(self.cables, 1)
-        self.program_button = QPushButton("Program FPGA")
-        self.program_button.clicked.connect(self.program)
-        actions.addWidget(self.program_button)
+        self.program_button = button("Program FPGA", self.program, actions)
         layout.addLayout(actions)
         self.status = QLabel("Build your saved HYBRID01 OOC file to begin.")
         self.status.setTextFormat(Qt.TextFormat.PlainText)
@@ -94,13 +87,9 @@ class FpgaDialog(QDialog):
         self.report_tabs.addTab(self.log, "Build log")
         layout.addWidget(self.report_tabs, 1)
         footer = QHBoxLayout()
-        self.folder_button = QPushButton("Open build folder")
-        self.folder_button.clicked.connect(self._open_folder)
-        footer.addWidget(self.folder_button)
+        self.folder_button = button("Open build folder", self._open_folder, footer)
         footer.addStretch()
-        self.close_button = QPushButton("Close")
-        self.close_button.clicked.connect(self.close)
-        footer.addWidget(self.close_button)
+        self.close_button = button("Close", self.close, footer)
         layout.addLayout(footer)
         for control in self.findChildren(QPushButton):
             control.setStyleSheet("QPushButton:disabled { color: #888; background: #303030; border-color: #444; }")
@@ -127,10 +116,8 @@ class FpgaDialog(QDialog):
         self.build_button.setEnabled(idle)
         self.refresh_button.setEnabled(idle)
         self.program_button.setEnabled(idle and self.ready and self.cables.currentIndex() >= 0)
-        self.quartus.setEnabled(idle)
-        self.browse_button.setEnabled(idle)
-        self.cables.setEnabled(idle)
-        self.close_button.setEnabled(idle)
+        for control in (self.quartus, self.browse_button, self.cables, self.close_button):
+            control.setEnabled(idle)
         self.folder_button.setEnabled(self.project is not None)
         self.progress.setVisible(not idle)
         self.performance.building = self.operation in ("build", "performance")

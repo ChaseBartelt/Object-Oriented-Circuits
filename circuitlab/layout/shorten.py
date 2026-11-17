@@ -22,9 +22,8 @@ def clear_of_bodies(edges, layout):
         borders = (((left,bottom),(right,bottom)), ((right,bottom),(right,top)),
                    ((right,top),(left,top)), ((left,top),(left,bottom)))
         for edge in edges:
-            if any(left < p[0] < right and bottom < p[1] < top for p in edge):
-                return False
-            if any(segments_intersect(edge, border) for border in borders):
+            if (any(left < p[0] < right and bottom < p[1] < top for p in edge)
+                    or any(segments_intersect(edge, border) for border in borders)):
                 return False
     return True
 
@@ -50,15 +49,17 @@ def straighten(circuit, original, budget=24, *, simplify=False):
                     if len(choices) != 1:
                         break
                     end = next(iter(choices))
-                    if frozenset((run[-1], end)) in seen:
+                    edge = frozenset((run[-1], end))
+                    if edge in seen:
                         break
-                    seen.add(frozenset((run[-1], end)))
+                    seen.add(edge)
                     run.append(end)
                 runs.append(run)
         runs.sort(key=lambda r: -(sum(math.dist(a,b) for a,b in zip(r,r[1:])) - math.dist(r[0],r[-1])))
         for run in runs:
             start, end = run[0], run[-1]
-            old_length = sum(math.dist(a,b) for a,b in zip(run,run[1:]))
+            run_edges = list(zip(run, run[1:]))
+            old_length = sum(math.dist(a, b) for a, b in run_edges)
             minimum = abs(start[0]-end[0]) + abs(start[1]-end[1])
             # Stair-step routes can have optimal length but unnecessary bends.
             # Keep deliberately diagonal leads that are shorter than Manhattan.
@@ -74,9 +75,9 @@ def straighten(circuit, original, budget=24, *, simplify=False):
                     continue
                 if remaining is None:
                     current = wire_graph(drawing.wires.get(net, ()), anchors)
-                    removed = {frozenset((a,b)) for a,b in zip(run,run[1:])}
+                    removed = set(map(frozenset, run_edges))
                     # An earlier shortcut may already have replaced part of this run.
-                    if any(b not in current.get(a, ()) for a,b in zip(run,run[1:])):
+                    if any(b not in current.get(a, ()) for a, b in run_edges):
                         break
                     remaining = [(a,b) for a,neighbors in current.items() for b in neighbors
                                  if a < b and frozenset((a,b)) not in removed]
@@ -106,9 +107,8 @@ def _rotate_passive(circuit, drawing, symbol, turns):
     rotations[name] = (rotations.get(name, 0) + turns) % 4
     base = replace(drawing, rotations=rotations)
     old_pins = list(drawing.pins())
-    new_pins = list(base.pins())
     leads = []
-    for (net, start), (_, end) in zip(old_pins, new_pins):
+    for (net, start), (_, end) in zip(old_pins, base.pins()):
         if start == end:
             continue
         anchors = route_anchors(drawing, net)
@@ -146,7 +146,7 @@ def _rotate_passive(circuit, drawing, symbol, turns):
 
 def _move_candidates(drawing, symbol, grid):
     """Pull pins toward their nearest connected fixed attachments on the grid."""
-    own = list(replace(drawing, symbols=[symbol]).pins())
+    own = replace(drawing, symbols=[symbol]).pins()
     others = replace(drawing, symbols=[s for s in drawing.symbols if s != symbol])
     offsets = []
     for net, pin in own:

@@ -1,17 +1,47 @@
 """Conventional layouts for recognizable circuit topologies."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from statistics import median
 
 from circuitlab.layout.geometry import (
-    Layout,
-    add_wire,
-    component_pins,
-    ground_at,
-    input_source_indices,
-    label_node,
-    place_symbol,
+    Layout, add_wire, component_pins, ground_at, input_source_indices,
+    label_node, place_symbol,
 )
+
+
+def _label_pitch(parts, labels, minimum, margin, scale):
+    """Leave room for captions, limiting the space reserved for part names."""
+    if not labels:
+        return minimum
+    longest = max(
+        min(len(line), 24) if i == 0 else len(line)
+        for part in parts for i, line in enumerate(labels[part.name])
+    )
+    return max(minimum, margin + scale * longest)
+
+
+def _passive_edges(parts, source):
+    """Index distinct passive branches; reject loops and parallel duplicates."""
+    edges = {}
+    for part in parts:
+        if part is source:
+            continue
+        edge = frozenset((part.p, part.n))
+        if part.kind not in {"R", "C", "L", "X", "Z"} or len(edge) != 2 or edge in edges:
+            return None
+        edges[edge] = part
+    return edges
+
+
+def _grounded_source(layout, source, supply, ground, start, end):
+    place_symbol(layout, source, supply, start, end)
+    ground_at(layout, end, ground)
+    layout.labels[supply] = start
+
+
+def _connector(layout, net, start, end):
+    add_wire(layout, net, start, end)
+    layout.connectors.append((net, end, net.replace("_", " "), False, False))
 
 
 def series_runs(circuit):
@@ -82,11 +112,9 @@ def series_runs(circuit):
             run.append(i)
             visited.add(i)
             part = parts[i]
-            if part.p == incoming:
-                outgoing = part.n
-            else:
+            if part.p != incoming:
                 reversed_parts.add(i)
-                outgoing = part.p
+            outgoing = part.n if part.p == incoming else part.p
             if outgoing not in joins[i]:
                 break
             i, incoming = joins[i][outgoing], outgoing
@@ -103,14 +131,12 @@ def source_cells(circuit, order, columns, runs=(), *, source_rails=False):
     if not other:
         return {i: (row, 0) for row, i in enumerate(sources)}
 
-    inputs = input_source_indices(parts)
+    inputs = set(input_source_indices(parts))
     early = [i for i in sources if i in inputs]
-    late = [i for i in sources if i not in early]
+    late = [i for i in sources if i not in inputs]
     if source_rails:
-        cells = {
-            i: (row, int(bool(early) and i in late))
-            for row, i in enumerate(early + late)
-        }
+        cells = {i: (row, int(bool(early) and i in late))
+                 for row, i in enumerate(early + late)}
         start_column = 1 + max((col for _, col in cells.values()), default=-1)
         first_row = len(cells)
         late = []
@@ -119,7 +145,6 @@ def source_cells(circuit, order, columns, runs=(), *, source_rails=False):
         start_column = int(bool(early))
         first_row = 0
     columns = min(max(columns, max(map(len, runs), default=0)), len(other) + len(late))
-    occupied = set(cells.values())
     by_member = {i: run for run in runs for i in run}
     row, column = first_row, 0
     for i in other:
@@ -132,33 +157,24 @@ def source_cells(circuit, order, columns, runs=(), *, source_rails=False):
         for member in run:
             cells[member] = row, column + start_column
             column += 1
-    occupied.update(cells.values())
+    occupied = set(cells.values())
 
     for i in late:
         nets = {parts[i].p, parts[i].n} - circuit.grounds
-        neighbors = [
-            cells[j]
-            for j in other
-            if nets.intersection(parts[j].terminal_nets)
-        ]
+        neighbors = [cells[j] for j in other if nets.intersection(parts[j].terminal_nets)]
         if not neighbors:
             preceding = [j for j in other if 0 < parts[j].order < parts[i].order]
-            nearest = (
-                max(preceding, key=lambda j: parts[j].order) if preceding else other[0]
-            )
+            nearest = max(preceding, key=lambda j: parts[j].order) if preceding else other[0]
             neighbors = [cells[nearest]]
         row = round(median(r for r, _ in neighbors))
         column = round(median(c for _, c in neighbors))
-        candidates = [
+        candidates = (
             (r, c)
             for r in range(max(row, max(r for r, _ in occupied)) + 2)
             for c in range(start_column, columns + start_column)
             if (r, c) not in occupied
-        ]
-        cell = min(
-            candidates,
-            key=lambda cell: (abs(cell[1] - column), abs(cell[0] - row), cell),
         )
+        cell = min(candidates, key=lambda cell: (abs(cell[1] - column), abs(cell[0] - row), cell))
         cells[i] = cell
         occupied.add(cell)
     return cells
@@ -180,14 +196,9 @@ class Block:
         if self.p == start:
             return self
         children = reversed(self.children) if self.kind == "series" else self.children
-        return Block(
-            self.n,
-            self.p,
-            self.kind,
-            self.part,
-            tuple(child.oriented(child.n) for child in children),
-            self.width,
-            self.depth,
+        return replace(
+            self, p=self.n, n=self.p,
+            children=tuple(child.oriented(child.n) for child in children),
         )
 
 
@@ -197,12 +208,12 @@ def _combine(kind, children, p, n):
         if kind == "parallel":
             child = child.oriented(p)
         flattened.extend(child.children if child.kind == kind else (child,))
-    widths = [b.width for b in flattened]
-    depths = [b.depth for b in flattened]
-    width = max(widths) + 1.4 if kind == "parallel" else sum(widths)
-    depth = (
-        sum(depths) + 2 * (len(flattened) - 1) if kind == "parallel" else max(depths)
-    )
+    if kind == "parallel":
+        width = max(b.width for b in flattened) + 1.4
+        depth = sum(b.depth for b in flattened) + 2 * (len(flattened) - 1)
+    else:
+        width = sum(b.width for b in flattened)
+        depth = max(b.depth for b in flattened)
     return Block(p, n, kind, children=tuple(flattened), width=width, depth=depth)
 
 
@@ -212,26 +223,24 @@ def series_parallel(parts, terminals):
         return None
     blocks = [Block(e.p, e.n, "part", part=e) for e in parts]
     while len(blocks) > 1:
+        parallel, incident = {}, {}
         for i, block in enumerate(blocks):
-            indices = [
-                j for j, b in enumerate(blocks) if {b.p, b.n} == {block.p, block.n}
-            ]
+            parallel.setdefault(frozenset((block.p, block.n)), []).append(i)
+            for node in (block.p, block.n):
+                incident.setdefault(node, []).append(i)
+        for indices in parallel.values():
             if len(indices) > 1:
-                blocks[i] = _combine(
-                    "parallel", [blocks[j] for j in indices], block.p, block.n
-                )
+                i = indices[0]
+                block = blocks[i]
+                blocks[i] = _combine("parallel", [blocks[j] for j in indices], block.p, block.n)
                 for j in reversed(indices[1:]):
                     del blocks[j]
                 break
         else:
-            nodes = dict.fromkeys(node for b in blocks for node in (b.p, b.n))
-            for node in nodes:
-                if node in terminals:
+            for node, indices in incident.items():
+                if node in terminals or len(indices) != 2:
                     continue
-                incident = [i for i, b in enumerate(blocks) if node in (b.p, b.n)]
-                if len(incident) != 2:
-                    continue
-                i, j = incident
+                i, j = indices
                 first, second = blocks[i], blocks[j]
                 first = first.oriented(first.n if first.p == node else first.p)
                 second = second.oriented(node)
@@ -249,11 +258,7 @@ def series_parallel(parts, terminals):
 
 def place_tree(layout, circuit, block, x, y):
     if block.kind == "part":
-        start, end = (x, y), (x + block.width, y)
-        if block.p != block.part.p:
-            start, end = end, start
-        layout.symbols.append((block.part, start, end, "+"))
-        layout.positions[block.part.name] = start
+        place_symbol(layout, block.part, block.p, (x, y), (x + block.width, y))
     elif block.kind == "series":
         for i, child in enumerate(block.children):
             place_tree(layout, circuit, child, x, y)
@@ -281,18 +286,9 @@ def grounded_bridge(parts, source):
     if not source or len(parts) != 6 or (source.p == "0") == (source.n == "0"):
         return None
     supply = source.n if source.p == "0" else source.p
-    branches = {}
-    for part in parts:
-        if part is source:
-            continue
-        terminals = frozenset((part.p, part.n))
-        if (
-            part.kind not in {"R", "C", "L", "X", "Z"}
-            or len(terminals) != 2
-            or terminals in branches
-        ):
-            return None
-        branches[terminals] = part
+    branches = _passive_edges(parts, source)
+    if branches is None:
+        return None
     midpoints = [
         part.n if part.p == supply else part.p
         for edge, part in branches.items()
@@ -332,28 +328,19 @@ def _parallel_tees(circuit, source, labels):
     """Draw T sections with a shared input and output, with or without a load."""
     if source is None or (source.p in circuit.grounds) == (source.n in circuit.grounds):
         return None
-    supply, ground = (
-        (source.n, source.p) if source.p in circuit.grounds else (source.p, source.n)
-    )
-    branches = {}
+    supply, ground = (source.n, source.p) if source.p in circuit.grounds else (source.p, source.n)
+    branches = _passive_edges(circuit.components, source)
+    if branches is None:
+        return None
     neighbors = {}
-    for part in circuit.components:
-        if part is source:
-            continue
-        edge = frozenset((part.p, part.n))
-        if part.kind not in "RCLXZ" or len(edge) != 2 or edge in branches:
-            return None
-        branches[edge] = part
+    for part in branches.values():
         neighbors.setdefault(part.p, set()).add(part.n)
         neighbors.setdefault(part.n, set()).add(part.p)
 
-    taps = list(
-        dict.fromkeys(
-            part.n if part.p == supply else part.p
-            for part in circuit.components
-            if part is not source and supply in (part.p, part.n)
-        )
-    )
+    taps = [
+        part.n if part.p == supply else part.p
+        for edge, part in branches.items() if supply in edge
+    ]
     if len(taps) < 2 or circuit.grounds.intersection(taps):
         return None
     legs = []
@@ -379,30 +366,15 @@ def _parallel_tees(circuit, source, labels):
     if len(loads) > 1:
         return None
     load = next(iter(loads), None)
-    if load is not None and (
-        output not in load or not (load - {output}) & circuit.grounds
-    ):
+    if load is not None and (output not in load or not (load - {output}) & circuit.grounds):
         return None
 
-    span = 6.5
-    if labels:
-        span = max(
-            span,
-            1
-            + 0.40
-            * max(
-                min(len(line), 24) if i == 0 else len(line)
-                for part in branches.values()
-                for i, line in enumerate(labels[part.name])
-            ),
-        )
+    span = _label_pitch(branches.values(), labels, 6.5, 1, 0.40)
     left_x, tap_x = 3.0, 3.0 + span
     right_x = tap_x + span
     rows = [-5.8 * i for i in range(len(legs))]
     drawing = Layout()
-    place_symbol(drawing, source, supply, (0, 0), (0, -3.3))
-    ground_at(drawing, (0, -3.3), ground)
-    drawing.labels[supply] = (0, 0)
+    _grounded_source(drawing, source, supply, ground, (0, 0), (0, -3.3))
     add_wire(drawing, supply, (0, 0), *((left_x, y) for y in rows))
     add_wire(drawing, output, *((right_x, y) for y in rows))
     drawing.junctions[supply] = [(left_x, y) for y in rows[:-1]]
@@ -419,10 +391,7 @@ def _parallel_tees(circuit, source, labels):
 
     bottom = (right_x, rows[-1])
     terminal = (right_x + 3.0, rows[-1])
-    add_wire(drawing, output, bottom, terminal)
-    drawing.connectors.append(
-        (output, terminal, output.replace("_", " "), False, False)
-    )
+    _connector(drawing, output, bottom, terminal)
     if load is not None:
         (return_net,) = load - {output}
         end = (right_x, rows[-1] - 3.3)
@@ -446,8 +415,8 @@ def _vertical_tree(layout, circuit, block, x, top, height, pitch):
         if block.n in circuit.grounds:
             ground_at(layout, (x, bottom), block.n)
         return x
+    right = x
     if block.kind == "series":
-        right = x
         for i, child in enumerate(block.children):
             child_height = height * child.width / block.width
             edge = _vertical_tree(layout, circuit, child, x, top, child_height, pitch)
@@ -467,41 +436,25 @@ def _vertical_tree(layout, circuit, block, x, top, height, pitch):
     layout.junctions.setdefault(block.p, []).extend((x, top) for x in branches[:-1])
     if block.n not in circuit.grounds:
         add_wire(layout, block.n, *((x, bottom) for x in branches))
-        layout.junctions.setdefault(block.n, []).extend(
-            (x, bottom) for x in branches[:-1]
-        )
+        layout.junctions.setdefault(block.n, []).extend((x, bottom) for x in branches[:-1])
     return right
 
 
 def _grounded_tree(circuit, source, tree, labels):
-    ground, supply = (
-        (source.p, source.n) if source.p in circuit.grounds else (source.n, source.p)
-    )
+    ground, supply = (source.p, source.n) if source.p in circuit.grounds else (source.n, source.p)
     tree = tree.oriented(supply)
     if bank := _divider_bank(circuit, source, tree, ground):
         return bank
     *feed, load = tree.children if tree.kind == "series" else (tree,)
     # Leave room for the vertical component captions to the left of each leg.
-    pitch = 5.8
-    if labels:
-        pitch = max(
-            pitch,
-            1.4
-            + 0.42
-            * max(
-                min(len(line), 24) if i == 0 else len(line)
-                for part in circuit.components
-                if part is not source
-                for i, line in enumerate(labels[part.name])
-            ),
-        )
+    pitch = _label_pitch(
+        (part for part in circuit.components if part is not source), labels, 5.8, 1.4, 0.42
+    )
     feed_depth = max((block.depth for block in feed), default=0)
     feed_width = sum(block.width for block in feed)
     layout = Layout()
     height = max(load.width, 3.6)
-    place_symbol(layout, source, supply, (0, 0), (0, -height))
-    ground_at(layout, (0, -height), ground)
-    layout.labels[supply] = (0, 0)
+    _grounded_source(layout, source, supply, ground, (0, 0), (0, -height))
     x = max(1.0, pitch - feed_width) if feed else 0.0
     if feed:
         add_wire(layout, supply, (0, 0), (x, 0))
@@ -516,13 +469,10 @@ def _grounded_tree(circuit, source, tree, labels):
     right = _vertical_tree(layout, circuit, load, load_x, 0, height, pitch)
     if not load.p.startswith("@") and (feed or load.kind == "parallel"):
         terminal = (right + 2.5, 0)
-        add_wire(layout, load.p, (right, 0), terminal)
         dots = layout.junctions.setdefault(load.p, [])
         if (right, 0) not in dots:
             dots.append((right, 0))
-        layout.connectors.append(
-            (load.p, terminal, load.p.replace("_", " "), False, False)
-        )
+        _connector(layout, load.p, (right, 0), terminal)
     return layout
 
 
@@ -537,9 +487,7 @@ def _divider_bank(circuit, source, tree, ground):
 
     drawing = Layout()
     supply = tree.p
-    place_symbol(drawing, source, supply, (0, 0), (0, -3.6))
-    ground_at(drawing, (0, -3.6), ground)
-    drawing.labels[supply] = (0, 0)
+    _grounded_source(drawing, source, supply, ground, (0, 0), (0, -3.6))
     columns = [7.0 * (i + 1) for i in range(len(tree.children))]
     add_wire(drawing, supply, (0, 0), *((x, 0) for x in columns))
     drawing.junctions[supply] = [(x, 0) for x in columns[:-1]]
@@ -548,10 +496,7 @@ def _divider_bank(circuit, source, tree, ground):
         _vertical_tree(drawing, circuit, branch, x, 0, branch.width, 7.0)
         tap = (x, -branch.width + shunt.width)
         terminal = (x + 2.5, tap[1])
-        add_wire(drawing, shunt.p, tap, terminal)
-        drawing.connectors.append(
-            (shunt.p, terminal, shunt.p.replace("_", " "), False, False)
-        )
+        _connector(drawing, shunt.p, tap, terminal)
     return drawing
 
 
@@ -563,6 +508,7 @@ def compact(circuit, labels=None):
     if any(part.kind == "O" for part in parts):
         return compact_amplifier(circuit)
     source = next((p for p in parts if p.is_source), None)
+    passive = [p for p in parts if p is not source]
     if source and not input_source_indices(parts):
         return None
     if bridge := grounded_bridge(parts, source):
@@ -572,16 +518,10 @@ def compact(circuit, labels=None):
     terminals = (source.p, source.n) if source else circuit.terminals
     if not terminals:
         return None
-    tree = series_parallel([p for p in parts if p is not source], terminals)
-    if not tree:
+    tree = series_parallel(passive, terminals)
+    if not tree or any(p.is_source for p in passive):
         return None
-    if any(p.is_source for p in parts if p is not source):
-        return None
-    if (
-        source
-        and bool(set(terminals) & circuit.grounds)
-        and all(part.kind in "RCLXZ" for part in parts if part is not source)
-    ):
+    if source and set(terminals) & circuit.grounds and all(p.kind in "RCLXZ" for p in passive):
         return _grounded_tree(circuit, source, tree, labels)
     layout = Layout()
     place_tree(layout, circuit, tree, 1, 0)
@@ -591,14 +531,8 @@ def compact(circuit, labels=None):
     else:
         bottom, right = -tree.depth - 3.2, tree.width + 2
         add_wire(layout, source.p, (0, 0), (1, 0))
-        add_wire(
-            layout,
-            source.n,
-            (tree.width + 1, 0),
-            (right, 0),
-            (right, bottom),
-            (0, bottom),
-        )
+        add_wire(layout, source.n,
+                 (tree.width + 1, 0), (right, 0), (right, bottom), (0, bottom))
         layout.positions[source.name] = (0, 0)
         layout.symbols.append((source, (0, 0), (0, bottom), "+"))
         label_node(layout, circuit, (0, 0), source.p)
@@ -611,11 +545,10 @@ def compact(circuit, labels=None):
 
 def _paths(parts, start, terminals):
     visited = {start}
+    terminals = set(terminals)
     while True:
         edges = [e for e in parts if e.p in visited or e.n in visited]
-        reached = visited | (
-            {node for e in edges for node in (e.p, e.n)} - set(terminals)
-        )
+        reached = visited | ({node for e in edges for node in (e.p, e.n)} - terminals)
         if reached == visited:
             return edges
         visited = reached
@@ -640,8 +573,7 @@ def compact_amplifier(circuit):
     previous = chip.p
     for _ in range(len(amps) - 1):
         candidates = [
-            e
-            for e in amps
+            e for e in amps
             if e is not chip and e.in_plus == previous and e.in_minus == e.p
         ]
         if len(candidates) != 1:
@@ -652,9 +584,7 @@ def compact_amplifier(circuit):
     if any(e.kind not in "RCLXZ" for e in branches):
         return None
     inputs = _paths(branches, source.p, terminals)
-    feedback = _paths(
-        [e for e in branches if e not in inputs], chip.in_minus, terminals
-    )
+    feedback = _paths([e for e in branches if e not in inputs], chip.in_minus, terminals)
     input_tree = series_parallel(inputs, (source.p, chip.in_minus))
     feedback_tree = series_parallel(feedback, (chip.in_minus, chip.p))
     if not input_tree or not feedback_tree:
@@ -688,14 +618,8 @@ def compact_amplifier(circuit):
     add_wire(d, chip.in_minus, (x, 0.35), (chip_x, 0.35))
     add_wire(d, chip.in_minus, (x, 0.35), (x, fy))
     place_tree(d, circuit, feedback_tree, x, fy)
-    add_wire(
-        d,
-        chip.p,
-        (x + feedback_tree.width, fy),
-        (out_x, fy),
-        (out_x, 0),
-        (chip_x + 4.3, 0),
-    )
+    add_wire(d, chip.p,
+             (x + feedback_tree.width, fy), (out_x, fy), (out_x, 0), (chip_x + 4.3, 0))
     add_wire(d, "0", (chip_x, -0.35), (chip_x - 0.55, -0.35), (chip_x - 0.55, -1.2))
     ground_at(d, (chip_x - 0.55, -1.2))
     ground_at(d, (0, gy))
@@ -710,15 +634,8 @@ def compact_amplifier(circuit):
         d.symbols.append((follower, (nx, 0), (nx + 4.3, 0), "+"))
         out_x = nx + 4.8
         add_wire(d, follower.p, (nx + 4.3, 0), (out_x, 0))
-        add_wire(
-            d,
-            follower.p,
-            (out_x, 0),
-            (out_x, -1.65),
-            (nx - 0.55, -1.65),
-            (nx - 0.55, -0.35),
-            (nx, -0.35),
-        )
+        add_wire(d, follower.p, (out_x, 0), (out_x, -1.65),
+                 (nx - 0.55, -1.65), (nx - 0.55, -0.35), (nx, -0.35))
         d.junctions.setdefault(follower.p, []).append((out_x, 0))
         chip = follower
     if not load_tree:
@@ -755,50 +672,36 @@ def _summing_amplifier(circuit, sources, amp):
     passive = [part for part in circuit.components if part.kind in "RCLXZ"]
     if len(passive) + len(sources) + 1 != len(circuit.components):
         return None
-    legs = []
-    for source in sources:
-        matches = [part for part in passive if {part.p, part.n} == {source.p, tap}]
-        if len(matches) != 1:
-            return None
-        legs.append(matches[0])
-    remaining = [part for part in passive if part not in legs]
-    feedback = [part for part in remaining if {part.p, part.n} == {tap, output}]
-    loads = [part for part in remaining if {part.p, part.n} == {output, ground}]
-    if (
-        len(feedback) != 1
-        or len(loads) > 1
-        or len(feedback) + len(loads) != len(remaining)
-    ):
+    branches = _passive_edges(passive, None)
+    if branches is None:
+        return None
+    input_edges = [frozenset((source.p, tap)) for source in sources]
+    feedback, load = frozenset((tap, output)), frozenset((output, ground))
+    required = {*input_edges, feedback}
+    if not required <= branches.keys() or branches.keys() - required - {load}:
         return None
 
     drawing = Layout()
     sum_x, amp_x, out_x = 8.0, 12.4, 19.1
     rows = [-5.3 * i for i in range(len(sources))]
-    for source, leg, y in zip(sources, legs, rows):
-        place_symbol(drawing, source, source.p, (0, y), (0, y - 2.9))
-        ground_at(drawing, (0, y - 2.9), ground)
+    for source, edge, y in zip(sources, input_edges, rows):
+        _grounded_source(drawing, source, source.p, ground, (0, y), (0, y - 2.9))
         add_wire(drawing, source.p, (0, y), (1.4, y))
-        place_symbol(drawing, leg, source.p, (1.4, y), (sum_x, y))
-        drawing.labels[source.p] = (0, y)
+        place_symbol(drawing, branches[edge], source.p, (1.4, y), (sum_x, y))
     add_wire(drawing, tap, (sum_x, 3.0), *((sum_x, y) for y in rows))
     drawing.junctions[tap] = [(sum_x, y) for y in rows[:-1]]
     drawing.labels[tap] = (sum_x + 1.0, 0)
-    add_wire(
-        drawing, tap, (sum_x, 0), (amp_x - 1.4, 0), (amp_x - 1.4, -0.65), (amp_x, -0.65)
-    )
+    add_wire(drawing, tap, (sum_x, 0), (amp_x - 1.4, 0), (amp_x - 1.4, -0.65), (amp_x, -0.65))
     drawing.symbols.append((amp, (amp_x, -1), (amp_x + 4.3, -1), "-"))
     drawing.positions[amp.name] = (amp_x, -1)
-    add_wire(
-        drawing, ground, (amp_x, -1.35), (amp_x - 0.85, -1.35), (amp_x - 0.85, -3.6)
-    )
+    add_wire(drawing, ground, (amp_x, -1.35), (amp_x - 0.85, -1.35), (amp_x - 0.85, -3.6))
     ground_at(drawing, (amp_x - 0.85, -3.6), ground)
-    place_symbol(drawing, feedback[0], tap, (sum_x, 3.0), (out_x, 3.0))
+    place_symbol(drawing, branches[feedback], tap, (sum_x, 3.0), (out_x, 3.0))
     end = (out_x + 2.5, -1)
     add_wire(drawing, output, (out_x, 3.0), (out_x, -1), (amp_x + 4.3, -1))
-    add_wire(drawing, output, (out_x, -1), end)
     drawing.junctions[output] = [(out_x, -1)]
-    drawing.connectors.append((output, end, output.replace("_", " "), False, False))
-    if loads:
-        place_symbol(drawing, loads[0], output, (out_x, -1), (out_x, -4.6))
+    _connector(drawing, output, (out_x, -1), end)
+    if load in branches:
+        place_symbol(drawing, branches[load], output, (out_x, -1), (out_x, -4.6))
         ground_at(drawing, (out_x, -4.6), ground)
     return drawing

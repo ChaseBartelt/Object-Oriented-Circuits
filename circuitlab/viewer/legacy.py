@@ -29,7 +29,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from circuitlab.math.analysis import Diagnostic, analyze, diagnostics
+from circuitlab.math.analysis import analyze, diagnostics
 from circuitlab.language.compiler import compile_circuit
 from circuitlab.language.syntax import analysis_mode
 from circuitlab.viewer.device_reference import DeviceReference
@@ -40,7 +40,6 @@ from circuitlab.viewer.source_editing import SourceTools
 from circuitlab.model.graph import Circuit, CircuitError, MethodInstance
 from circuitlab.language.linked import CHIP_LIBRARY, imported_definitions, read_includes
 from circuitlab.exporters.ltspice import export_hierarchy, export_schematic
-from circuitlab.math.numbers import format_value
 from circuitlab.tooling.pins import apply_pin_overrides, circuit_text, pin_comment, pin_entries, read_pins
 from circuitlab.layout.persistence import embed_placement, placement_path, read_pin_overrides, read_placement
 from circuitlab.math.quantities import QUANTITIES
@@ -49,10 +48,11 @@ from circuitlab.layout.routing import fast_layout
 from circuitlab.viewer.schematic import SchematicView
 from circuitlab.viewer.scope import Oscilloscope
 from circuitlab.exporters.spice import export_spice
-from circuitlab.language.syntax import INCLUDE, MAIN, has_chip, source_rows
+from circuitlab.language.syntax import MAIN, has_chip, source_rows
+from circuitlab.tooling.session import includes_files, issue_for
 from circuitlab.tooling.trace import wire_trace
 from circuitlab.exporters.verilog import compile_chips, export_verilog
-from circuitlab.viewer.widgets import MODES, STYLESHEET, button, grid_button, search_text, GateLayoutDialog, Results, write_bytes
+from circuitlab.viewer.widgets import MODES, STYLESHEET, button, grid_button, probe_text, search_text, GateLayoutDialog, Results, write_bytes
 from circuitlab.viewer.exports import export_file, hierarchy_layouts, write_companions
 
 MIXED_TEMPLATES = {
@@ -63,14 +63,6 @@ MIXED_TEMPLATES = {
     "L": ("Inductor", "(1m) between(out, 0);"),
     "port": ("Equivalent at two nodes", "port = out 0"),
 }
-
-
-
-
-
-
-
-
 
 
 @dataclass
@@ -553,9 +545,7 @@ class MainWindow(QMainWindow):
             path=self.path, read_source=self.read_linked_source,
         )
 
-    @staticmethod
-    def includes_files(source):
-        return any(INCLUDE.fullmatch(text) for text, _, _ in source_rows(source))
+    includes_files = staticmethod(includes_files)
 
     def refresh_picker(self):
         self.picker.clear()
@@ -875,14 +865,7 @@ class MainWindow(QMainWindow):
                 self.results.search.clear()
             self.status.setText("Pin removed.")
 
-    @staticmethod
-    def issue(error):
-        if error.code == "NonlinearConvergence":
-            return Diagnostic(
-                "error", None, error.message + " Try a transient in Results or export to SPICE.",
-                error.path,
-            )
-        return Diagnostic("error", error.line or 1, error.message, error.path)
+    issue = staticmethod(issue_for)
 
     def show_analysis(self):
         self.analysis_window.show()
@@ -894,32 +877,7 @@ class MainWindow(QMainWindow):
             self.results.search.setText(self.pins[name])
             self.views.setCurrentWidget(self.results)
             kind = "node"
-        result = self.solution
-        if not result or not result.network:
-            self.status.setText("Compile to get probe readings.")
-            return
-        readings = []
-        for network, ac in (
-            (result.dc_network, False),
-            (result.network, result.circuit.mode != "dc"),
-        ):
-            if not network:
-                continue
-            prefix = "AC RMS Â· " if ac else "DC Â· " if result.dc_network else ""
-            if kind == "node" and name in network.nodes:
-                value = network.voltage[network.nodes.index(name)]
-                reference = network.references.get(name, "0")
-                readings.append(
-                    prefix
-                    + f"V({name}) relative to {reference} = "
-                    + format_value(value, "V", ac, False)
-                )
-            elif kind == "component" and name in network.names:
-                i = network.names.index(name)
-                v = format_value(network.branch_voltage[i], "V", ac, False)
-                amps = format_value(network.branch_current[i], "A", ac, False)
-                readings.append(prefix + f"{name} voltage = {v}   |   current = {amps}")
-        self.status.setText("\n".join(readings) or "No result for this selection.")
+        self.status.setText(probe_text(self.solution, kind, name, separator=' Â· '))
 
     def update_title(self):
         name = self.path.name if self.path else "Untitled.ckt"

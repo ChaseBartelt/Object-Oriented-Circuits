@@ -56,7 +56,7 @@ def write_companions(parent, path, files, title):
         if existing != data:
             QMessageBox.warning(parent, title, f"An existing block file uses the name {name}. Choose another folder.")
             return False
-    if any(target == path for target in (path.with_name(name) for name in files)):
+    if any(path.with_name(name) == path for name in files):
         QMessageBox.warning(parent, title, "Choose a different name for the top-level schematic.")
         return False
     return all(write_bytes(parent, target, data, title) for target, data in pending)

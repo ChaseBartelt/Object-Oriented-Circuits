@@ -14,13 +14,8 @@ def hood_levels(circuit, expanded):
     children = []
     groups = {}
     for index, method in enumerate(circuit.instances):
-        ancestor = (
-            None if method.parent is None else children[method.parent]
-        )
-        if ancestor not in levels:
-            children.append(ancestor)
-            continue
-        if ancestor is None and method.kind not in {"chip", "gate"}:
+        ancestor = None if method.parent is None else children[method.parent]
+        if ancestor not in levels or (ancestor is None and method.kind not in {"chip", "gate"}):
             children.append(ancestor)
             continue
         name = f"{METHOD_PREFIX}{index}"
@@ -28,18 +23,6 @@ def hood_levels(circuit, expanded):
         groups[name] = (ancestor, method, [])
         if name in expanded and method.model_available:
             levels[name] = []
-
-    for part in circuit.components:
-        owner = circuit.owners.get(part.name)
-        level = children[owner] if owner is not None else None
-        if level not in levels:
-            groups[level][2].append(part)
-            continue
-        if part.kind == "Q":
-            pins = tuple(zip(("base", "collector", "emitter"), part.terminal_nets))
-            levels[level].append(replace(part, kind="H", package_pins=pins))
-        else:
-            levels[level].append(part)
 
     usage = defaultdict(Counter)
     totals = Counter()
@@ -49,6 +32,13 @@ def hood_levels(circuit, expanded):
         nets = set(part.terminal_nets)
         totals.update(nets)
         usage[level].update(nets)
+        if level not in levels:
+            groups[level][2].append(part)
+        elif part.kind == "Q":
+            pins = tuple(zip(("base", "collector", "emitter"), part.terminal_nets))
+            levels[level].append(replace(part, kind="H", package_pins=pins))
+        else:
+            levels[level].append(part)
 
     for name, (parent, method, members) in reversed(groups.items()):
         inside = usage[name]

@@ -129,10 +129,8 @@ class DeviceLayoutDialog(QDialog):
             self.message.setText(f"Could not preview {device.name}: {error}")
 
     def set_editable(self, editable):
-        self.preview.setEnabled(editable)
-        self.grid_controls.setEnabled(editable)
-        self.automatic.setEnabled(editable)
-        self.apply_button.setEnabled(editable)
+        for control in (self.preview, self.grid_controls, self.automatic, self.apply_button):
+            control.setEnabled(editable)
         self.saved_button.setEnabled(editable and self.layouts.has_saved(self.key))
 
     def draw_device(self, layout):

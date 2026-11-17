@@ -89,8 +89,8 @@ def canonical_constraints(text):
     """Ignore comments and only the two harmless fields Quartus appends."""
     ignored = re.compile(r'set_global_assignment -name (?:LAST_QUARTUS_VERSION "[^"\n]+"|'
                          r'RESERVE_ALL_UNUSED_PINS_NO_OUTPUT_GND "AS INPUT TRI-STATED")')
-    return "\n".join(line.strip() for line in text.splitlines() if line.strip()
-                     and not line.lstrip().startswith("#") and not ignored.fullmatch(line.strip()))
+    return "\n".join(line for line in map(str.strip, text.splitlines())
+                     if line and not line.startswith("#") and not ignored.fullmatch(line))
 
 
 def _input_hashes(directory):
@@ -123,8 +123,9 @@ def compile_de10_lite(source):
     modules = compile_chips(source)
     if len(modules) != 1 or modules[0][0] != TOP:
         raise FpgaError("The DE10-Lite profile requires one HYBRID01 chip.")
-    directions = dict(modules[0][1])
-    for statement in modules[0][2]:
+    _, declared_ports, body, hdl = modules[0]
+    directions = dict(declared_ports)
+    for statement in body:
         if declaration := re.fullmatch(r"(.+?)\s*=\s*(input|output)", statement, re.I):
             if "[" in declaration[1]:
                 raise FpgaError("DE10-Lite physical ports must be scalar pins. Keep buses inside chips and connect individual bits to board outputs.")
@@ -135,13 +136,12 @@ def compile_de10_lite(source):
     switches = [pin for pin in SWITCH_PINS if pin in directions]
     if "MAX10_CLK1_50" not in directions or not switches or "output" not in directions.values():
         raise FpgaError("Declare MAX10_CLK1_50, at least one SW0–SW9 input, and at least one board output.")
-    clocks = [row for row in modules[0][2] if re.match(r"clock\b", row)]
-    for row in clocks:
+    for row in (row for row in body if re.match(r"clock\b", row)):
         match = re.fullmatch(r"clock\s*\(\s*MAX10_CLK1_50\s*,\s*([^()]+)\)\s*\{", row)
         if not match or frequency(match[1], 1) != 50_000_000:
             raise FpgaError("All HYBRID01 clock blocks must use MAX10_CLK1_50 at 50MHz to match the board constraints.")
-    hdl = modules[0][3] + "\n"
-    if _manual_synchronizer(modules[0][2], hdl):
+    hdl += "\n"
+    if _manual_synchronizer(body, hdl):
         if switches != ["SW0"]:
             raise FpgaError("For multiple switches, remove the manual sw_meta/sw_sync declarations and assignments "
                             "and read SW0 directly. Each switch will be synchronized automatically.")
@@ -156,10 +156,10 @@ def compile_de10_lite(source):
     # Separate module scopes allow user state names to coincide with these
     # compiler-generated names. Only the known module declaration is renamed.
     user_hdl = hdl.replace("module HYBRID01 (", "module ooc_user_HYBRID01 (", 1)
-    ports = ",\n".join(f"    {direction} wire {pin}" for pin, direction in modules[0][1])
+    ports = ",\n".join(f"    {direction} wire {pin}" for pin, direction in declared_ports)
     connections = ",\n".join(
         f"        .{pin}({synchronizers[pin][1] if pin in synchronizers else pin})"
-        for pin, _ in modules[0][1]
+        for pin, _ in declared_ports
     )
     declarations_text = "\n".join(declarations)
     updates_text = "\n".join(updates)
@@ -310,11 +310,11 @@ def verify_build(project):
         if ERROR.search(timing + "\n" + flow):
             raise FpgaError("Resolve Quartus errors or critical warnings before programming.")
         sections = re.findall(r"(?m)^Type\s*:\s*(.+)\nSlack\s*:\s*(\S+)", summary)
-        slacks = [slack for _, slack in sections]
         if len(sections) != len(re.findall(r"(?m)^Type\s*:", summary)) or not all(
                 any(word in kind for kind, _ in sections) for word in (" Setup ", " Hold ", " Minimum Pulse Width ")):
             raise FpgaError("Quartus timing results are incomplete.")
-        if any(not Decimal(value).is_finite() or Decimal(value) < 0 for value in slacks):
+        slacks = (Decimal(value) for _, value in sections)
+        if any(not slack.is_finite() or slack < 0 for slack in slacks):
             raise FpgaError("Timing failed. Resolve negative setup/hold/pulse-width slack before programming.")
         for label in UNCONSTRAINED:
             matches = re.findall(rf";\s*{re.escape(label)}\s*;\s*(\d+)\s*;\s*(\d+)\s*;", timing)

@@ -48,14 +48,14 @@ def _block(source):
             start -= 1
         else:
             raise ValueError("The embedded layout separator is missing. Repair the layout block before saving.")
-    rows = source[begin.end():end.start()].splitlines()
     payload = []
-    for row in rows:
-        if not row.strip():
+    for row in source[begin.end():end.start()].splitlines():
+        row = row.lstrip()
+        if not row:
             continue
-        if not row.lstrip().startswith("#"):
+        if not row.startswith("#"):
             raise ValueError("The embedded layout block contains circuit code; it cannot be replaced safely.")
-        payload.append(row.lstrip()[1:].lstrip())
+        payload.append(row[1:].lstrip())
     return start, finish, "\n".join(payload)
 
 
@@ -64,9 +64,7 @@ def _valid_payload(data):
             or not isinstance(data.get("mode"), str) or data["mode"] not in _MODES):
         return False
     rows = data.get("layouts")
-    if not isinstance(rows, list):
-        return False
-    if any(not isinstance(row, list) or len(row) != 3
+    if not isinstance(rows, list) or any(not isinstance(row, list) or len(row) != 3
            or not (row[0] is None or isinstance(row[0], str))
            or not isinstance(row[1], str) or row[1] not in _MODES or not isinstance(row[2], dict) for row in rows):
         return False
@@ -239,9 +237,6 @@ def restore_layout(record, circuit, boundary):
             raise ValueError("Invalid schematic coordinate")
         return x, y
 
-    def points_map(values):
-        return {net: point(p) for net, p in values.items()}
-
     def rotation(turns):
         if type(turns) is not int or turns not in range(4):
             raise ValueError("Invalid schematic rotation")
@@ -280,8 +275,8 @@ def restore_layout(record, circuit, boundary):
                    for net, edges in record["wires"].items()},
             junctions={net: [point(p) for p in positions]
                        for net, positions in record["junctions"].items()},
-            labels=points_map(record["labels"]),
-            boundary=points_map(record["boundary"]),
+            labels={net: point(p) for net, p in record["labels"].items()},
+            boundary={net: point(p) for net, p in record["boundary"].items()},
             crossings={(net, point(a), point(b)): [finite(cut) for cut in cuts]
                        for net, a, b, cuts in record["crossings"]},
             label_offsets={

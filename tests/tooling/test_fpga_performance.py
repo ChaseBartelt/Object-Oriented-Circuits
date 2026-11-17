@@ -38,6 +38,10 @@ class FpgaPerformanceTest(unittest.TestCase):
             rows.append("END")
         path = self.project.directory / performance.PATH_FILE
         path.write_text("\n".join(rows) + "\n", encoding="utf-8")
+        # Model a completed extraction independently of filesystem clock precision.
+        request = json.loads((self.project.directory / performance.REQUEST_FILE).read_text(encoding="utf-8"))
+        stamp = request["requested_ns"] + 1_000_000_000
+        os.utime(path, ns=(stamp, stamp))
         return path
 
     def test_real_report_formats_use_worst_corner_and_resource_capacities(self):

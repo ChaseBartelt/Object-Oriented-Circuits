@@ -27,16 +27,17 @@ def source_target(circuit, name, root, source, read_source):
     line, path = circuit.component_lines.get(name), circuit.component_files.get(name, root)
     path = Path(path or root).resolve()
     text = source if path == Path(root).resolve() else read_source(path)
-    if not line or not 1 <= line <= len(text.splitlines()):
-        raise ValueError('This generated component has no editable source statement. Edit its definition in the IDE.')
     rows = text.splitlines(keepends=True)
+    if not line or not 1 <= line <= len(rows):
+        raise ValueError('This generated component has no editable source statement. Edit its definition in the IDE.')
     offset = sum(map(len, rows[:line-1]))
     code = rows[line-1].partition('#')[0]
+    key = name.casefold()
     matches = []
     for pattern in (PLACED, LEGACY, ASSIGN, CALL):
         for match in pattern.finditer(code):
-            raw = match['name']
-            if name.casefold() == raw.casefold() or name.casefold().startswith(raw.casefold() + '_'):
+            raw = match['name'].casefold()
+            if key == raw or key.startswith(raw + '_'):
                 matches.append(match)
         if matches:
             break
@@ -54,15 +55,16 @@ def edit_value(circuit, name, value, root, source, read_source):
     if any(c in value for c in ';\r\n#{}'):
         raise ValueError('Enter a component value, such as 1k, 100n, 10m, or 2-j2 for an impedance.')
     path, before, offset, match = source_target(circuit, name, root, source, read_source)
-    if 'value' not in match.groupdict():
+    groups = match.groupdict()
+    if 'value' not in groups:
         raise ValueError('Edit the parameter or shared definition that supplies this value in the IDE.')
     replacement = value.strip()
-    if 'value_clause' in match.groupdict() and match['value_clause'] is None:
+    if 'value_clause' in groups and groups['value_clause'] is None:
         start = end = match.end('name')
         replacement = f'({replacement})' if replacement else ''
-    elif 'value_clause' in match.groupdict() and not replacement:
+    elif 'value_clause' in groups and not replacement:
         start, end = match.span('value_clause')
-    elif 'a' in match.groupdict() and not replacement:
+    elif 'a' in groups and not replacement:
         # Legacy node rows need an explicit placement when their value is removed.
         start, end = match.span()
         replacement = f'{match["name"]} between({match["a"]}, {match["b"]})'

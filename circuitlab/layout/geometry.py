@@ -1,6 +1,6 @@
 """Drawing data, terminal geometry and small placement primitives."""
 
-from collections import deque
+from collections import defaultdict, deque
 from dataclasses import dataclass, field
 import math
 
@@ -164,14 +164,8 @@ def component_pins(parts, flipped=(), reversed_parts=()):
     for i, part in enumerate(parts):
         if part.kind == "H":
             pins.extend((i, net, left, offset) for _, net, left, offset in package_pins(part))
-        elif part.kind == "Q":
-            pins.extend((
-                (i, part.p, False, BJT_PIN_OFFSET),
-                (i, part.n, False, -BJT_PIN_OFFSET),
-                (i, part.base, True, 0.0),
-            ))
-        elif part.kind == "S":
-            a, b = (0, 0), (4.3, 0)
+        elif part.kind in {"Q", "S"}:
+            a, b = (0.0, 0.0), (4.3, 0.0)
             pins.extend(
                 (i, net, x == a[0], y) for net, (x, y) in symbol_pins(part, a, b, "+")
             )
@@ -180,9 +174,9 @@ def component_pins(parts, flipped=(), reversed_parts=()):
 
 def placement_order(parts, pins, grounds=("0",), roots=None):
     """Visit nearby components without letting ground dominate placement."""
-    nets = {}
+    nets = defaultdict(set)
     for i, net, *_ in pins:
-        nets.setdefault(net, set()).add(i)
+        nets[net].add(i)
     adjacent = [set() for _ in parts]
     for net, owners in nets.items():
         if net not in grounds and len(owners) <= 6:
@@ -191,7 +185,7 @@ def placement_order(parts, pins, grounds=("0",), roots=None):
     sources = (
         [i for i, e in enumerate(parts) if e.kind in "VI"] if roots is None else roots
     )
-    pending = set(range(len(parts))) - set(sources)
+    pending = set(range(len(parts))).difference(sources)
     queue = deque(sources)
     order = []
     while queue or pending:
@@ -222,13 +216,12 @@ def grid_symbol(part, x, y, grounds, *, top="+", reverse=False):
     """Place a symbol in a grid cell, keeping grounded sources vertical."""
     if part.is_source:
         start, end = (x + 2.15, y), (x + 2.15, y - 2.5)
-        if not source_pin_is_upper(part, True, grounds):
-            start, end = end, start
+        reverse = not source_pin_is_upper(part, True, grounds)
     else:
         width = PACKAGE_WIDTH if part.kind == "H" else 4.3
         start, end = (x, y), (x + width, y)
-        if reverse:
-            start, end = end, start
+    if reverse:
+        start, end = end, start
     return part, start, end, top
 
 

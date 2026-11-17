@@ -1,6 +1,8 @@
 """Data shared by the compiler, solvers, and schematic."""
 
+from collections import defaultdict
 from dataclasses import dataclass, field
+from itertools import chain
 
 Scalar = float | complex
 
@@ -173,28 +175,26 @@ class Circuit:
 
     @property
     def nodes(self) -> tuple[str, ...]:
-        return tuple(
-            dict.fromkeys(
-                [
-                    "0",
-                    *(e.p for e in self.components if e.kind != "H"),
-                    *(e.n for e in self.components if e.kind != "H"),
-                    *(e.in_plus for e in self.components if e.kind in {"O", "S"}),
-                    *(e.in_minus for e in self.components if e.kind in {"O", "S"}),
-                    *(e.base for e in self.components if e.kind == "Q"),
-                    *(net for e in self.components if e.kind == "H" for net in e.terminal_nets),
-                ]
-            )
+        # Preserve terminal-category order without building an intermediate list.
+        nets = chain(
+            ("0",),
+            (e.p for e in self.components if e.kind != "H"),
+            (e.n for e in self.components if e.kind != "H"),
+            (e.in_plus for e in self.components if e.kind in {"O", "S"}),
+            (e.in_minus for e in self.components if e.kind in {"O", "S"}),
+            (e.base for e in self.components if e.kind == "Q"),
+            (net for e in self.components if e.kind == "H" for net in e.terminal_nets),
         )
+        return tuple(dict.fromkeys(nets))
 
 
 def ground_references(grounds, connections):
     """Map connected nodes to their voltage reference, if they have one."""
-    neighbors = {}
+    neighbors = defaultdict(set)
     for terminals in connections:
         terminals = set(terminals)
         for node in terminals:
-            neighbors.setdefault(node, set()).update(terminals - {node})
+            neighbors[node].update(terminals - {node})
     seen, references = set(), {}
     for node in neighbors:
         if node in seen:
@@ -202,9 +202,9 @@ def ground_references(grounds, connections):
         domain = [node]
         seen.add(node)
         for member in domain:
-            for neighbor in neighbors[member] - seen:
-                seen.add(neighbor)
-                domain.append(neighbor)
+            unseen = neighbors[member] - seen
+            seen.update(unseen)
+            domain.extend(unseen)
         returns = grounds.intersection(domain)
         if returns:
             reference = "0" if "0" in returns else min(returns)

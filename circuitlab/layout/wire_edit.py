@@ -60,9 +60,7 @@ def wire_graph(edges, anchors):
         axis = wire_axis((a, b))
         if axis is None:
             # Diagonal leads are terminal runs. Split at any known attachment.
-            for point in endpoints:
-                if segments_intersect((point, point), (a, b)):
-                    cuts[a, b].add(point)
+            cuts[a, b].update(point for point in endpoints if segments_intersect((point, point), (a, b)))
         else:
             lines[axis, a[1 - axis]].append((a, b))
     for (axis, _), group in lines.items():
@@ -124,16 +122,12 @@ def compact_wire(edges, anchors):
 
 
 def replace_route(layout, net, edges):
-    anchors = route_anchors(layout, net)
-    edges, junctions = compact_wire(edges, anchors)
-    if edges:
-        layout.wires[net] = edges
-    else:
-        layout.wires.pop(net, None)
-    if junctions:
-        layout.junctions[net] = junctions
-    else:
-        layout.junctions.pop(net, None)
+    edges, junctions = compact_wire(edges, route_anchors(layout, net))
+    for routes, items in ((layout.wires, edges), (layout.junctions, junctions)):
+        if items:
+            routes[net] = items
+        else:
+            routes.pop(net, None)
     if not edges or ("net", net) not in layout.label_offsets:
         layout.labels.pop(net, None)
 
@@ -148,19 +142,15 @@ def wire_slide_candidates(original, net, edge, distance, *, snap=0, pointer=None
         return
     anchors = route_anchors(original, net)
     graph = wire_graph(original.wires[net], anchors | set(edge))
-    if not any(
-        segments_intersect((p, p), edge)
-        and any(segments_intersect((q, q), edge) for q in neighbors)
-        for p, neighbors in graph.items()
-    ):
+    on_run = {p for p in graph if segments_intersect((p, p), edge)}
+    if not any(q in on_run for p in on_run for q in graph[p]):
         yield original, None
         return
     attached = []
     edges = []
     snap_offsets = Counter()
     for p, neighbors in graph.items():
-        on_run = segments_intersect((p, p), edge)
-        if on_run and (p in anchors or any(not segments_intersect((q, q), edge) for q in neighbors)):
+        if p in on_run and (p in anchors or any(q not in on_run for q in neighbors)):
             attached.append(p)
             if snap:
                 for q in neighbors:
@@ -170,7 +160,7 @@ def wire_slide_candidates(original, net, edge, distance, *, snap=0, pointer=None
                         snap_offsets[q[1 - axis] - a[1 - axis]] += 1
         edges.extend(
             (p, q) for q in neighbors if p < q
-            and (not on_run or not segments_intersect((q, q), edge))
+            and (p not in on_run or q not in on_run)
         )
 
     # Follow the nearest row first; remove more jogs only to break a tie.
@@ -202,10 +192,8 @@ def _shift_run(original, net, edge, axis, distance, edges, attached):
         *edges, shifted_edge, *((p, shifted(p)) for p in attached),
     ])
     # A dangling piece may be pruned entirely when it was attached at one end.
-    if not any(
+    return drawing if any(
         segments_intersect((p, q), shifted_edge)
         and p[1 - axis] == q[1 - axis] == shifted_edge[0][1 - axis]
         for p, q in drawing.wires.get(net, ())
-    ):
-        return original
-    return drawing
+    ) else original

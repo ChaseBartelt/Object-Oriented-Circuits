@@ -18,8 +18,7 @@ from circuitlab.layout.geometry import (
     input_source_indices,
 )
 from circuitlab.layout.automatic import compact, series_runs, source_cells
-from circuitlab.layout.checks import mark_crossings as _mark_crossings
-from circuitlab.layout.checks import preserves_nets, segments_intersect
+from circuitlab.layout.checks import mark_crossings as _mark_crossings, preserves_nets, segments_intersect
 from circuitlab.layout.search import evolve_placements, feedback_pairs, placement_penalty
 from circuitlab.layout.wiring import connector_names, labeled, signal_flow
 from circuitlab.layout.shorten import optimize_layout, wire_length
@@ -61,18 +60,22 @@ def fast_layout(circuit, labels, *, boundary=(), shorten=True):
         cells = source_cells(circuit, order, width, runs)
         candidates.append(cells)
         if len(parts) <= 32:
-            compact_cells = {
+            candidates.append({
                 i: divmod(j, width) for j, i in enumerate(sources + others)
-            }
-            candidates.append(compact_cells)
+            })
+
+    def route(cells, regular):
+        drawing = _channel_layout(
+            circuit, labels, pins, set(), reversed_parts, cells, set(), set(),
+            tight=True, regular=regular, boundary=boundary,
+        )
+        _mark_crossings(drawing)
+        return drawing
+
     best = None
     for regular in (False, True):
         for cells in candidates:
-            layout = _channel_layout(
-                circuit, labels, pins, set(), reversed_parts, cells, set(), set(),
-                tight=True, regular=regular, boundary=boundary,
-            )
-            _mark_crossings(layout)
+            layout = route(cells, regular)
             cost = _layout_cost(layout)
             if best is not None and cost >= best[0]:
                 continue
@@ -85,9 +88,7 @@ def fast_layout(circuit, labels, *, boundary=(), shorten=True):
                 best_length = wire_length(best[1])
                 for trial in islice(_placement_trials(circuit, pins, runs, order), 4):
                     cells = source_cells(circuit, trial, center, runs)
-                    drawing = _channel_layout(circuit, labels, pins, set(), reversed_parts,
-                        cells, set(), set(), tight=True, regular=regular, boundary=boundary)
-                    _mark_crossings(drawing)
+                    drawing = route(cells, regular)
                     trial_length, cost = wire_length(drawing), _layout_cost(drawing)
                     if trial_length < best_length - 1e-8 and cost <= best[0] and preserves_nets(circuit, drawing):
                         best, best_length = (cost, drawing), trial_length
@@ -166,14 +167,15 @@ def _channel_layout(
             elif rotate is not True:
                 # A link between two ordinary signal nets can also turn when
                 # one side is above the other.
-                def neighbor_row(net):
-                    return median_low([
+                neighbor_rows = {
+                    net: median_low([
                         rows[j] for j in groups[net] if pins[j][0] != i
                     ] or [cells[i][0]])
-
-                if neighbor_row(part.p) == neighbor_row(part.n):
+                    for net in (part.p, part.n)
+                }
+                if neighbor_rows[part.p] == neighbor_rows[part.n]:
                     continue
-                live = min((part.p, part.n), key=neighbor_row)
+                live = min(neighbor_rows, key=lambda net: neighbor_rows[net])
             else:
                 continue
             if {part.p, part.n} & (local | separated):
@@ -488,14 +490,12 @@ def _separate_nets(contacts, drawing, budget, local):
 
 def _layout_cost(drawing):
     """Measure the visible cost of a candidate in schematic grid units."""
-    segments = [segment for wires in drawing.wires.values() for segment in wires]
-    length = sum(math.dist(a, b) for a, b in segments)
     gaps = sum(map(len, drawing.crossings.values()))
-    points = [point for segment in segments for point in segment]
+    points = [point for wires in drawing.wires.values() for edge in wires for point in edge]
     points.extend(point for _, a, b, _ in drawing.symbols for point in (a, b))
     xs, ys = zip(*points)
     span = max(max(xs) - min(xs), 1.25 * (max(ys) - min(ys)))
-    return length + 14 * gaps + 16 * len(drawing.connectors) + 0.5 * span
+    return wire_length(drawing) + 14 * gaps + 16 * len(drawing.connectors) + 0.5 * span
 
 
 def _placement_trials(circuit, pins, runs, order):
@@ -636,8 +636,7 @@ def _compact_channels(
 ):
     """Refine the winning placement with shorter routes and nearby component moves."""
     def cost(layout):
-        length = sum(math.dist(a, b) for wires in layout.wires.values() for a, b in wires)
-        return length, sum(map(len, layout.crossings.values()))
+        return wire_length(layout), sum(map(len, layout.crossings.values()))
 
     def clear_symbols(layout):
         """Reject a shortcut through the interior of another symbol."""
@@ -713,12 +712,13 @@ def _compact_channels(
     for members in owners.values():
         for i in members:
             neighbors[i].update(members - {i})
+    neighbors = {i: sorted(neighbors[i]) for i in range(len(parts))}
 
     def distance(unit, placement):
         return sum(
             abs(placement[i][0] - placement[j][0])
             + abs(placement[i][1] - placement[j][1])
-            for i in unit for j in sorted(neighbors[i]) if j not in unit
+            for i in unit for j in neighbors[i] if j not in unit
         )
 
     # Try the most stretched blocks first. A link can move to a free slot
@@ -771,13 +771,12 @@ def _compact_channels(
             try_layout(best_cells, rotations, offsets | {i: offset}, flips)
         if part.kind == "V" and not grounded:
             try_layout(best_cells, rotations, offsets, flips ^ {i})
-    if len(sources) > 1:
-        # Change the vertical order of batteries as a unit, including both
-        # terminals. Their rails still start at the source and run right.
-        for a, b in zip(sources, sources[1:]):
-            if best_cells[a][1] == best_cells[b][1]:
-                trial = best_cells | {a: best_cells[b], b: best_cells[a]}
-                try_layout(trial, rotations, offsets, flips)
+    # Change the vertical order of batteries as a unit, including both
+    # terminals. Their rails still start at the source and run right.
+    for a, b in zip(sources, sources[1:]):
+        if best_cells[a][1] == best_cells[b][1]:
+            trial = best_cells | {a: best_cells[b], b: best_cells[a]}
+            try_layout(trial, rotations, offsets, flips)
 
     # Recheck the rail drops after moving sources and branches. A floating
     # return can use the open edge column without crossing a symbol below it.
@@ -816,8 +815,9 @@ def _shorten_rail_branches(circuit, drawing, cost, clear_symbols):
     def branch_edges(edges, pin, rail):
         """Walk an unshared drop from its terminal to the rail."""
         branch = []
+        edges = edges[1:]
         while not segments_intersect((pin, pin), rail):
-            touching = [edge for edge in edges[1:] if pin in edge and edge not in branch]
+            touching = [edge for edge in edges if pin in edge and edge not in branch]
             if len(touching) != 1:
                 return []
             edge = touching[0]
@@ -852,9 +852,9 @@ def _shorten_rail_branches(circuit, drawing, cost, clear_symbols):
         lanes.extend(sorted(((l + r) / 2 for l, r in zip(xs, xs[1:])),
                             key=lambda x: abs(x - center))[:8])
         old_gaps = cost(drawing)[1]
+        y = (py + ny) / 2
+        direction = 1 if py > ny else -1
         for x in lanes:
-            y = (py + ny) / 2
-            direction = 1 if py > ny else -1
             new_a, new_b = (x, y + direction * 1.25), (x, y - direction * 1.25)
             clearance = ((x - 0.9, y - 1.9), (x + 0.9, y + 1.9))
             if any(

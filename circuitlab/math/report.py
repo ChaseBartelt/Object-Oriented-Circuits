@@ -147,22 +147,16 @@ def result_rows(result):
         )
 
     for key, (name, unit) in info.items():
-        if key in c.known:
+        provided = key in c.known
+        values = c.known if provided else result.calculated
+        if key in values:
             add(
                 f"{key} · {name}",
-                c.equations.get(key, "Given"),
-                c.known[key],
+                c.equations.get(key, "Given") if provided else c.equations[key],
+                values[key],
                 unit,
                 ac and key in {"V", "I", "Z", "ZL", "ZC"},
-                True,
-            )
-        elif key in result.calculated:
-            add(
-                f"{key} · {name}",
-                c.equations[key],
-                result.calculated[key],
-                unit,
-                ac and key in {"V", "I", "Z", "ZL", "ZC"},
+                provided,
             )
     for reading in result.readings:
         add(*reading)
@@ -380,15 +374,13 @@ def component_labels(circuit):
         frequency = 1 / circuit.known["T"]
     for p in circuit.components:
         name = p.label or p.name
-        label = [name.replace("_", " ")]
+        labels[p.name] = label = [name.replace("_", " ")]
         if p.kind in {"O", "H", "S"}:
-            labels[p.name] = label
             continue
         if p.kind == "Q":
             label.append(p.transistor_type.upper())
             if p.model:
                 label.append(p.model)
-            labels[p.name] = label
             continue
         unit = UNITS[p.kind]
         if p.value is None:
@@ -414,5 +406,4 @@ def component_labels(circuit):
             label.append(" + ".join(levels))
             if p.value and frequency is not None:
                 label.append(format_value(frequency, "Hz"))
-        labels[p.name] = label
     return labels

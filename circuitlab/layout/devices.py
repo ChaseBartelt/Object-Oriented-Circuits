@@ -39,28 +39,27 @@ class LibraryDevice:
 
 def library_devices():
     """Read real declarations; include-only alias files are not extra devices."""
-    devices = []
-    for path in sorted(CHIP_LIBRARY.rglob("*.ckt")):
-        for kind, name, pins in methods(path.read_text(encoding="utf-8-sig")).values():
-            devices.append(LibraryDevice(
-                name, kind, path.relative_to(CHIP_LIBRARY).as_posix(),
-                tuple(pin.strip() for pin in pins.split(",") if pin.strip()),
-            ))
-    return tuple(devices)
+    return tuple(
+        LibraryDevice(name, kind, path.relative_to(CHIP_LIBRARY).as_posix(),
+                      tuple(pin.strip() for pin in pins.split(",") if pin.strip()))
+        for path in sorted(CHIP_LIBRARY.rglob("*.ckt"))
+        for kind, name, pins in methods(path.read_text(encoding="utf-8-sig")).values()
+    )
 
 
 def device_preview(device):
     """Instantiate distinct signal ports, retaining nested package identities."""
     circuit = compile_circuit(device.example, render_only=True)
+    instance = circuit.instances[0]
     # A top-level `circuit` normally flattens. Isolate it for layout editing just
     # as it appears when called inside a chip, without changing its definition.
-    if circuit.instances[0].kind == "circuit":
+    if instance.kind == "circuit":
         circuit = replace(circuit, instances=[
-            replace(circuit.instances[0], kind="chip"), *circuit.instances[1:],
+            replace(instance, kind="chip"), *circuit.instances[1:],
         ])
-    root = METHOD_PREFIX + "0"
-    if not circuit.instances[0].model_available:
+    if not instance.model_available:
         return circuit, None, None, ()
+    root = METHOD_PREFIX + "0"
     _, view, _, boundary = next(row for row in hood_levels(circuit, {root}) if row[0] == root)
     return circuit, root, view, boundary
 
@@ -93,14 +92,13 @@ class DeviceLayouts(GateLayouts):
         if not isinstance(key, str):
             return super().saved(key)
         raw = self.raw(key)
-        if raw:
-            try:
-                _, _, view, boundary = self.preview(key)
-                if view is not None:
-                    return restore_layout(json.loads(raw), view, boundary)
-            except (TypeError, ValueError, KeyError):
-                pass
-        return None
+        if not raw:
+            return None
+        try:
+            _, _, view, boundary = self.preview(key)
+            return restore_layout(json.loads(raw), view, boundary) if view is not None else None
+        except (TypeError, ValueError, KeyError):
+            return None
 
     def for_instance(self, instance, view, boundary, *, use_default=True):
         if instance.builtin_gate:

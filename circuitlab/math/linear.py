@@ -50,14 +50,15 @@ class NodalBackend:
     def solve(self, circuit, *, ac, frequency=None, port=None):
         circuit.require_values()
         parts = circuit.components
+        nonlinear = any(part.kind in {"Q", "S"} for part in parts)
         if any(part.kind == "Z" for part in parts):
             if not ac or circuit.mode != "ac":
                 raise CircuitError("Theoretical impedance Z supports AC steady state only; "
                                    "use physical R/L/C components for DC or transient analysis.", code="UnsupportedComponent")
-            if any(part.kind in {"Q", "S"} for part in parts):
+            if nonlinear:
                 raise CircuitError("Theoretical impedance Z cannot be combined with native BJTs or switches: "
                                    "their native solver supports DC and time-domain analysis, not AC.", code="UnsupportedComponent")
-        if any(part.kind in {"Q", "S"} for part in parts):
+        if nonlinear:
             if ac or port or circuit.mode != "dc":
                 raise CircuitError("Use DC for the built-in nonlinear operating point. Use SPICE for AC or port analysis.",
                                    code="UnsupportedComponent")

@@ -17,7 +17,6 @@ from circuitlab.layout.devices import DeviceLayouts
 from circuitlab.layout.persistence import (
     read_pin_overrides, read_placement, embed_placement,
 )
-from circuitlab.math.numbers import format_value
 from circuitlab.math.report import pin_rows, result_rows
 from circuitlab.model.graph import CircuitError
 from circuitlab.tooling.session import CircuitSession, includes_files, issue_for
@@ -29,7 +28,7 @@ from circuitlab.viewer.schematic import SchematicView
 from circuitlab.viewer.scope import Oscilloscope
 from circuitlab.viewer.source_editing import SourceTools
 from circuitlab.viewer.widgets import (
-    GateLayoutDialog, MODES, Results, STYLESHEET, button, grid_button, search_text,
+    GateLayoutDialog, MODES, Results, STYLESHEET, button, grid_button, probe_text, search_text,
 )
 
 
@@ -364,25 +363,7 @@ class ViewerWindow(QMainWindow):
             self.results.search.setText(self.pins[name])
             self.views.setCurrentWidget(self.results)
             kind = "node"
-        result = self.solution
-        if not result or not result.network:
-            self.status.setText("Compile to get probe readings.")
-            return
-        readings = []
-        for network, ac in ((result.dc_network, False), (result.network, result.circuit.mode != "dc")):
-            if not network:
-                continue
-            prefix = "AC RMS · " if ac else "DC · " if result.dc_network else ""
-            if kind == "node" and name in network.nodes:
-                value = network.voltage[network.nodes.index(name)]
-                reference = network.references.get(name, "0")
-                readings.append(prefix + f"V({name}) relative to {reference} = " + format_value(value, "V", ac, False))
-            elif kind == "component" and name in network.names:
-                i = network.names.index(name)
-                voltage = format_value(network.branch_voltage[i], "V", ac, False)
-                current = format_value(network.branch_current[i], "A", ac, False)
-                readings.append(prefix + f"{name} voltage = {voltage}   |   current = {current}")
-        self.status.setText("\n".join(readings) or "No result for this selection.")
+        self.status.setText(probe_text(self.solution, kind, name))
 
     def toggle_pin_tool(self, active):
         if active and not self.schematic.circuit:

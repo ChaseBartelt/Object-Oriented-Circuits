@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
 from circuitlab.math.digital import DigitalSimulation
 from circuitlab.model.graph import CircuitError
 from circuitlab.viewer.logic_scene import LogicSceneView
+from circuitlab.viewer.widgets import button
 
 
 HIGH = "#55d991"
@@ -126,14 +127,9 @@ class DigitalSimulator(QWidget):
         self.profile.addItem("DE10-Lite switches", "de10-lite")
         self.profile.currentIndexChanged.connect(self._profile_changed)
         toolbar.addWidget(self.profile)
-        self.run_button = QPushButton("Run")
-        self.step_button = QPushButton("Step")
-        self.reset_button = QPushButton("Reset")
-        self.run_button.clicked.connect(self.toggle)
-        self.step_button.clicked.connect(self.step)
-        self.reset_button.clicked.connect(self.reset)
-        for control in (self.run_button, self.step_button, self.reset_button):
-            toolbar.addWidget(control)
+        self.run_button = button("Run", self.toggle, toolbar)
+        self.step_button = button("Step", self.step, toolbar)
+        self.reset_button = button("Reset", self.reset, toolbar)
         self.speed_button = QPushButton("Speed: 100%")
         speed_menu = QMenu(self.speed_button)
         self.speed_actions = QActionGroup(speed_menu)

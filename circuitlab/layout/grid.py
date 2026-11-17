@@ -63,11 +63,8 @@ def _clear_ground_contact(circuit, drawing, step):
 
 
 def _aligned(original, step, bias):
-    def scalar(value):
-        return round(math.floor(value / step + 0.5 + bias) * step, 8)
-
     def snap(pos):
-        return tuple(map(scalar, pos))
+        return tuple(round(math.floor(value / step + 0.5 + bias) * step, 8) for value in pos)
 
     symbols = []
     for part, a, b, top in original.symbols:
@@ -102,10 +99,11 @@ def _aligned(original, step, bias):
     routes = defaultdict(list)
     for net, edges in original.wires.items():
         graph = wire_graph(edges, route_anchors(original, net))
+        snapped = {pos: snap(pos) for pos in graph}
         for a, neighbors in graph.items():
             for b in neighbors:
-                if a < b and snap(a) != snap(b):
-                    routes[net].append((snap(a), snap(b)))
+                if a < b and snapped[a] != snapped[b]:
+                    routes[net].append((snapped[a], snapped[b]))
 
     # Updated pin spacing may differ slightly from independently rounded wire
     # ends. Join them on grid rows/columns and let compact_wire remove old stubs.

@@ -1,20 +1,19 @@
 """Shared schematic layouts for built-in gates."""
 
 import json
-from pathlib import Path
-import tempfile
 import os
+import tempfile
 from collections import defaultdict
 from dataclasses import replace
 from functools import lru_cache
+from pathlib import Path
 
 from circuitlab.language.compiler import compile_circuit
 from circuitlab.language.gates import gate_body
 from circuitlab.layout.hierarchy import METHOD_PREFIX, hood_levels
 from circuitlab.layout.geometry import BJT_PIN_OFFSET, PACKAGE_WIDTH, Layout, add_wire, ground_at, place_symbol
-from circuitlab.layout.checks import preserves_nets
+from circuitlab.layout.checks import mark_crossings as _mark_crossings, preserves_nets
 from circuitlab.layout.persistence import pack_layout, restore_layout
-from circuitlab.layout.checks import mark_crossings as _mark_crossings
 from circuitlab.layout.wire_edit import replace_route
 
 
@@ -33,15 +32,11 @@ def gate_preview(name, inputs):
 @lru_cache(maxsize=64)
 def default_gate_layout(name, inputs):
     """Build the default arrangement for gates with dedicated layouts."""
-    if name == "nand" and inputs >= 2:
-        build = _nand_layout
-    elif name == "and" and inputs >= 3:
-        build = _and_layout
-    elif name == "or" and inputs >= 2:
-        build = _or_layout
-    elif name == "nor" and inputs >= 1:
-        build = _nor_layout
-    else:
+    build, minimum = {
+        "nand": (_nand_layout, 2), "and": (_and_layout, 3),
+        "or": (_or_layout, 2), "nor": (_nor_layout, 1),
+    }.get(name, (None, 0))
+    if build is None or not (inputs >= minimum):
         return None
     circuit, _ = gate_preview(name, inputs)
     drawing = build(circuit.components)
@@ -51,11 +46,19 @@ def default_gate_layout(name, inputs):
     return drawing if preserves_nets(circuit, drawing) else None
 
 
+def _place_part(drawing, part, start, end):
+    place_symbol(drawing, part, part.p, start, end)
+
+
+def _ground_lead(drawing, net, *points):
+    add_wire(drawing, net, *points)
+    ground_at(drawing, points[-1], net)
+
+
 def _nand_layout(parts):
     pullup, capacitor, *input_rows = parts
     vcc, output, ground = pullup.p, pullup.n, capacitor.n
-    drawing = Layout()
-    drawing.boundary.update({vcc: (0, 0), output: (0, -1.8)})
+    drawing = Layout(boundary={vcc: (0, 0), output: (0, -1.8)})
 
     pullup_left, pullup_right = (5.75, 0), (10.05, 0)
     cap_left, cap_right = (15.35, 0), (19.65, 0)
@@ -67,8 +70,7 @@ def _nand_layout(parts):
     add_wire(drawing, vcc, drawing.boundary[vcc], pullup_left)
     add_wire(drawing, output, pullup_right, output_rail, cap_left)
     add_wire(drawing, output, drawing.boundary[output], output_tap, output_rail)
-    add_wire(drawing, ground, cap_right, cap_ground)
-    ground_at(drawing, cap_ground, ground)
+    _ground_lead(drawing, ground, cap_right, cap_ground)
 
     _place_input_stack(drawing, input_rows, output_tap, resistor_x=0.5, row_left=5, row_y=-4.55)
     return drawing
@@ -79,12 +81,6 @@ def _and_layout(parts):
     output_pullup, output_cap, driver_resistor, driver = stages[-4:]
     input_rows = stages[:-4]
     drawing = Layout()
-
-    def place(part, start, end):
-        place_symbol(drawing, part, part.p, start, end)
-
-    def wire(net, *points):
-        add_wire(drawing, net, *points)
 
     vcc, inverted, output, ground = input_pullup.p, input_pullup.n, driver.p, driver.n
     rail_y, inverted_y = -5.25, -10
@@ -97,30 +93,27 @@ def _and_layout(parts):
     drawing.boundary.update({vcc: (0, 0), output: (0, rail_y)})
 
     # Two pull-ups share the supply rail. The inverter and its output are on the right.
-    place(input_pullup, (pullup_x, -0.25), (pullup_x, -4.55))
-    place(output_pullup, (14.4, 0), (18.7, 0))
-    place(driver, (driver_left, driver_y), (driver_right, driver_y))
-    wire(vcc, drawing.boundary[vcc], (14.4, 0))
-    wire(vcc, (pullup_x, 0), (pullup_x, -0.25))
-    wire(output, (18.7, 0), (output_x, 0), collector, (output_x, rail_y), drawing.boundary[output])
-    wire(output, (driver_right, collector_y), collector)
-    wire(ground, (driver_right, emitter_y), (23.5, emitter_y), (23.5, -3.6))
-    ground_at(drawing, (23.5, -3.6), ground)
+    _place_part(drawing, input_pullup, (pullup_x, -0.25), (pullup_x, -4.55))
+    _place_part(drawing, output_pullup, (14.4, 0), (18.7, 0))
+    _place_part(drawing, driver, (driver_left, driver_y), (driver_right, driver_y))
+    add_wire(drawing, vcc, drawing.boundary[vcc], (14.4, 0))
+    add_wire(drawing, vcc, (pullup_x, 0), (pullup_x, -0.25))
+    add_wire(drawing, output, (18.7, 0), (output_x, 0), collector, (output_x, rail_y), drawing.boundary[output])
+    add_wire(drawing, output, (driver_right, collector_y), collector)
+    _ground_lead(drawing, ground, (driver_right, emitter_y), (23.5, emitter_y), (23.5, -3.6))
 
     # Keep both capacitor branches and the driver input above the input rows.
-    place(output_cap, (6.75, -7.5), (2.45, -7.5))
-    wire(output, (7.25, rail_y), (7.25, -7.5), (6.75, -7.5))
-    wire(ground, (2.45, -7.5), (1.25, -7.5))
-    ground_at(drawing, (1.25, -7.5), ground)
+    _place_part(drawing, output_cap, (6.75, -7.5), (2.45, -7.5))
+    add_wire(drawing, output, (7.25, rail_y), (7.25, -7.5), (6.75, -7.5))
+    _ground_lead(drawing, ground, (2.45, -7.5), (1.25, -7.5))
     drawing.ground_rotations[1.25, -7.5] = 1
-    place(input_cap, (16.75, inverted_y), (21.05, inverted_y))
-    wire(inverted, (pullup_x, -4.55), (pullup_x, inverted_y), inverted_junction, (16.75, inverted_y))
-    wire(ground, (21.05, inverted_y), (22.25, inverted_y), (22.25, -11.25))
-    ground_at(drawing, (22.25, -11.25), ground)
-    place(driver_resistor, (driver_input_x, -9.65), (driver_input_x, -5.35))
+    _place_part(drawing, input_cap, (16.75, inverted_y), (21.05, inverted_y))
+    add_wire(drawing, inverted, (pullup_x, -4.55), (pullup_x, inverted_y), inverted_junction, (16.75, inverted_y))
+    _ground_lead(drawing, ground, (21.05, inverted_y), (22.25, inverted_y), (22.25, -11.25))
+    _place_part(drawing, driver_resistor, (driver_input_x, -9.65), (driver_input_x, -5.35))
     drawing.label_offsets["component", driver_resistor.name] = (4, 0)
-    wire(inverted, (driver_input_x, -9.65), inverted_junction)
-    wire(driver.base, (driver_input_x, -5.35), (driver_input_x, driver_y), (driver_left, driver_y))
+    add_wire(drawing, inverted, (driver_input_x, -9.65), inverted_junction)
+    add_wire(drawing, driver.base, (driver_input_x, -5.35), (driver_input_x, driver_y), (driver_left, driver_y))
 
     _place_input_stack(drawing, input_rows, inverted_junction, resistor_x=2.5, row_left=7.5, row_y=-12.75)
     return drawing
@@ -129,8 +122,7 @@ def _and_layout(parts):
 def _nor_layout(parts):
     pullup, capacitor, *input_rows = parts
     vcc, output, ground = pullup.p, pullup.n, capacitor.n
-    drawing = Layout()
-    drawing.boundary.update({vcc: (0, 1.4), output: (0, 0)})
+    drawing = Layout(boundary={vcc: (0, 1.4), output: (0, 0)})
     collector_bus = (17.3, 0)
     pullup_left, pullup_right = (2.8, 1.4), (7.1, 1.4)
     cap_bottom, cap_top = (8.6, 0.1), (8.6, 4.4)
@@ -143,8 +135,7 @@ def _nor_layout(parts):
     add_wire(drawing, output, drawing.boundary[output], collector_bus)
     add_wire(drawing, output, pullup_right, (pullup_right[0], 0))
     add_wire(drawing, output, cap_bottom, (cap_bottom[0], 0))
-    add_wire(drawing, ground, cap_top, (cap_ground[0], cap_top[1]), cap_ground)
-    ground_at(drawing, cap_ground, ground)
+    _ground_lead(drawing, ground, cap_top, (cap_ground[0], cap_top[1]), cap_ground)
 
     rows = list(_place_input_rows(
         drawing, input_rows, resistor_x=4.6, row_left=9, row_y=-3, row_pitch=4.2,
@@ -156,16 +147,8 @@ def _nor_layout(parts):
 def _or_layout(parts):
     input_pullup, input_cap, *stages = parts
     output_pullup, output_cap, driver_resistor, driver = stages[-4:]
-    drawing = Layout()
-
-    def place(part, start, end):
-        place_symbol(drawing, part, part.p, start, end)
-
-    def wire(net, *points):
-        add_wire(drawing, net, *points)
-
     vcc, inverted, output, ground = input_pullup.p, input_pullup.n, driver.p, driver.n
-    drawing.boundary.update({vcc: (2.25, 0), output: (2.25, -1)})
+    drawing = Layout(boundary={vcc: (2.25, 0), output: (2.25, -1)})
     row_left, driver_y = 5.25, -4.9
     row_right = row_left + PACKAGE_WIDTH
     output_x, input_cap_x, collector_x = 15.9, 13.75, 17.25
@@ -174,32 +157,29 @@ def _or_layout(parts):
     driver_collector_y = driver_y + BJT_PIN_OFFSET
 
     # Supply and output rails run above the inverter.
-    place(output_pullup, (11.6, 0), (output_x, 0))
-    place(output_cap, (16.2, -1), (20.5, -1))
-    place(driver, (row_left, driver_y), (row_right, driver_y))
-    wire(vcc, drawing.boundary[vcc], supply_branch, (11.6, 0))
-    wire(output, (output_x, 0), output_tap, (output_x, driver_collector_y),
+    _place_part(drawing, output_pullup, (11.6, 0), (output_x, 0))
+    _place_part(drawing, output_cap, (16.2, -1), (20.5, -1))
+    _place_part(drawing, driver, (row_left, driver_y), (row_right, driver_y))
+    add_wire(drawing, vcc, drawing.boundary[vcc], supply_branch, (11.6, 0))
+    add_wire(drawing, output, (output_x, 0), output_tap, (output_x, driver_collector_y),
          (row_right, driver_collector_y))
-    wire(output, drawing.boundary[output], output_tap, (16.2, -1))
-    wire(ground, (20.5, -1), (20.5, -1.85))
-    ground_at(drawing, (20.5, -1.85), ground)
+    add_wire(drawing, output, drawing.boundary[output], output_tap, (16.2, -1))
+    _ground_lead(drawing, ground, (20.5, -1), (20.5, -1.85))
     driver_emitter_y = driver_y - BJT_PIN_OFFSET
-    wire(ground, (row_right, driver_emitter_y), (13, driver_emitter_y), (13, -6.5))
-    ground_at(drawing, (13, -6.5), ground)
+    _ground_lead(drawing, ground, (row_right, driver_emitter_y), (13, driver_emitter_y), (13, -6.5))
 
     # The first stage feeds the inverter through the resistor below it.
     bus_y = -9.6
-    place(input_pullup, (10.75, -2.6), (6.45, -2.6))
-    wire(vcc, supply_branch, (10.75, -2.6))
-    wire(inverted, (6.45, -2.6), (4.25, -2.6), (4.25, bus_y), (collector_x, bus_y))
-    place(driver_resistor, (12.4, -8.1), (8.1, -8.1))
-    wire(inverted, (12.4, -8.1), (12.4, bus_y))
-    wire(driver.base, (8.1, -8.1), (4.65, -8.1), (4.65, driver_y), (row_left, driver_y))
-    place(input_cap, (input_cap_x, driver_y), (18.05, driver_y))
+    _place_part(drawing, input_pullup, (10.75, -2.6), (6.45, -2.6))
+    add_wire(drawing, vcc, supply_branch, (10.75, -2.6))
+    add_wire(drawing, inverted, (6.45, -2.6), (4.25, -2.6), (4.25, bus_y), (collector_x, bus_y))
+    _place_part(drawing, driver_resistor, (12.4, -8.1), (8.1, -8.1))
+    add_wire(drawing, inverted, (12.4, -8.1), (12.4, bus_y))
+    add_wire(drawing, driver.base, (8.1, -8.1), (4.65, -8.1), (4.65, driver_y), (row_left, driver_y))
+    _place_part(drawing, input_cap, (input_cap_x, driver_y), (18.05, driver_y))
     drawing.label_offsets["component", input_cap.name] = (0, -1.95)
-    wire(inverted, (input_cap_x, driver_y), (input_cap_x, bus_y))
-    wire(ground, (18.05, driver_y), (18.05, -6.1))
-    ground_at(drawing, (18.05, -6.1), ground)
+    add_wire(drawing, inverted, (input_cap_x, driver_y), (input_cap_x, bus_y))
+    _ground_lead(drawing, ground, (18.05, driver_y), (18.05, -6.1))
 
     rows = list(_place_input_rows(
         drawing, stages[:-4], resistor_x=0.65, row_left=row_left, row_y=-13, row_pitch=4.6,
@@ -224,8 +204,7 @@ def _connect_parallel_rows(drawing, rows, collector_bus, *, first_tap_x=None):
     for transistor, _, emitter in rows:
         ground_x = emitter[0] + 0.95
         emitter_ground = (ground_x, emitter[1] - 0.85)
-        add_wire(drawing, transistor.n, emitter, (ground_x, emitter[1]), emitter_ground)
-        ground_at(drawing, emitter_ground, transistor.n)
+        _ground_lead(drawing, transistor.n, emitter, (ground_x, emitter[1]), emitter_ground)
     drawing.boundary[transistor.n] = emitter_ground
 
 
@@ -240,8 +219,7 @@ def _place_input_stack(drawing, input_rows, incoming, *, resistor_x, row_left, r
         add_wire(drawing, transistor.n, emitter, incoming)
     ground = input_rows[-1].n
     stack_ground = (stack_x, incoming[1] - 1.5)
-    add_wire(drawing, ground, incoming, stack_ground)
-    ground_at(drawing, stack_ground, ground)
+    _ground_lead(drawing, ground, incoming, stack_ground)
     drawing.boundary[ground] = stack_ground
 
 
@@ -253,8 +231,8 @@ def _place_input_rows(drawing, input_rows, *, resistor_x, row_left, row_y, row_p
         port, resistor_start = (0, row_y), (resistor_x, row_y)
         base = (row_left, row_y)
         drawing.boundary[resistor.p] = port
-        place_symbol(drawing, resistor, resistor.p, resistor_start, (resistor_end, row_y))
-        place_symbol(drawing, transistor, transistor.p, base, (row_right, row_y))
+        _place_part(drawing, resistor, resistor_start, (resistor_end, row_y))
+        _place_part(drawing, transistor, base, (row_right, row_y))
         add_wire(drawing, resistor.p, port, resistor_start)
         add_wire(drawing, transistor.base, (resistor_end, row_y), base)
         yield transistor, (row_right, row_y + BJT_PIN_OFFSET), (row_right, row_y - BJT_PIN_OFFSET)
@@ -287,23 +265,20 @@ class GateLayouts:
             return {}
 
     def raw(self, key):
-        raw = self.settings.value(self.path(key)) or self.bundled().get(self.path(key))
+        path = self.path(key)
+        raw = self.settings.value(path) or self.bundled().get(path)
         return json.dumps(raw) if isinstance(raw, dict) else raw
 
     def publish(self, path=BUNDLED_LAYOUTS):
         """Write active shared defaults atomically for source control/distribution."""
         records = self.bundled()
-        for name in self.settings.allKeys():
-            if name.startswith(("gate-layouts/v1/", "device-layouts/v1/")):
-                records[name] = self.settings.value(name)
-        for name in list(records):
-            automatic = name.replace("/v1/", "/automatic/v1/", 1)
-            if self.settings.value(automatic, False, type=bool):
-                del records[name]
+        records.update({name: self.settings.value(name) for name in self.settings.allKeys()
+                        if name.startswith(("gate-layouts/v1/", "device-layouts/v1/"))})
         # Decode before writing, so malformed personal settings cannot replace
         # a valid file. Structured JSON keeps source-control diffs readable.
         records = {name: json.loads(record) if isinstance(record, str) else record
-                   for name, record in records.items()}
+                   for name, record in records.items()
+                   if not self.settings.value(name.replace("/v1/", "/automatic/v1/", 1), False, type=bool)}
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = None
@@ -320,13 +295,13 @@ class GateLayouts:
 
     def saved(self, key):
         raw = self.raw(key)
-        if raw:
-            try:
-                circuit, boundary = gate_preview(*key)
-                return restore_layout(json.loads(raw), circuit, boundary)
-            except (TypeError, ValueError):
-                pass
-        return None
+        if not raw:
+            return None
+        try:
+            circuit, boundary = gate_preview(*key)
+            return restore_layout(json.loads(raw), circuit, boundary)
+        except (TypeError, ValueError):
+            return None
 
     def get(self, key):
         if key not in self.cache:
@@ -389,9 +364,7 @@ def rebind_layout(layout, template, view, pins, boundary, *, template_pins=None)
 
     # Tied pins can share a net while their original leads remain in place.
     # Matching connectors or ground symbols join those leads.
-    ports = defaultdict(list)
-    for net, pos in layout.boundary.items():
-        ports[nets[net]].append(pos)
+    ports = merge({net: [pos] for net, pos in layout.boundary.items()})
     labels = {}
     for pin, actual in ports_by_name.items():
         labels.setdefault(actual, pin)

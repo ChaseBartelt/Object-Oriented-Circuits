@@ -1,15 +1,19 @@
 """Quantity names, labels and base SI units shared by the compiler and UI."""
 
+_COMMON = {
+    "V": ("Voltage", "V"),
+    "I": ("Current", "A"),
+    "R": ("Resistance", "ohm"),
+    "P": ("Power", "W"),
+    "C": ("Capacitance", "F"),
+    "L": ("Inductance", "H"),
+    "tauRC": ("RC time constant", "s"),
+    "tauRL": ("RL time constant", "s"),
+}
+
 QUANTITIES = {
     "dc": {
-        "V": ("Voltage", "V"),
-        "I": ("Current", "A"),
-        "R": ("Resistance", "ohm"),
-        "P": ("Power", "W"),
-        "C": ("Capacitance", "F"),
-        "L": ("Inductance", "H"),
-        "tauRC": ("RC time constant", "s"),
-        "tauRL": ("RL time constant", "s"),
+        **_COMMON,
         "Vmag": ("Voltage magnitude", "V"),
         "Imag": ("Current magnitude", "A"),
         "E": ("Energy transferred", "J"),
@@ -25,14 +29,10 @@ QUANTITIES = {
         "eta": ("Efficiency (0–1)", ""),
     },
     "ac": {
+        **_COMMON,
         "V": ("Voltage phasor (RMS)", "V"),
         "I": ("Current phasor (RMS)", "A"),
-        "R": ("Resistance", "ohm"),
         "P": ("Real power", "W"),
-        "C": ("Capacitance", "F"),
-        "L": ("Inductance", "H"),
-        "tauRC": ("RC time constant", "s"),
-        "tauRL": ("RL time constant", "s"),
         "Z": ("Impedance", "ohm"),
         "Zmag": ("Impedance magnitude", "ohm"),
         "X": ("Reactance", "ohm"),
@@ -64,14 +64,7 @@ QUANTITIES = {
         "torque": ("Shaft torque", "Nm"),
     },
     "transient": {
-        "V": ("Voltage", "V"),
-        "I": ("Current", "A"),
-        "R": ("Resistance", "ohm"),
-        "P": ("Power", "W"),
-        "C": ("Capacitance", "F"),
-        "L": ("Inductance", "H"),
-        "tauRC": ("RC time constant", "s"),
-        "tauRL": ("RL time constant", "s"),
+        **_COMMON,
         "t": ("Elapsed time", "s"),
         "Vsrc": ("Step source voltage", "V"),
         "V0": ("Initial voltage", "V"),
