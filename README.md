@@ -295,6 +295,12 @@ Put the fragment above inside an electrical body. Start each brace on the same l
 
 Open `examples/digital/nand.ckt` and choose **File → Export Verilog** to save a `.v` file. Select `NandGate` as the top-level entity when using this example as a standalone Quartus design.
 
+After **FPGA… → Build from OOC**, the **Performance** tab shows fitted resource
+usage, estimated Fmax, timing margins and worst setup paths. **Save as baseline**
+keeps a verified build for comparison after edits and rebuilds. See the
+[performance report guide](docs/fpga_performance.md) for interpreting measurements
+and comparing results without changing the programming checks.
+
 ~~~text
 chip NandGate(a, b, y) {
     a, b = input;
@@ -305,7 +311,9 @@ chip NandGate(a, b, y) {
 
 Declare each pin from the header as `input` or `output`. The grouped declaration `a, b = input;` is equivalent to `a = input; b = input;`. Header order sets Verilog port order. Each output gets one assignment.
 
-Ports remain one bit wide. Logic expressions support `!` (NOT), `&` (AND), `^` (XOR), `|` (OR), parentheses, and `0` and `1`. The operators are listed in order of precedence. A file can contain multiple chip definitions, each exported as a Verilog module.
+Ports default to one bit; `data[8] = input;` or `data[8] = output;` declares an unsigned bus. Logic expressions support `!` (logical NOT), `&`, `^`, `|`, parentheses and one-bit values as before; typed bus expressions also support whole vectors, integer literals, `+`, `-`, comparisons and `&&`/`||`. Without a `main` block, a file can contain multiple chip definitions, each exported as a Verilog module.
+
+Digital **`main` assembles chips; chips define behavior**. Use `main { ... }` or `main Demo { ... }`, declare external input/output signals and internal `link[8] = wire;` connections, then instantiate chips with ordinary positional calls. Existing compile-time `if`, `for`, `while`, and `do while` work in digital main. Within chips, complete `if/else` branches outside `clock` describe combinational selectors; inside `clock`, they select state updates on each rising edge. Each chip instance owns independent state. See the [complete syntax and compatibility guide](docs/behavioral_chips.md), [validation data](docs/behavioral_chips_validation.md), and [four runnable examples](examples/behavioral/README.md). Existing electrical main blocks and component-based chips retain their meaning.
 
 Internal state can be declared separately from the ports. A bare name declares one unsigned bit; `[width]` declares an unsigned vector with a literal width from 1 through 4096. Both default to zero:
 
@@ -319,9 +327,9 @@ sw_sync;
 
 An optional initializer replaces that zero: `phase[32] = 100;` or `flag = 1;`. Initializers are unsigned decimal integers, may contain underscores such as `1_024`, and must fit the declared width. Declare a state name once and leave it out of the chip's port list. These declarations emit initialized Verilog `reg` declarations. State advances only when assigned inside a `clock` block.
 
-Read a vector bit with a literal zero-based index, such as `phase[31]`, in an output's logic expression. A bare scalar such as `flag` is read by name and cannot be indexed. Explicit `[1]` still declares a vector, so `one_bit[1];` is read as `one_bit[0]`. Whole vectors are not operands in the one-bit logic expressions.
+Read a vector bit with a literal zero-based index, such as `phase[31]`, in an output's logic expression. A bare scalar such as `flag` is read by name and cannot be indexed. Explicit `[1]` still declares a vector, so `one_bit[1];` is read as `one_bit[0]`. Whole vectors can drive vector outputs and wires, or be compared to produce a one-bit result; assigning a whole multi-bit vector directly to a scalar output is rejected.
 
-Open [`examples/digital/state_declarations.ckt`](examples/digital/state_declarations.ckt) for an exportable example with zero defaults, nonzero initializers, and bit reads. Its state stays at its initialized values: names such as `phase` and `blink_counter` do not count or advance automatically. Chip instances remain unsupported in the digital exporter. Hardware support for declaration initializers depends on the FPGA target and synthesis tools; exporting Verilog does not establish board compatibility.
+Open [`examples/digital/state_declarations.ckt`](examples/digital/state_declarations.ckt) for an exportable example with zero defaults, nonzero initializers, and bit reads. Its state stays at its initialized values: names such as `phase` and `blink_counter` do not count or advance automatically. Digital main assembly supports chip instances and nested calls, with recursive calls rejected. Hardware support for declaration initializers depends on the FPGA target and synthesis tools; exporting Verilog does not establish board compatibility.
 
 Chips with `input` and `output` declarations export to Verilog. Chips and gates built from electrical components export to SPICE.
 
@@ -394,7 +402,7 @@ Inside `every(...)`, Hz increments use the effective update rate: input clock fr
 - `const NAME[width] = value;` declares an unsigned constant; omit `[width]` for a one-bit constant. Constants require a decimal initializer that fits the width.
 - Clock expressions support decimal literals, constants, signals, constant bit reads, parentheses, `+`, `-`, `==`, `!=`, `<`, `<=`, `>`, `>=`, `!`, `&`, `^`, `|`, `&&`, and `||`. Arithmetic and bitwise results have the larger operand width; overflow wraps at that width. Unsized decimal literals use the minimum unsigned width. Assignments truncate or zero-extend to the destination. Comparisons and logical operators produce one bit. `!` means logical NOT (zero becomes one).
 - `if (...) { ... }`, `else if (...) { ... }`, and `else { ... }` select updates inside a clock block. These are runtime hardware branches, separate from electrical compile-time control flow. Multiplication, division, signed arithmetic, slices, runtime loops, falling-edge blocks, and reset declarations are not implemented.
-- Ports and combinational output assignments retain their existing one-bit syntax. Internal vectors are unsigned; `phase[32]` declares 32 bits and `phase[31]` reads its most significant bit.
+- Scalar ports and combinational expressions retain their existing syntax. Ports, internal wires and state can also be unsigned vectors; `phase[32]` declares 32 bits and `phase[31]` reads its most significant bit. Complete combinational if/else branches outside clocks drive outputs/wires without creating storage.
 
 The exporter uses initialized registers and nonblocking Verilog assignments. Provide the actual board's pin assignments, I/O standards, and clock timing constraints in your FPGA project. A two-stage switch synchronizer does not debounce the switch. Tests compare HYBRID01 state updates against its VHDL behavior using a test-only evaluator of the emitted subset; this is not a substitute for an independent HDL simulation, synthesis, or board validation.
 
@@ -408,7 +416,7 @@ The runtime advances simple counters, accumulators and stable logic through math
 
 For [`examples/digital/de10_switch_led.ckt`](examples/digital/de10_switch_led.ckt), the **DE10-Lite** profile uses the same generated synchronization wrapper as **Build from OOC**. Toggle `SW0` and step twice: `LEDR0` follows after two rising edges. The other nine switch/LED pairs behave independently. The **OOC** profile runs the chip's literal declarations without the board wrapper; direct combinational assignments then update immediately. A compatible board design initially selects DE10-Lite; you can choose the profile explicitly.
 
-The simulator evaluates only the Verilog subset emitted by OOC, with unsigned widths, initialized state, simultaneous clocked updates, `if/else`, Hz increments, and `every(...)` timers. It supports one chip with at most one clock input. It does not load arbitrary Verilog or emulate an ARM processor. Signal displays and traces represent ideal two-state logic, sampled at settled clock-low states; they do not model analog voltage/current, propagation delays, unknown/high-impedance states, switch bounce or metastability. They are software simulation, not readings from a connected FPGA. Display refresh is about 30 Hz, separate from the simulated clock rate: use the waveform to examine faster signals.
+The simulator evaluates only the Verilog subset emitted by OOC, with unsigned widths, initialized state, simultaneous clocked updates, combinational and clocked `if/else`, Hz increments, and `every(...)` timers. It supports one chip or assembled main design with at most one clock input. Click a bus input to enter an unsigned decimal, hexadecimal (`0x`) or binary (`0b`) value; buses display numeric values and neutral wire colors rather than treating an entire number as one logic level. It does not load arbitrary Verilog or emulate an ARM processor. Signal displays and traces represent ideal two-state logic, sampled at settled clock-low states; they do not model analog voltage/current, propagation delays, unknown/high-impedance states, switch bounce or metastability. They are software simulation, not readings from a connected FPGA. Display refresh is about 30 Hz, separate from the simulated clock rate: use the waveform to examine faster signals.
 
 For an electrical circuit, the **Results** tab instead contains the existing voltage oscilloscope: choose a node, time step and optional initial capacitor voltage, then **Run**. For example, open `examples/bjt_oscillator.ckt` and follow its initial-condition instructions. Its voltages come from the native electrical model, with that model's convergence and accuracy limits. Digital traces never substitute logic 0/1 for those voltage measurements.
 

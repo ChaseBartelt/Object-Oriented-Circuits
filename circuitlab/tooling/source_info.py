@@ -10,7 +10,7 @@ import re
 from circuitlab.language.control_flow import is_control_block
 from circuitlab.language.gates import GATE_HELP, gate_accepts, gate_call_help
 from circuitlab.language.syntax import (
-    CALL, CONNECTOR, DEFAULT_TERMINALS, INCLUDE, MAIN, MARKER, OP, SECTION,
+    CALL, CONNECTOR, DEFAULT_TERMINALS, DIGITAL_MAIN, INCLUDE, MAIN, MARKER, OP, SECTION,
     TRANS_CALL, source_rows,
 )
 
@@ -52,6 +52,7 @@ def accepts_calls(source):
             section = SECTION.fullmatch(text)
             blocks.append(bool(
                 MAIN.fullmatch(text)
+                or DIGITAL_MAIN.fullmatch(text)
                 or section
                 or (
                     blocks and blocks[-1]
@@ -121,6 +122,14 @@ class SourceInfo:
             return ""
         text, column = location
         code = text.partition("#")[0]
+        main = DIGITAL_MAIN.match(code.lstrip())
+        if main and column <= len(code) - len(code.lstrip()) + main.end():
+            return (
+                "main [Name] { ... }\n"
+                "Assemble circuit components or behavioral digital chips. "
+                "Conditions and loops here run during circuit generation; they do not run on clock edges. "
+                "A named digital main sets the exported top-level module name."
+            )
         timed = timed_block_at(code, column)
         if timed == "clock":
             return (

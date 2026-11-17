@@ -519,6 +519,20 @@ window.close()
         self.assertIs(self.window.views.currentWidget(), digital)
         self.assertTrue(all(cycle == 0 for cycle, _ in digital.waveform.history))
 
+    def test_assembled_bus_schematic_keeps_numeric_nets_out_of_scalar_color_overlay(self):
+        source = (ROOT / 'examples/behavioral/01_byte_selector.ckt').read_text()
+        self.path.write_text(source, encoding='utf-8')
+        self.assertTrue(self.window.open_path(self.path))
+        digital = self.window.digital
+        digital.set_input('a', 50)
+        digital.set_input('choose', 1)
+        self.assertEqual(digital.simulation.values['data'], 50)
+        self.assertEqual(self.window.schematic.logic_values['choose'], 1)
+        self.assertNotIn('data', self.window.schematic.logic_values)
+        self.assertNotIn('a', self.window.schematic.logic_values)
+        self.assertEqual(self.window.session.drawing.instances[0].name, 'SelectByte')
+        self.assertEqual(self.path.read_text(), source)
+
     def test_digital_to_analog_or_invalid_clears_running_simulation_and_colors(self):
         invalid = 'chip broken(a,y) { a=input; y=output; y=missing; }'
         for source in (DIVIDER, invalid):

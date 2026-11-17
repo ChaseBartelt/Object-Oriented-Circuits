@@ -11,6 +11,49 @@ from circuitlab.tooling.source_info import SourceInfo, accepts_calls, gate_input
 
 
 class SourceInfoTest(unittest.TestCase):
+    def test_named_main_accepts_chip_calls_and_explains_generation(self):
+        for header in ('main {', 'main() {', 'main Board {', 'main Board() {'):
+            with self.subTest(header=header):
+                self.assertTrue(accepts_calls(header + '\n'))
+                self.assertFalse(accepts_calls(header + '\n}\n'))
+                help_text = SourceInfo(header).hover_help(0, 1)
+                self.assertIn('during circuit generation', help_text)
+                self.assertIn('top-level module name', help_text)
+
+    def test_shared_grammar_highlights_vector_ports_and_internal_wires(self):
+        path = Path(__file__).resolve().parents[1] / 'ide/visual-studio/Syntaxes/OOC.json'
+        grammar = json.loads(path.read_text(encoding='utf-8'))['repository']
+        direction = re.compile(grammar['properties']['patterns'][0]['match'])
+        for source, expected in (
+            ('a[8], b[8] = input;', 'input'),
+            ('data[16] = output;', 'output'),
+            ('link[8] = wire;', 'wire'),
+            ('enable = input;', 'input'),
+            ('SW${i}, enable${i + 1} = input;', 'input'),
+            ('link${i}[8] = wire;', 'wire'),
+        ):
+            with self.subTest(source=source):
+                match = direction.match(source)
+                self.assertIsNotNone(match)
+                self.assertEqual(match[1], expected)
+
+    def test_shared_grammar_recognizes_chip_calls_and_expression_tokens(self):
+        path = Path(__file__).resolve().parents[1] / 'ide/visual-studio/Syntaxes/OOC.json'
+        grammar = json.loads(path.read_text(encoding='utf-8'))['repository']
+        call = re.compile(grammar['calls']['patterns'][-1]['match'])
+        for name in ('SelectByte', 'CountBy50', 'Tone', '_Private'):
+            self.assertEqual(call.search(f'{name}(a, b);')[0], name)
+        self.assertIsNone(call.search('data = input;'))
+        operator = re.compile(grammar['operators']['patterns'][0]['match'])
+        expression = next(pattern['match'] for pattern in grammar['expression']['patterns']
+                          if pattern.get('name') == 'keyword.operator.ooc')
+        for token in ('+', '-', '+=', '-=', '!', '&', '|', '^', '&&', '||', '==', '<='):
+            with self.subTest(token=token):
+                self.assertIsNotNone(operator.fullmatch(token))
+                self.assertIsNotNone(re.fullmatch(expression, token))
+        for token in ('[', ']'):
+            self.assertIsNotNone(re.fullmatch(grammar['punctuation']['match'], token))
+
     def test_impedance_help_and_wire_hover_keep_the_actual_terminals(self):
         source = 'Zs(2-j2) between(input, inv);'
         info = SourceInfo(source)

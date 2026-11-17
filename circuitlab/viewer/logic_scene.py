@@ -8,7 +8,7 @@ from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen, QPolygonF
 from PySide6.QtWidgets import QGraphicsObject, QGraphicsPathItem, QGraphicsScene, QGraphicsView
 
 
-HIGH, LOW = "#55d991", "#999999"
+HIGH, LOW, BUS = "#55d991", "#999999", "#cccccc"
 NODE_WIDTH, NODE_HEIGHT, COLUMN, ROW = 180, 58, 244, 82
 MAX_NODES, MAX_EDGES = 120, 400
 
@@ -77,7 +77,7 @@ class _Node(QGraphicsObject):
 
     def paint(self, painter, option, widget=None):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        color = QColor(HIGH if self.value else LOW)
+        color = QColor(BUS if self.width > 1 else HIGH if self.value else LOW)
         painter.setPen(QPen(color if self.kind != "chip" else QColor("#888888"), 1.8))
         painter.setBrush(QColor("#343434" if self.kind == "chip" else "#282828"))
         painter.drawRoundedRect(self.boundingRect().adjusted(1, 1, -1, -1), 7, 7)
@@ -88,7 +88,9 @@ class _Node(QGraphicsObject):
                              self.caption)
             return
         painter.setBrush(color)
-        if self.kind == "input":
+        if self.width > 1:
+            painter.drawRect(QRectF(14, 13, 18, 15))
+        elif self.kind == "input":
             painter.drawRoundedRect(QRectF(11, 13, 30, 15), 7, 7)
             painter.setBrush(QColor("#191919"))
             painter.drawEllipse(QPointF(33 if self.value else 19, 20), 5, 5)
@@ -298,9 +300,11 @@ class LogicSceneView(QGraphicsView):
                 item.value = value
                 item.update()
         for (source, _), item in self.edge_items.items():
-            color = QColor(HIGH if self.values.get(source, 0) else LOW)
-            if item.pen().color() != color:
-                item.setPen(QPen(color, 1.7))
+            width = self.simulation.signals.get(source, 1) if self.simulation else 1
+            color = QColor(BUS if width > 1 else HIGH if self.values.get(source, 0) else LOW)
+            pen_width = 2.5 if width > 1 else 1.7
+            if item.pen().color() != color or item.pen().widthF() != pen_width:
+                item.setPen(QPen(color, pen_width))
 
     def toggle_hood(self):
         if self.simulation is not None:

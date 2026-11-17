@@ -258,7 +258,7 @@ class DigitalSimulationTest(unittest.TestCase):
                      "module A (input wire a, output wire y); assign y = $system(a); endmodule",
                      "module A (input wire a, output wire y); assign y = 1'bx; endmodule",
                      "module A (input wire a, output wire y); assign y = 1'b2; endmodule",
-                     "module A (input wire a, output wire y); assign y = a ? a : a; endmodule",
+                     "module A (input wire a, output wire y); assign y = a ? a : ; endmodule",
                      "module A (input wire a, output wire y); always @(posedge a) begin"):
             with self.subTest(text=text), self.assertRaises(CircuitError):
                 _Parser(text).parse()
@@ -307,9 +307,7 @@ class DigitalSimulationTest(unittest.TestCase):
     def test_hybrid_metadata_shows_compiled_phase_steps_and_bounded_tooltips(self):
         sim = DigitalSimulation(HYBRID)
         text = sim.signal_expressions["phase"]
-        self.assertIn("if ((sw_sync == 0))", text)
-        self.assertIn("phase + 37796", text)
-        self.assertIn("phase + 75591", text)
+        self.assertIn("phase + ((sw_sync == 0) ? 37796 : 75591)", text)
         self.assertTrue(all(len(text) <= 500 for text in sim.signal_expressions.values()))
         many = " ".join("count += 1;" for _ in range(80))
         crowded = DigitalSimulation("chip Long(clk,y) { clk = input; y = output; count[8]; "

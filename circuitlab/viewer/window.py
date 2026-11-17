@@ -308,8 +308,10 @@ class ViewerWindow(QMainWindow):
     def update_logic_colors(self, values):
         # Samples are taken between complete cycles. Leave clock wires neutral
         # instead of presenting their sampled low phase as a constant logic 0.
-        clocks = self.digital.simulation.clocks if self.digital.simulation else ()
-        self.schematic.set_logic_values({name: value for name, value in values.items() if name not in clocks})
+        sim = self.digital.simulation
+        clocks = sim.clocks if sim else ()
+        self.schematic.set_logic_values({name: value for name, value in values.items()
+                                         if name not in clocks and (sim is None or sim.signals.get(name) == 1)})
 
     def update_results(self):
         rows = result_rows(self.solution) if self.solution else []

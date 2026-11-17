@@ -18,6 +18,10 @@ OPS = {"+": operator.add, "-": operator.sub, "&": operator.and_,
 BOOLEAN = {"==", "!=", "<", "<=", ">", ">=", "&&", "||"}
 
 
+class PlanLimit(Exception):
+    """A valid design is too deeply connected for the optional fast planner."""
+
+
 @dataclass(frozen=True)
 class _Expr:
     op: str
@@ -49,7 +53,9 @@ class FastPlan:
         self.clock_slots = {slots[name] for name in clocks}
         cache = {}
 
-        def bind(node, names):
+        def bind(node, names, depth=0):
+            if depth > 128:
+                raise PlanLimit
             op = node[0]
             if op == "literal":
                 return _Expr(op, (node[1],), node[2])
@@ -58,17 +64,20 @@ class FastPlan:
                 if name not in cache:
                     if name in drivers:
                         expression, context = drivers[name]
-                        bound = bind(expression, context)
+                        bound = bind(expression, context, depth + 1)
                         cache[name] = (_Expr("cast", (bound,), widths[name])
                                        if bound.width != widths[name] else bound)
                     else:
                         cache[name] = _Expr("signal", (slots[name],), widths[name])
                 expr = cache[name]
                 return _Expr("bit", (expr, node[2]), 1) if op == "bit" else expr
-            left = bind(node[1], names)
+            left = bind(node[1], names, depth + 1)
             if op == "!":
                 return _Expr(op, (left,), 1)
-            right = bind(node[2], names)
+            if op == "?:":
+                yes, no = bind(node[2], names, depth + 1), bind(node[3], names, depth + 1)
+                return _Expr(op, (left, yes, no), max(yes.width, no.width))
+            right = bind(node[2], names, depth + 1)
             return _Expr(op, (left, right), 1 if op in BOOLEAN else max(left.width, right.width))
 
         def statements(rows, names):
@@ -108,6 +117,12 @@ class FastPlan:
                 if op == "cast":
                     value = left & mask
                     result = value, slope, _boundary(value, slope, width, bound)
+                elif op == "?:":
+                    if slope:
+                        _, bound = _comparison("!=", left, slope, bound)
+                    value, branch_slope, branch_bound = evaluate(
+                        args[1] if left else args[2], deltas, horizon, high, memo)
+                    result = value & mask, branch_slope, min(bound, branch_bound)
                 elif op == "bit":
                     block = 1 << args[1]
                     value = (left // block) & 1

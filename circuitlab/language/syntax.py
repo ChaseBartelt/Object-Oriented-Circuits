@@ -36,6 +36,7 @@ BJT_MODEL_NAME = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]*")
 BATTERY_MARKER = re.compile(r"\(\s*battery(?:\s+([^()=]+))?\s*\)", re.I)
 BATTERY_ALIAS = re.compile(r"^\s*(Vrms|rad\s*/\s*s)\s*=", re.I)
 MAIN = re.compile(r"main\s*(?:\(\s*\))?\s*\{", re.I)
+DIGITAL_MAIN = re.compile(r"main(?:\s+([A-Za-z_][A-Za-z0-9_]*))?\s*(?:\(\s*\))?\s*\{", re.I)
 CALL = re.compile(r"([A-Za-z][A-Za-z0-9_]*)\s*\(((?:[^()]|\([^()]*\))*)\)")
 CONNECTOR = re.compile(r"connector\s*\(([^()]*)\)\s*;?", re.I)
 INCLUDE = re.compile(r'include\s*\(\s*"([^"\r\n]+)"\s*\)\s*;?', re.I)
@@ -46,7 +47,7 @@ MARKER = re.compile(
 )
 WIRE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_. \t-]*")
 ASSIGNMENT = re.compile(r"([A-Za-z][A-Za-z0-9_]*)\s*=\s*(.*)")
-PIN_DIRECTION = re.compile(r"[\w, \t]+\s*=\s*(input|output)", re.I)
+PIN_DIRECTION = re.compile(r"[\w, \t\[\]]+\s*=\s*(input|output)", re.I)
 PARAMETER_TARGET = re.compile(r"[RCLXZVI][A-Za-z0-9_]*", re.I)
 PART_ARGUMENT = re.compile(r"([RCLZ][A-Za-z0-9_]*)(?:\s*\(([^()]*)\))?", re.I)
 PART_PLACEMENT = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)\s+between\s*\(([^()]*)\)", re.I)
@@ -131,7 +132,7 @@ def has_chip(source):
                 depth += 1
             elif depth == 1 and PIN_DIRECTION.fullmatch(row):
                 return True
-        elif CHIP.fullmatch(row):
+        elif CHIP.fullmatch(row) or DIGITAL_MAIN.fullmatch(row):
             depth = 1
         elif CHIP_START.match(row) and not SECTION.fullmatch(row):
             return True
@@ -170,7 +171,7 @@ def source_rows(source, *, legacy_markers=True):
         line = raw.split("#", 1)[0].strip()
         if depth or any(
             header.match(line)
-            for header in (SECTION, MAIN, INLINE, BATTERY_BRACE, TRANSISTOR, CHIP, CONTROL_START)
+            for header in (SECTION, MAIN, DIGITAL_MAIN, INLINE, BATTERY_BRACE, TRANSISTOR, CHIP, CONTROL_START)
         ):
             line, depth = _block_rows(line, depth)
         # Legacy parenthesized blocks allow several assignments on the same line.

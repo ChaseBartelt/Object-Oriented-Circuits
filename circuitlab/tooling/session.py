@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from circuitlab.language.compiler import compile_circuit
+from circuitlab.language.digital_structure import assemble_digital
 from circuitlab.language.linked import CHIP_LIBRARY, imported_definitions, read_includes
 from circuitlab.language.syntax import INCLUDE, MAIN, SECTION, has_chip, source_rows
 from circuitlab.math.analysis import Diagnostic, analyze, diagnostics
@@ -111,9 +112,11 @@ class CircuitSession:
         source = self.source
         if has_chip(source) and not includes_files(source):
             chips = compile_chips(source)
+            assembled_instances = []
+            assembly = assemble_digital(source, instances=assembled_instances)
             self.drawing = Circuit(
                 "dc",
-                instances=[
+                instances=assembled_instances if assembly else [
                     MethodInstance(
                         "chip", name, None,
                         tuple((pin, pin if len(chips) == 1 else f"@{name}.{pin}") for pin, _ in pins),
@@ -122,6 +125,8 @@ class CircuitSession:
                     for name, pins, body, _ in chips
                 ],
             )
+            if assembly:
+                self.drawing.named_wires.update(assembly[1])
         else:
             preview = self.library_preview()
             self.drawing = self.build_circuit(mode, render_only=True, source=source + (preview or ""))

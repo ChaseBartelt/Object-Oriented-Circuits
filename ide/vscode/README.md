@@ -14,7 +14,32 @@ Starting with 0.6.0, compatible feature updates also **apply live without reload
 
 Upgrading from 0.5.0 needs one reload to start the new loader. Changes to that loader, registered commands/settings, language configuration, snippets or TextMate grammar still offer **Reload Window**. Those are outside the live runtime. Reload when ready; your editor is never forcibly restarted, and other extensions are not restarted.
 
-Use **OOC: Check for Local Updates** to check immediately, or disable **OOC: Auto Update** in Settings. Restricted workspaces do not install updates. This updates from the local checkout; it does not fetch GitHub changes or publish to the Marketplace. Python changes in that checkout already take effect in newly launched OOC processes; restart existing schematic/hover processes after changing their Python code.
+Use **OOC: Check for Updates** to check immediately, or disable **OOC: Auto Update** in Settings. Restricted workspaces do not install updates. This updates from the local checkout; it does not fetch GitHub changes or publish to the Marketplace. Python changes in that checkout already take effect in newly launched OOC processes; restart existing schematic/hover processes after changing their Python code.
+
+## Behavioral chips and circuit assembly (0.8.0)
+
+The editor recognizes named `main Design { ... }` blocks, reusable digital chip calls,
+bus ports such as `data[8] = input;`, internal `link[8] = wire;` connections,
+combinational `if/else`, and clocked state with `clock`, `every`, Hz increments and
+compound assignments. Outline and folding include the named main and nested blocks;
+F12 on a chip call opens its declaration. Existing electrical syntax remains supported.
+
+Open any file in [`examples/behavioral`](../../examples/behavioral/README.md) and click
+the editor's **play button**, or run **OOC: Run Circuit / Open Schematic**. The same
+viewer window is reused. Select **Logic simulation** to set inputs and inspect buses;
+use its **Run** or **Step** controls for clocked examples. **Ctrl+S** refreshes the
+last circuit opened in the viewer. **OOC: Check Circuit** validates digital source;
+**OOC: Solve Circuit** is for the electrical solver.
+
+Try `01_byte_selector.ckt` first: enter numbers for `a` and `b`, then toggle `choose`.
+`02_counter_bank.ckt` has three independent counters. The assembled HYBRID01 and
+ten-switch examples are `03_hybrid01.ckt` and `04_switch_bank.ckt`; use the existing
+DE10-Lite profile for their automatic switch synchronization and FPGA build flow.
+
+Install 0.8.0 and use **Developer: Reload Window** once so VS Code loads the new
+TextMate grammar and snippets. Close any viewer started with an older Python version
+before clicking Run again. This release keeps the existing local update mechanism;
+grammar registrations cannot be replaced by the live JavaScript runtime loader.
 
 ## Try the divider
 

@@ -1,0 +1,30 @@
+# The original DE10-Lite oscillator assembled from two behavioral chips.
+# Use DE10-Lite switches for automatic SW0 synchronization.
+# AUDIO_OUT is a digital square wave; passive piezo through a 1k resistor.
+chip Tone(clk, select, audio) {
+    clk, select = input;
+    audio = output;
+    phase[32];
+    clock(clk, 50MHz) {
+        if (select) { phase += 880Hz; }
+        else { phase += 440Hz; }
+    }
+    audio = phase[31];
+}
+
+chip Blink(clk, led) {
+    clk = input;
+    led = output;
+    state;
+    clock(clk, 50MHz) {
+        every(500ms) { state = !state; }
+    }
+    led = state;
+}
+
+main HYBRID01 {
+    MAX10_CLK1_50, SW0 = input;
+    LEDR0, AUDIO_OUT = output;
+    Tone(MAX10_CLK1_50, SW0, AUDIO_OUT);
+    Blink(MAX10_CLK1_50, LEDR0);
+}

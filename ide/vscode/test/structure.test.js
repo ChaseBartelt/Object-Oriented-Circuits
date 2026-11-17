@@ -29,6 +29,47 @@ function checkSelection(source, nodes) {
     }
 }
 
+test("named digital main keeps its calls and generation loops in the outline", () => {
+    const source = [
+        "chip Select(a, y) { a[8] = input; y[8] = output; y = a; }",
+        "main HYBRID01 {",
+        "  inputByte[8] = input;",
+        "  outputByte[8] = output;",
+        "  for (int i = 0; i < 1; i++) { Select(inputByte, outputByte); }",
+        "}",
+    ].join("\n");
+    const { structure, references } = analyzeSource(source);
+    assert.deepEqual(labels(structure), [["chip", "Select"], ["main", "HYBRID01"]]);
+    assert.deepEqual(labels(structure[1].children), [["for", "for"]]);
+    assert.deepEqual(references.map(({ name }) => name), ["Select"]);
+    checkSelection(source, structure);
+    assert.deepEqual(labels(parseStructure("main Demo() {}")), [["main", "Demo"]]);
+});
+
+test("all behavioral examples retain chip definitions, main, folds and navigable calls", () => {
+    const folder = path.join(__dirname, "../../../examples/behavioral");
+    const expected = {
+        "01_byte_selector.ckt": ["SelectByte", "ByteSelector"],
+        "02_counter_bank.ckt": ["CountBy50", "CounterBank"],
+        "03_hybrid01.ckt": ["Tone", "Blink", "HYBRID01"],
+        "04_switch_bank.ckt": ["Follow", "Invert", "HYBRID01"],
+    };
+    for (const [file, names] of Object.entries(expected)) {
+        const source = fs.readFileSync(path.join(folder, file), "utf8");
+        const { structure, references } = analyzeSource(source);
+        assert.deepEqual(structure.map(node => node.name), names, file);
+        assert.equal(structure.at(-1).kind, "main", file);
+        const chips = new Set(structure.filter(node => node.kind === "chip").map(node => node.name));
+        assert.ok(references.length > 0, file);
+        for (const reference of references) {
+            assert.equal(reference.kind, "call", file);
+            assert.ok(chips.has(reference.name), `${file}: ${reference.name}`);
+            assert.equal(source.slice(reference.start, reference.end), reference.name);
+        }
+        checkSelection(source, structure);
+    }
+});
+
 test("recognizes the circuit method example and its call", () => {
     const source = fs.readFileSync(path.join(__dirname, "../../../examples/circuit_method.ckt"), "utf8");
     const { structure, references } = analyzeSource(source);

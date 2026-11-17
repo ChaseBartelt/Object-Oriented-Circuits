@@ -5,7 +5,7 @@ const path = require("node:path");
 const vm = require("node:vm");
 const test = require("node:test");
 
-function harness({ dirty = false, save = true, trusted = true, failure = false, refresh = true } = {}) {
+function harness({ dirty = false, save = true, trusted = true, failure = false, refresh = true, example } = {}) {
     const calls = [], messages = [], logs = [], writes = [], commands = new Map();
     const child = new EventEmitter();
     child.exitCode = null;
@@ -14,24 +14,26 @@ function harness({ dirty = false, save = true, trusted = true, failure = false, 
     child.stdout = new EventEmitter();
     child.stderr = new EventEmitter();
     const root = path.resolve(__dirname, "../../..");
-    const file = path.join(root, "examples", "circuit with spaces.ckt");
+    const file = path.join(root, "examples", example || "circuit with spaces.ckt");
     const document = {
         languageId: "ooc", uri: { scheme: "file", fsPath: file }, isDirty: dirty,
-        text: 'R1(1k) between(a,b);\n',
+        text: example ? fs.readFileSync(file, 'utf8') : 'R1(1k) between(a,b);\n',
         getText() { return this.text; }, positionAt(offset) { return offset; },
         async save() { calls.push("save"); onSave?.(document); return save; },
     };
     let onSave, hover;
     const hoverRequests = [];
-    const output = { append: (s) => logs.push(s), appendLine: (s) => logs.push(s), show() {} };
+    const output = { append: (s) => logs.push(s), appendLine: (s) => logs.push(s), show() {}, clear() {} };
     const vscode = {
         Uri: { file: (fsPath) => ({ fsPath }) },
         Range: class { constructor(start, end) { this.start = start; this.end = end; } },
         WorkspaceEdit: class { replace(uri, range, text) { this.text = text; } },
         SymbolKind: {},
+        ProgressLocation: { Window: 10 },
         window: {
             activeTextEditor: { document }, createOutputChannel: () => output,
             showInformationMessage: (s) => messages.push(s), showErrorMessage: (s) => messages.push(s),
+            withProgress: (options, action) => action(),
         },
         workspace: {
             async openTextDocument() { return document; },
@@ -42,7 +44,7 @@ function harness({ dirty = false, save = true, trusted = true, failure = false, 
             onDidSaveTextDocument(fn) { onSave = fn; },
         },
         languages: {
-            createDiagnosticCollection: () => ({}), registerDocumentSymbolProvider() {},
+            createDiagnosticCollection: () => ({clear() {}}), registerDocumentSymbolProvider() {},
             registerFoldingRangeProvider() {}, registerDefinitionProvider() {},
             registerHoverProvider(language, provider) { hover = provider; },
         },
@@ -66,6 +68,10 @@ function harness({ dirty = false, save = true, trusted = true, failure = false, 
                 dispose() {}
             } };
             if (name === "node:child_process") return {
+                execFile(python, args, options, done) {
+                    calls.push([python, args, options]);
+                    done(null, 'Check passed (digital chip)\n', '');
+                },
                 spawn(...args) {
                     calls.push(args);
                     process.nextTick(() => child.emit(failure ? "error" : "spawn", new Error("missing interpreter")));
@@ -76,7 +82,7 @@ function harness({ dirty = false, save = true, trusted = true, failure = false, 
         },
     });
     module.exports.activate({ subscriptions: [] });
-    return { run: commands.get("ooc.openSchematic"), calls, messages, logs, child, file, root, writes, document,
+    return { run: commands.get("ooc.openSchematic"), check: commands.get("ooc.check"), calls, messages, logs, child, file, root, writes, document,
         onSave, hover, hoverRequests, applyEdit: module.exports.applySchematicEdit,
         reconnect: () => module.exports.activate({subscriptions:[]}, {output,
             schematicWindows:new Map([[JSON.stringify(['test-python',root]),child]])}) };
@@ -156,6 +162,32 @@ test("repeated Run and another circuit reuse the window; closing it allows a fre
 });
 
 const settleSave = () => new Promise((resolve) => setTimeout(resolve, 360));
+
+test("behavioral examples Check and Run their named main and refresh the same viewer on save", async () => {
+    const examples = ["01_byte_selector.ckt", "02_counter_bank.ckt", "03_hybrid01.ckt", "04_switch_bank.ckt"];
+    await Promise.all(examples.map(async (filename) => {
+        const h = harness({ dirty: true, example: path.join("behavioral", filename) });
+        assert.match(h.document.text, /main\s+\w+\s*\{/);
+        const before = h.document.text;
+        assert.equal(await h.check(), true);
+        const [python, args, options] = h.calls.find(Array.isArray);
+        assert.equal(python, 'test-python');
+        assert.deepEqual(Array.from(args), ['-X', 'utf8', '-m', 'circuitlab.tooling.cli', 'check', h.file]);
+        assert.equal(options.cwd, h.root);
+        assert.equal(options.shell, undefined);
+        assert.ok(h.logs.some(line => line.includes('Check passed (digital chip)')));
+        assert.equal(await h.run(), true);
+        const processes = h.calls.filter(Array.isArray);
+        assert.equal(processes.length, 2);
+        assert.deepEqual(Array.from(processes[1][1]), ['-X', 'utf8', '-m', 'circuitlab', '--editor', h.file]);
+        h.onSave(h.document);
+        await settleSave();
+        assert.deepEqual(h.writes, [{ file: h.file, activate: false }]);
+        assert.equal(h.calls.filter(Array.isArray).length, 2);
+        assert.equal(h.document.text, before);
+        assert.deepEqual(h.messages, []);
+    }));
+});
 
 test('schematic edit save is acknowledged without a second automatic reload', async () => {
     const h = harness();

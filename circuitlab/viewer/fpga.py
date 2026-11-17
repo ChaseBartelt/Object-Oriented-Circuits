@@ -6,11 +6,13 @@ from PySide6.QtCore import QProcess, QSettings, QStandardPaths, Qt, QUrl
 from PySide6.QtGui import QDesktopServices, QTextCursor
 from PySide6.QtWidgets import (
     QComboBox, QDialog, QFileDialog, QHBoxLayout, QLabel, QLineEdit,
-    QPlainTextEdit, QProgressBar, QPushButton, QVBoxLayout,
+    QPlainTextEdit, QProgressBar, QPushButton, QTabWidget, QVBoxLayout,
 )
 
 from circuitlab.model.graph import CircuitError
 from circuitlab.tooling import fpga
+from circuitlab.tooling import fpga_performance
+from circuitlab.viewer.fpga_performance import PerformancePanel
 
 
 class FpgaDialog(QDialog):
@@ -26,6 +28,8 @@ class FpgaDialog(QDialog):
         self.project = None
         self.built_path = None
         self.ready = False
+        self._build_image = None
+        self._build_error = ""
         self.operation = None
         self.output = bytearray()
         self.process = QProcess(self)
@@ -34,7 +38,7 @@ class FpgaDialog(QDialog):
         self.process.finished.connect(self._finished)
         self.process.errorOccurred.connect(self._process_error)
         self.setWindowTitle("FPGA — DE10-Lite / HYBRID01")
-        self.resize(850, 600)
+        self.resize(1020, 800)
         layout = QVBoxLayout(self)
         description = QLabel(
             "Write and save OOC in your IDE. Build here, select the board's USB-Blaster, "
@@ -84,7 +88,11 @@ class FpgaDialog(QDialog):
         self.log = QPlainTextEdit()
         self.log.setReadOnly(True)
         self.log.setMaximumBlockCount(6000)
-        layout.addWidget(self.log, 1)
+        self.report_tabs = QTabWidget()
+        self.performance = PerformancePanel(self.build_dir)
+        self.report_tabs.addTab(self.performance, "Performance")
+        self.report_tabs.addTab(self.log, "Build log")
+        layout.addWidget(self.report_tabs, 1)
         footer = QHBoxLayout()
         self.folder_button = QPushButton("Open build folder")
         self.folder_button.clicked.connect(self._open_folder)
@@ -107,6 +115,7 @@ class FpgaDialog(QDialog):
     def refresh_source(self):
         path, source = self.current_document()
         self.source_label.setText(f"Source: {path or 'No OOC file loaded'}")
+        self.performance.set_source(path, source)
         if self.ready and (path != self.built_path or not self.project.matches_source(source)):
             self.ready = False
             if not self.busy:
@@ -124,6 +133,8 @@ class FpgaDialog(QDialog):
         self.close_button.setEnabled(idle)
         self.folder_button.setEnabled(self.project is not None)
         self.progress.setVisible(not idle)
+        self.performance.building = self.operation in ("build", "performance")
+        self.performance.refresh()
 
     def _browse(self):
         folder = QFileDialog.getExistingDirectory(self, "Select Quartus bin64 folder", self.quartus.text())
@@ -143,6 +154,8 @@ class FpgaDialog(QDialog):
         if self.busy:
             return
         self.ready = False
+        self._build_image = None
+        self._build_error = ""
         self._update_controls()
         try:
             path, source = self.current_document()
@@ -152,6 +165,7 @@ class FpgaDialog(QDialog):
             self.project = fpga.prepare_project(source, self.build_dir)
             self.built_path = path
             self.log.clear()
+            self.report_tabs.setCurrentWidget(self.log)
             self.log.appendPlainText(f"Building OOC: {path}\nBuild folder: {self.project.directory}\n")
             self._start("build", fpga.build_command(self.project, self.tool_bin),
                         "Building for DE10-Lite… Quartus is compiling and checking timing.")
@@ -201,7 +215,12 @@ class FpgaDialog(QDialog):
 
     def _process_error(self, error):
         if error == QProcess.ProcessError.FailedToStart:
-            self._fail("Could not start Quartus: " + self.process.errorString())
+            message = "Could not start Quartus: " + self.process.errorString()
+            if self.operation == "performance":
+                self.operation = None
+                self._complete_performance(message)
+            else:
+                self._fail(message)
 
     def _finished(self, exit_code, exit_status):
         self._read_output()
@@ -209,15 +228,19 @@ class FpgaDialog(QDialog):
         if operation is None:
             return
         output = self.output.decode("utf-8", errors="replace")
+        if operation == "build":
+            self._build_finished(exit_code, exit_status)
+            return
+        if operation == "performance":
+            error = ""
+            if exit_code or exit_status != QProcess.ExitStatus.NormalExit:
+                error = f"Detailed timing-path extraction failed (exit {exit_code}); see Build log."
+            self._complete_performance(error)
+            return
         try:
             if exit_code or exit_status != QProcess.ExitStatus.NormalExit:
                 raise ValueError(f"Quartus {operation} failed (exit {exit_code}). Read the log below.")
-            if operation == "build":
-                image = fpga.verify_build(self.project)
-                self.ready = True
-                self.status.setText(f"Build and timing checks passed. Select a cable, then Program FPGA.\n{image}")
-                self.refresh_source()
-            elif operation == "cables":
+            if operation == "cables":
                 self.cables.addItems(fpga.parse_cables(output))
                 self.status.setText("Select the USB-Blaster connected to your DE10-Lite.")
             elif operation == "chain":
@@ -236,6 +259,54 @@ class FpgaDialog(QDialog):
         except (OSError, ValueError, CircuitError) as error:
             self._fail(str(error))
         self._update_controls()
+
+    def _build_finished(self, exit_code, exit_status):
+        self._build_image = None
+        self._build_error = ""
+        try:
+            if exit_code or exit_status != QProcess.ExitStatus.NormalExit:
+                raise ValueError(f"Quartus build failed (exit {exit_code}). Read the Build log.")
+            self._build_image = fpga.verify_build(self.project)
+        except (OSError, ValueError, CircuitError) as error:
+            self._build_error = str(error)
+            self.log.appendPlainText("\n" + self._build_error)
+        # Reporting is useful even when timing fails. It never grants permission
+        # to program; only the existing build verification above can do that.
+        timing = self.project.directory / "build/output_files/HYBRID01.sta.rpt"
+        analyzer = self.tool_bin / "quartus_sta.exe"
+        if timing.is_file() and analyzer.is_file():
+            try:
+                self._start("performance", fpga_performance.report_command(self.project, self.tool_bin),
+                            "Collecting performance results and worst setup paths…")
+                return
+            except (OSError, ValueError) as error:
+                self._complete_performance(f"Detailed timing paths unavailable: {error}")
+                return
+        self._complete_performance("Detailed timing paths unavailable: no timing report or Quartus timing analyzer.")
+
+    def _complete_performance(self, extraction_error=""):
+        try:
+            report = fpga_performance.read_report(
+                self.project, source_path=str(self.built_path),
+                verified=self._build_image is not None, verification_error=self._build_error,
+            )
+            if extraction_error:
+                report["notes"].append(extraction_error)
+            self.performance.set_report(report)
+            self.report_tabs.setCurrentWidget(self.performance)
+        except (OSError, ValueError) as error:
+            extraction_error = f"Performance report unavailable: {error}"
+        if extraction_error:
+            self.log.appendPlainText("\n" + extraction_error)
+        self.ready = self._build_image is not None
+        if self._build_error:
+            self.status.setText(self._build_error)
+        else:
+            message = "Build and timing checks passed. Select a cable, then Program FPGA."
+            if extraction_error:
+                message += " Detailed performance information is incomplete; see Build log."
+            self.status.setText(message)
+        self.refresh_source()
 
     def _fail(self, message):
         self.operation = None

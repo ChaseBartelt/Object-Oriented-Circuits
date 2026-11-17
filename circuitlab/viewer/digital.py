@@ -8,7 +8,7 @@ from PySide6.QtCore import QPointF, QRectF, QSignalBlocker, QTimer, Qt, Signal
 from PySide6.QtGui import QActionGroup, QColor, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (
     QAbstractItemView, QCheckBox, QComboBox, QGridLayout, QGroupBox, QHBoxLayout,
-    QHeaderView, QLabel, QMenu, QPushButton, QScrollArea, QSplitter, QTableWidget,
+    QHeaderView, QInputDialog, QLabel, QMenu, QMessageBox, QPushButton, QScrollArea, QSplitter, QTableWidget,
     QTableWidgetItem, QTabWidget, QToolButton, QVBoxLayout, QWidget,
 )
 
@@ -227,7 +227,33 @@ class DigitalSimulator(QWidget):
 
     def toggle_input(self, name):
         if self.simulation is not None and name in self.simulation.inputs:
-            self.set_input(name, 1 - self.simulation.values[name])
+            if self.simulation.signals[name] == 1:
+                self.set_input(name, 1 - self.simulation.values[name])
+            else:
+                self.edit_input(name)
+
+    def edit_input(self, name):
+        sim = self.simulation
+        if sim is None or name not in sim.inputs:
+            return
+        width = sim.signals[name]
+        text, accepted = QInputDialog.getText(
+            self, f"Input {name}", f"Unsigned {width}-bit value (decimal, 0x hex, or 0b binary):",
+            text=str(sim.values[name]))
+        if not accepted or self.simulation is not sim:
+            return
+        try:
+            text = text.strip()
+            if len(text) > 4098:
+                raise ValueError
+            base = 16 if text.lower().startswith("0x") else 2 if text.lower().startswith("0b") else 10
+            value = int(text, base)
+            if not 0 <= value < (1 << width):
+                raise ValueError
+        except ValueError:
+            QMessageBox.warning(self, "Input value", f"Enter an unsigned value that fits in {width} bits.")
+            return
+        self.set_input(name, value)
 
     def select_signal(self, name):
         if self.probe.findText(name) >= 0:
@@ -286,10 +312,12 @@ class DigitalSimulator(QWidget):
         sim = self.simulation
         for index, name in enumerate(sim.inputs):
             control = QPushButton(name)
-            control.setCheckable(True)
-            control.setToolTip(f"Toggle {name} between 0 and 1")
+            scalar = sim.signals[name] == 1
+            control.setCheckable(scalar)
+            control.setToolTip(f"Toggle {name} between 0 and 1" if scalar else
+                               f"Set {name}: unsigned {sim.signals[name]}-bit bus")
             control.setStyleSheet(f"QPushButton:checked {{ background: #235e43; color: {HIGH}; }}")
-            control.clicked.connect(lambda checked, pin=name: self.set_input(pin, int(checked)))
+            control.clicked.connect(lambda checked=False, pin=name: self.toggle_input(pin))
             self.input_buttons[name] = control
             self.input_grid.addWidget(control, index // 5, index % 5)
         for index, name in enumerate(sim.outputs):
@@ -354,11 +382,13 @@ class DigitalSimulator(QWidget):
         for name, control in self.input_buttons.items():
             with QSignalBlocker(control):
                 control.setChecked(bool(sim.values[name]))
-            control.setText(f"{name}  {sim.values[name]}")
+            width = sim.signals[name]
+            control.setText(f"{name}  {display_value(sim.values[name], width)}")
         for name, label in self.output_labels.items():
-            value = sim.values[name]
-            label.setText(f"● {name}  {value}")
-            label.setStyleSheet(f"color: {HIGH if value else LOW}; font-weight: 600; padding: 5px;")
+            value, width = sim.values[name], sim.signals[name]
+            label.setText(f"● {name}  {value}" if width == 1 else f"{name}[{width}]  0x{value:X} ({value})")
+            color = HIGH if value else LOW
+            label.setStyleSheet(f"color: {color if width == 1 else '#cccccc'}; font-weight: 600; padding: 5px;")
         for row, (name, width) in enumerate(sim.signals.items()):
             self.table.item(row, 2).setText(display_value(sim.values[name], width))
         self.port_view.set_values(sim.values)

@@ -149,7 +149,7 @@ class VerilogExportTest(unittest.TestCase):
 
     def test_vector_reads_require_one_in_range_constant_bit_index(self):
         for expression in (
-            "phase", "!phase", "phase[32]", "phase[-1]", "phase[a]",
+            "phase", "phase[32]", "phase[-1]", "phase[a]",
             "phase[1+1]", "phase[31:0]", "phase[]", "phase[1.5]",
             "phase[0][0]", "phase[1__0]", "phase[_1]", "phase[1_]", "a[0]", "flag[0]",
         ):
@@ -216,8 +216,6 @@ class VerilogExportTest(unittest.TestCase):
             "z = input;",
             "y = a & missing;",
             "a = a & b; y = b;",
-            "y = !a + b;",
-            "y = a && b;",
             "y = 2;",
             "y = (a & b;",
         ):

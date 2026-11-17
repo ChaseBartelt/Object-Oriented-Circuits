@@ -39,7 +39,27 @@
       "\t$0",
       "}"
     ],
-    "description": "Start the main electrical circuit body."
+    "description": "Assemble an electrical circuit or declare ports and call behavioral digital chips."
+  },
+  "Digital assembly": {
+    "prefix": "ooc-main",
+    "body": [
+      "chip ${1:Select}(choose, a, b, y) {",
+      "\tchoose = input;",
+      "\ta[8], b[8] = input;",
+      "\ty[8] = output;",
+      "\tif (choose) { y = a; } else { y = b; }",
+      "}",
+      "",
+      "main ${2:Design} {",
+      "\tchoose = input;",
+      "\ta[8], b[8] = input;",
+      "\ty[8] = output;",
+      "\t$1(choose, a, b, y);",
+      "\t$0",
+      "}"
+    ],
+    "description": "Define a behavioral byte selector and assemble its external connections in main."
   },
   "Resistor placement": {
     "prefix": "resistor",
@@ -81,6 +101,66 @@
       "\ty = !(a & b);",
       "}$0"
     ],
-    "description": "Define a standalone combinational chip for Verilog export."
+    "description": "Define a combinational chip for standalone simulation/export or calls from digital main."
+  },
+  "Digital bus port": {
+    "prefix": "ooc-bus",
+    "body": "${1:data}[${2:8}] = ${3|input,output|};$0",
+    "description": "Declare an unsigned digital input or output bus."
+  },
+  "Digital internal connection": {
+    "prefix": "ooc-wire",
+    "body": "${1:link}[${2:8}] = wire;$0",
+    "description": "Declare an unsigned internal bus between chip instances or combinational assignments. Remove [width] for a scalar."
+  },
+  "Clocked behavior": {
+    "prefix": "ooc-clock",
+    "body": [
+      "clock(${1:clk}, ${2:50MHz}) {",
+      "\t$0",
+      "}"
+    ],
+    "description": "Inside a digital chip, update declared state at rising clock edges."
+  },
+  "Periodic clocked behavior": {
+    "prefix": "ooc-every",
+    "body": [
+      "every(${1:500ms}) {",
+      "\t${2:state} = !$2;",
+      "\t$0",
+      "}"
+    ],
+    "description": "Inside clock(clk, frequency), toggle declared scalar state at a fixed interval."
+  },
+  "Combinational selection": {
+    "prefix": "ooc-if",
+    "body": [
+      "if (${1:choose}) {",
+      "\t${2:y} = ${3:a};",
+      "} else {",
+      "\t$2 = ${4:b};",
+      "}$0"
+    ],
+    "description": "Inside a digital chip outside clock, drive every selected output or wire on every branch."
+  },
+  "Generated chip bank": {
+    "prefix": "ooc-bank",
+    "body": [
+      "chip ${1:Follow}(a, y) {",
+      "\ta = input;",
+      "\ty = output;",
+      "\ty = a;",
+      "}",
+      "",
+      "main ${2:Bank} {",
+      "\tfor (int i = 0; i < ${3:4}; i++) {",
+      "\t\tin\\${i\\} = input;",
+      "\t\tout\\${i\\} = output;",
+      "\t\t$1(in\\${i\\}, out\\${i\\});",
+      "\t}",
+      "\t$0",
+      "}"
+    ],
+    "description": "Generate independently scoped chip instances and connections during compilation of main."
   }
 }

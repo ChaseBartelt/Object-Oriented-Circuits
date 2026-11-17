@@ -124,6 +124,10 @@ def compile_de10_lite(source):
     if len(modules) != 1 or modules[0][0] != TOP:
         raise FpgaError("The DE10-Lite profile requires one HYBRID01 chip.")
     directions = dict(modules[0][1])
+    for statement in modules[0][2]:
+        if declaration := re.fullmatch(r"(.+?)\s*=\s*(input|output)", statement, re.I):
+            if "[" in declaration[1]:
+                raise FpgaError("DE10-Lite physical ports must be scalar pins. Keep buses inside chips and connect individual bits to board outputs.")
     for pin, direction in directions.items():
         if PORTS.get(pin) != direction:
             raise FpgaError(f"Unsupported DE10-Lite port or direction: {pin}. Use MAX10_CLK1_50 and SW0–SW9 "

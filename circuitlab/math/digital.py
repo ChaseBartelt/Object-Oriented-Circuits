@@ -17,7 +17,7 @@ from circuitlab.model.graph import CircuitError
 
 
 LEX = re.compile(r"\s+|//[^\n]*|[0-9]+'[bd][0-9]+|[A-Za-z_][A-Za-z0-9_]*|[0-9]+|"
-                 r"==|!=|<=|>=|&&|\|\||[!+\-&^|<>()\[\]{}:;,.=@]")
+                 r"==|!=|<=|>=|&&|\|\||[!+\-&^|<>()\[\]{}?:;,.=@]")
 IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 BINARY = {"+": operator.add, "-": operator.sub, "&": operator.and_, "|": operator.or_,
           "^": operator.xor, "==": operator.eq, "!=": operator.ne, "<": operator.lt,
@@ -40,6 +40,7 @@ class _Module:
     drivers: dict = field(default_factory=dict)
     blocks: list = field(default_factory=list)
     instances: list = field(default_factory=list)
+    wires: set = field(default_factory=set)
 
 
 class _Parser:
@@ -125,6 +126,11 @@ class _Parser:
         while PRECEDENCE.get(self.peek(), 0) >= minimum:
             op = self.take()
             left = (op, left, self.expression(PRECEDENCE[op] + 1, depth + 1))
+        if minimum == 1 and self.peek() == "?":
+            self.take("?")
+            yes = self.expression(1, depth + 1)
+            self.take(":")
+            left = ("?:", left, yes, self.expression(1, depth + 1))
         return left
 
     def statements(self, depth=0):
@@ -173,10 +179,11 @@ class _Parser:
                 if direction not in {"input", "output"}:
                     raise _error("only input/output ports are supported.")
                 self.take("wire")
+                width = self.width()
                 name = self.identifier()
                 if name in module.widths:
                     raise _error("duplicate generated port.")
-                module.ports[name], module.widths[name] = direction, 1
+                module.ports[name], module.widths[name] = direction, width
                 if self.peek() != ",":
                     break
                 self.take(",")
@@ -189,6 +196,11 @@ class _Parser:
                     if name in module.widths:
                         raise _error("duplicate generated declaration.")
                     module.widths[name] = width
+                    if kind == "wire":
+                        module.wires.add(name)
+                        if self.peek() == ";":
+                            self.take(";")
+                            continue
                     self.take("=")
                     value = self.expression()
                     self.take(";")
@@ -197,7 +209,7 @@ class _Parser:
                     target[name] = value
                 elif kind == "assign":
                     name = self.identifier()
-                    if name in module.drivers or module.ports.get(name) != "output":
+                    if name in module.drivers or (module.ports.get(name) != "output" and name not in module.wires):
                         raise _error("invalid generated output driver.")
                     self.take("=")
                     module.drivers[name] = self.expression()
@@ -228,6 +240,8 @@ class _Parser:
                     self.take(";")
                     module.instances.append((kind, instance, connections))
             self.take("endmodule")
+            if module.wires - module.drivers.keys():
+                raise _error("generated wire has no driver.")
             modules[module.name] = module
         if not modules:
             raise _error("no generated module.")
@@ -254,6 +268,11 @@ def _expression(node, names, widths, slots, depth=0):
     left, left_width, reads = _expression(node[1], names, widths, slots, depth + 1)
     if op == "!":
         return lambda values: int(not left(values)), 1, reads
+    if op == "?:":
+        yes, yes_width, yes_reads = _expression(node[2], names, widths, slots, depth + 1)
+        no, no_width, no_reads = _expression(node[3], names, widths, slots, depth + 1)
+        return (lambda values: yes(values) if left(values) else no(values),
+                max(yes_width, no_width), reads | yes_reads | no_reads)
     right, right_width, right_reads = _expression(node[2], names, widths, slots, depth + 1)
     width = 1 if op in BOOLEAN else max(left_width, right_width)
     mask, function = (1 << width) - 1, BINARY[op]
@@ -287,6 +306,11 @@ class DigitalSimulation:
         top = modules[self.name]
         widths, initials, drivers, blocks, visible, raw_dependencies = {}, {}, {}, [], set(), {}
         kinds, clock_names, descriptions = {}, {}, {}
+        declared_wires = set()
+        for row in chips[0][2]:
+            if declaration := re.fullmatch(r"(.+?)\s*=\s*wire", row, re.I):
+                declared_wires.update(re.sub(r"\[.*", "", name).strip()
+                                      for name in declaration[1].split(","))
 
         def flatten(module, prefix="", aliases=None, ancestors=()):
             if module.name in ancestors or len(ancestors) > 1:
@@ -301,9 +325,10 @@ class DigitalSimulation:
                 if full in widths:
                     raise _error("duplicate generated hierarchical signal.")
                 widths[full] = width
-                if name in module.ports or name in module.registers or name in module.constants:
+                if name in module.ports or name in module.registers or name in module.constants or name in declared_wires:
                     visible.add(full)
-                    kinds[full] = module.ports.get(name) or ("register" if name in module.registers else "constant")
+                    kinds[full] = module.ports.get(name) or (
+                        "register" if name in module.registers else "constant" if name in module.constants else "wire")
             for name, initial in {**module.registers, **module.constants}.items():
                 if initial[0] != "literal":
                     raise _error("only literal generated initializers are supported.")
@@ -380,8 +405,11 @@ class DigitalSimulation:
             owners.update(targets)
             edges.append(compiled)
         self._edges = edges
-        from circuitlab.math.digital_fast import FastPlan
-        self._fast_plan = FastPlan(blocks, drivers, widths, self._slots, self.clocks, visible)
+        from circuitlab.math.digital_fast import FastPlan, PlanLimit
+        try:
+            self._fast_plan = FastPlan(blocks, drivers, widths, self._slots, self.clocks, visible)
+        except PlanLimit:
+            self._fast_plan = None  # Large connection chains still use exact stepping.
 
         def visible_reads(name, seen):
             if name in visible:
@@ -422,6 +450,11 @@ class DigitalSimulation:
             left = describe(node[1], names, limit - 3, depth + 1)
             if op == "!":
                 return clip("!" + left, limit)
+            if op == "?:":
+                branch_limit = max(0, (limit - len(left) - 8) // 2)
+                yes = describe(node[2], names, branch_limit, depth + 1)
+                no = describe(node[3], names, branch_limit, depth + 1)
+                return clip(f"({left} ? {yes} : {no})", limit)
             right = describe(node[2], names, limit - len(left) - len(op) - 4, depth + 1)
             return clip(f"({left} {op} {right})", limit)
 
@@ -429,7 +462,7 @@ class DigitalSimulation:
         for name, kind in kinds.items():
             if kind == "input":
                 text = f"Input {name}"
-            elif kind == "output":
+            elif kind in {"output", "wire"}:
                 node, names = drivers[name]
                 text = f"{name} = {describe(node, names)}"
             elif kind == "constant":
@@ -470,8 +503,11 @@ class DigitalSimulation:
         self._publish()
 
     def set_input(self, name, value):
-        if name not in self.inputs or not isinstance(value, int) or value not in (0, 1):
-            raise _error("set a non-clock input to 0 or 1.")
+        if name not in self.inputs or not isinstance(value, int):
+            raise _error("set a non-clock input to an unsigned integer.")
+        width = self.signals[name]
+        if not 0 <= value < (1 << width):
+            raise _error(f'Input "{name}" requires an unsigned {width}-bit value (0..{(1 << width) - 1}).')
         self._values[self._slots[name]] = value
         self._settle()
         self._publish()
@@ -520,7 +556,7 @@ class DigitalSimulation:
             limit = target - self.cycles
             if sample is not None:
                 limit = min(limit, sample_every)
-            plan = self._fast_plan.span(self._values, limit, traces) if limit > 1 else None
+            plan = self._fast_plan.span(self._values, limit, traces) if limit > 1 and self._fast_plan is not None else None
             if plan is None or plan[0] == 1:
                 self.step()
                 if sample is not None:

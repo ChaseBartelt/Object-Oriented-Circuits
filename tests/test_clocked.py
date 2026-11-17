@@ -36,6 +36,9 @@ class EmittedClock:
     def value(expression, scope):
         # Each emitted temporary contains at most one operator. Verilog logical
         # operators return 0/1, unlike Python's operand-returning and/or.
+        choice = re.fullmatch(r"\(([^?:]+)\?([^?:]+):([^?:]+)\)", expression.strip())
+        if choice:
+            return EmittedClock.value(choice[2] if EmittedClock.value(choice[1], scope) else choice[3], scope)
         logical = '&&' in expression or '||' in expression
         expression = re.sub(r"\d+'([db])([0-9]+)", lambda m: str(int(m[2], 10 if m[1] == 'd' else 2)), expression)
         expression = re.sub(r"(\w+)\[(\d+)\]", lambda m: str((scope[m[1]] >> int(m[2])) & 1), expression)
@@ -86,6 +89,17 @@ class EmittedClock:
 
 
 class ClockedTest(unittest.TestCase):
+    def test_selected_increment_evaluator_preserves_width_and_nonzero_conditions(self):
+        source = '''chip SelectStep(clk,y) { clk=input; y=output;
+            state[4]=15; condition[2]=2; increment[5]=31;
+            clock(clk) { if (condition) { state += increment; } else { state += 1; } }
+            y=state[3];
+        }'''
+        sim = EmittedClock(export_verilog(source))
+        self.assertEqual(sim.tick()['state'], 14)
+        sim.state['condition'] = 0
+        self.assertEqual(sim.tick()['state'], 15)
+
     def test_else_prefix_state_and_whitespace_are_not_control_clauses(self):
         for whitespace in (' ', '  ', '\t'):
             source = ('chip Whitespace(clk,a,y) { clk,a=input; y=output; '

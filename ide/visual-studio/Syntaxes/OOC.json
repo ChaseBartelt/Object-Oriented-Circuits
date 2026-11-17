@@ -78,8 +78,11 @@
           }
         },
         {
-          "name": "keyword.declaration.main.ooc",
-          "match": "(?i)\\bmain(?=\\s*(?:\\(\\s*\\))?\\s*\\{)"
+          "match": "(?i)\\b(main)(?:\\s+([A-Za-z_][A-Za-z0-9_]*))?(?=\\s*(?:\\(\\s*\\))?\\s*\\{)",
+          "captures": {
+            "1": { "name": "keyword.declaration.main.ooc" },
+            "2": { "name": "entity.name.function.ooc" }
+          }
         },
         {
           "name": "storage.type.ooc",
@@ -167,18 +170,18 @@
         { "include": "#numbers" },
         {
           "name": "keyword.operator.ooc",
-          "match": "\\+\\+|--|&&|\\|\\||==|!=|<=|>=|[+*/%=!-]|[<>]"
+          "match": "\\+\\+|--|&&|\\|\\||==|!=|<=|>=|[+*/%\\-]=|[+*/%=!&|^<>-]"
         },
         {
           "name": "punctuation.separator.ooc",
-          "match": "[;,]"
+          "match": "[;,\\[\\]]"
         }
       ]
     },
     "properties": {
       "patterns": [
         {
-          "match": "(?i)(?:^|(?<=[;{]))\\s*(?:[A-Za-z_][A-Za-z0-9_]*\\s*,\\s*)*[A-Za-z_][A-Za-z0-9_]*\\s*=\\s*(input|output)(?=\\s*(?:[;}#]|$))",
+          "match": "(?i)(?:^|(?<=[;{]))\\s*(?:[A-Za-z_][A-Za-z0-9_]*(?:\\$\\{[^}#\\r\\n]+\\}[A-Za-z0-9_]*)*(?:\\s*\\[\\s*[0-9_]+\\s*\\])?\\s*,\\s*)*[A-Za-z_][A-Za-z0-9_]*(?:\\$\\{[^}#\\r\\n]+\\}[A-Za-z0-9_]*)*(?:\\s*\\[\\s*[0-9_]+\\s*\\])?\\s*=\\s*(input|output|wire)(?=\\s*(?:[;}#]|$))",
           "captures": {
             "1": { "name": "storage.modifier.pin-direction.ooc" }
           }
@@ -236,6 +239,10 @@
         {
           "name": "support.function.ooc",
           "match": "(?i)\\b[iv](?=\\s*\\(\\s*t\\s*\\)\\s*=)"
+        },
+        {
+          "name": "entity.name.function.ooc",
+          "match": "\\b[A-Za-z_][A-Za-z0-9_]*(?=\\s*\\()"
         }
       ]
     },
@@ -250,13 +257,13 @@
       "patterns": [
         {
           "name": "keyword.operator.ooc",
-          "match": "==|!=|<=|>=|&&|\\|\\||\\+\\+|--|[+*/%\\-]=|[=!?&|^<>∠]"
+          "match": "==|!=|<=|>=|&&|\\|\\||\\+\\+|--|[+*/%\\-]=|[=!?&|^<>∠+*/%\\-]"
         }
       ]
     },
     "punctuation": {
       "name": "punctuation.separator.ooc",
-      "match": "[{}(),;:]"
+      "match": "[{}(),;:\\[\\]]"
     }
   }
 }

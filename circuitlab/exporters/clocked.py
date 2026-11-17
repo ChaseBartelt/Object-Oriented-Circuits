@@ -60,7 +60,8 @@ class Expressions:
     def __init__(self, signals):
         self.signals = signals
         self.names = set(signals)
-        self.wires = []
+        self._wires = {}
+        self.additions = {}
         self.count = 0
 
     def name(self, prefix):
@@ -74,8 +75,12 @@ class Expressions:
 
     def temporary(self, code, width):
         name = self.name("ooc_expr")
-        self.wires.append(f"    wire [{width - 1}:0] {name} = {code};")
+        self._wires[name] = f"    wire [{width - 1}:0] {name} = {code};"
         return name, width
+
+    @property
+    def wires(self):
+        return list(self._wires.values())
 
     def parse(self, text, line):
         self.line = line
@@ -145,8 +150,41 @@ class Expressions:
             op = self.take()
             right, right_width = self.binary(PRECEDENCE[op] + 1)
             width = 1 if op in {"==", "!=", "<", "<=", ">", ">=", "&&", "||"} else max(left_width, right_width)
+            operands = (left, left_width, right, right_width)
             left, left_width = self.temporary(f"({left} {op} {right})", width)
+            if op == "+":
+                self.additions[left] = operands
         return left, left_width
+
+    def select_increment(self, condition, yes, no, indent):
+        """Share the adder for two exclusive increments of the same state.
+
+        Requiring the common operand to be the assignment target preserves
+        modular truncation even when the two increments have different widths.
+        Other assignments and conditionals retain their original lowering.
+        """
+        if len(yes) != 1 or len(no) != 1:
+            return None
+        first = re.fullmatch(r"\s*(\w+) <= (\w+);", yes[0])
+        second = re.fullmatch(r"\s*(\w+) <= (\w+);", no[0])
+        if first is None or second is None:
+            return None
+        target, add_yes, add_no = first[1], first[2], second[2]
+        if second[1] != target:
+            return None
+        left, right = self.additions.get(add_yes), self.additions.get(add_no)
+        if left is None or right is None or left[0] != target or right[0] != target:
+            return None
+        step_width = max(left[3], right[3])
+        width = max(left[1], step_width)
+        # Reuse the two reserved helper names so later timer identities stay
+        # stable. Emit both after the operand helpers, with selection first.
+        del self._wires[add_yes], self._wires[add_no]
+        self._wires[add_no] = f"    wire [{step_width - 1}:0] {add_no} = ({condition} ? {left[2]} : {right[2]});"
+        self._wires[add_yes] = f"    wire [{width - 1}:0] {add_yes} = ({target} + {add_no});"
+        self.additions[add_yes] = (target, left[1], add_no, step_width)
+        del self.additions[add_no]
+        return [f"{indent}{target} <= {add_yes};"]
 
 
 def compile_clocks(clocks, signals, states, directions):
@@ -178,15 +216,21 @@ def compile_clocks(clocks, signals, states, directions):
             while True:
                 code, _ = expressions.parse(condition, number)
                 output.append(f"{prefix}if ({code}) begin")
-                output.extend(branch(indent + "    ", True, update_rate))
+                yes = branch(indent + "    ", True, update_rate)
+                output.extend(yes)
                 output.append(f"{indent}end")
                 if index >= len(rows) or not re.match(r"else\b", rows[index][0]):
                     break
                 other, other_line = rows[index]
                 index += 1
                 if re.fullmatch(r"else\s*\{", other):
+                    no = branch(indent + "    ", True, update_rate)
+                    shared = (expressions.select_increment(code, yes, no, indent)
+                              if prefix == indent else None)
+                    if shared is not None:
+                        return shared
                     output.append(f"{indent}else begin")
-                    output.extend(branch(indent + "    ", True, update_rate))
+                    output.extend(no)
                     output.append(f"{indent}end")
                     break
                 match = re.fullmatch(r"else\s+if\s*\((.*)\)\s*\{", other)

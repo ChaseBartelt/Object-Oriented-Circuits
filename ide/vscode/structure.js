@@ -5,7 +5,7 @@
 const TOKEN = /#[^\r\n]*|"[^"\r\n]*"?|\$\{[^}\r\n]*(?:\}|(?=\r|\n|$))|\r\n|[\r\n(){};]/g;
 const DECLARATION = /^(circuit|chip|gate|series|parallel)[ \t]+([A-Za-z_][A-Za-z0-9_]*)(?:[ \t]*\(.*\))?$/id;
 const DEVICE_BLOCK = /^(battery|transistor)[ \t]+([A-Za-z](?:[A-Za-z0-9_]|\$\{[^}]*\})*)$/id;
-const MAIN = /^(main)(?:[ \t]*\([ \t]*\))?$/id;
+const MAIN = /^(main)(?:[ \t]+([A-Za-z_][A-Za-z0-9_]*))?(?:[ \t]*\([ \t]*\))?$/id;
 const INLINE = /^(series|parallel)(?:[ \t]*\(.*\))?$/id;
 const BRANCH = /^(else[ \t]+if|if|for|while|clock|every)[ \t]*\(.*\)$/id;
 const KEYWORD_BLOCK = /^(else|do)$/id;
@@ -31,6 +31,12 @@ function nodeFor(match, nameGroup, kindGroup, start, end) {
 }
 
 function bracedNode(header, start, end) {
+    const main = MAIN.exec(header);
+    if (main) {
+        const node = nodeFor(main, main[2] ? 2 : 1, 1, start, end);
+        node.detail = "main";
+        return node;
+    }
     const named = DECLARATION.exec(header) || DEVICE_BLOCK.exec(header);
     if (named) {
         const node = nodeFor(named, 2, 1, start, end);
@@ -38,7 +44,7 @@ function bracedNode(header, start, end) {
         node.detail = argumentsText ? node.kind + " " + argumentsText : node.kind;
         return node;
     }
-    const unnamed = MAIN.exec(header) || INLINE.exec(header)
+    const unnamed = INLINE.exec(header)
         || BRANCH.exec(header) || KEYWORD_BLOCK.exec(header);
     if (unnamed) {
         const node = nodeFor(unnamed, 1, 1, start, end);
