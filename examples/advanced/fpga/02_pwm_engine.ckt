@@ -1,0 +1,64 @@
+# Two-channel 8-bit PWM; DE10-Lite, 50 MHz. Digital outputs, not analog voltages.
+# Carrier advances every 160ns: 256 steps give 24,414.0625Hz PWM (40.96us).
+# SW1:SW0 sets A duty; SW3:SW2 sets B: 00=12.5%, 01=25%, 10=50%, 11=75%.
+# SW4: A breathes instead of using its fixed duty; SW7 pauses the breath ramp.
+# Ramp starts at 32, steps every 5ms, and cycles 0..255..0 in 2.55s.
+# Breathing endpoints are 0% and 255/256 = 99.609375%, not full 100%.
+# SW5: B complements A's raw waveform instead of using its own duty.
+# SW6: invert both raw waveforms. SW8/SW9 enable A/B; down forces output low.
+# All switches down: outputs off. AUDIO_OUT and LED0 show A; LED1 shows B.
+# LED2 breath mode, LED3 complement, LED4 descending, LED5 1Hz heartbeat,
+# LED6 ramp MSB, LED7 pause, LED8/9 channel enables. PWM LEDs show average light.
+# Automatic switch synchronization; complementary logic has no dead-time stage.
+
+chip HYBRID01(MAX10_CLK1_50, SW0, SW1, SW2, SW3, SW4, SW5, SW6, SW7, SW8, SW9, LEDR0, LEDR1, LEDR2, LEDR3, LEDR4, LEDR5, LEDR6, LEDR7, LEDR8, LEDR9, AUDIO_OUT) {
+    MAX10_CLK1_50, SW0, SW1, SW2, SW3, SW4, SW5, SW6, SW7, SW8, SW9 = input;
+    LEDR0, LEDR1, LEDR2, LEDR3, LEDR4, LEDR5, LEDR6, LEDR7, LEDR8, LEDR9, AUDIO_OUT = output;
+    carrier[8];
+    brightness[8] = 32;
+    descending;
+    heartbeat;
+    level_a[8], level_b[8], duty_a[8], raw_a, raw_b = wire;
+
+    clock(MAX10_CLK1_50, 50MHz) {
+        every(160ns) { carrier += 1; }
+        every(5ms) {
+            if (SW4 & !SW7) {
+                if (descending) {
+                    if (brightness == 0) { descending = 0; brightness = 1; }
+                    else { brightness = brightness - 1; }
+                } else {
+                    if (brightness == 255) { descending = 1; brightness = 254; }
+                    else { brightness += 1; }
+                }
+            }
+        }
+        every(500ms) { heartbeat = !heartbeat; }
+    }
+
+    if (SW1) {
+        if (SW0) { level_a = 192; } else { level_a = 128; }
+    } else {
+        if (SW0) { level_a = 64; } else { level_a = 32; }
+    }
+    if (SW3) {
+        if (SW2) { level_b = 192; } else { level_b = 128; }
+    } else {
+        if (SW2) { level_b = 64; } else { level_b = 32; }
+    }
+    if (SW4) { duty_a = brightness; } else { duty_a = level_a; }
+    raw_a = (carrier < duty_a) ^ SW6;
+    if (SW5) { raw_b = !raw_a; }
+    else { raw_b = (carrier < level_b) ^ SW6; }
+    AUDIO_OUT = SW8 & raw_a;
+    LEDR0 = AUDIO_OUT;
+    LEDR1 = SW9 & raw_b;
+    LEDR2 = SW4;
+    LEDR3 = SW5;
+    LEDR4 = descending;
+    LEDR5 = heartbeat;
+    LEDR6 = brightness[7];
+    LEDR7 = SW7;
+    LEDR8 = SW8;
+    LEDR9 = SW9;
+}

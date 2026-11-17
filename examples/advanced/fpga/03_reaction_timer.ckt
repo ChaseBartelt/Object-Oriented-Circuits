@@ -1,0 +1,75 @@
+# DE10-Lite reaction timer: fixed-delay finite-state machine, 50 MHz clock.
+# SW0 = arm; SW1 = react; SW9 = reset. Other switches are unused.
+# Start with SW0/SW1 low, pulse SW9 high, then raise SW0 to arm.
+# After 100 waiting ticks (1 s), GO lights LEDR9. Raise SW1 to stop.
+# Reacting before GO, including arming with SW1 high, latches a false start.
+# LEDR7..0 = unsigned elapsed count, LEDR0 least significant; each count is 10 ms.
+# The count saturates at 255 (2.55 s); it never wraps to a misleading small time.
+# LEDR9:LEDR8 = 00 idle/result, 01 waiting, 10 GO, 11 false start.
+# Result/fault holds until reset. Return SW0/SW1 low before releasing reset.
+# Controls and reset are sampled every 10 ms; hold each change at least 20 ms.
+# The base tick runs continuously, so the first sample depends on tick phase.
+# Timing reports complete elapsed ticks; a response on a tick takes priority.
+# The DE10-Lite profile inserts two synchronizer stages for every used switch.
+# Synchronization is not debounce. This educational timer is hardware-untested
+# and is not a calibrated measure of human reaction time. No external files.
+
+chip HYBRID01(MAX10_CLK1_50, SW0, SW1, SW9, LEDR0, LEDR1, LEDR2, LEDR3, LEDR4, LEDR5, LEDR6, LEDR7, LEDR8, LEDR9) {
+    MAX10_CLK1_50, SW0, SW1, SW9 = input;
+    LEDR0, LEDR1, LEDR2, LEDR3, LEDR4, LEDR5, LEDR6, LEDR7, LEDR8, LEDR9 = output;
+
+    const IDLE[3] = 0;
+    const WAITING[3] = 1;
+    const GO[3] = 2;
+    const RESULT[3] = 3;
+    const EARLY[3] = 4;
+    fsm[3] = 0;
+    wait_ticks[7] = 0;
+    elapsed[8] = 0;
+
+    clock(MAX10_CLK1_50, 50MHz) {
+        every(10ms) {
+            if (SW9) {
+                fsm = IDLE;
+                wait_ticks = 0;
+                elapsed = 0;
+            } else if (fsm == IDLE) {
+                if (SW0) {
+                    wait_ticks = 0;
+                    elapsed = 0;
+                    if (SW1) {
+                        fsm = EARLY;
+                    } else {
+                        fsm = WAITING;
+                    }
+                }
+            } else if (fsm == WAITING) {
+                if (SW1) {
+                    fsm = EARLY;
+                } else if (wait_ticks == 99) {
+                    fsm = GO;
+                    elapsed = 0;
+                } else {
+                    wait_ticks += 1;
+                }
+            } else if (fsm == GO) {
+                if (SW1) {
+                    fsm = RESULT;
+                } else if (elapsed < 255) {
+                    elapsed += 1;
+                }
+            }
+        }
+    }
+
+    LEDR0 = elapsed[0];
+    LEDR1 = elapsed[1];
+    LEDR2 = elapsed[2];
+    LEDR3 = elapsed[3];
+    LEDR4 = elapsed[4];
+    LEDR5 = elapsed[5];
+    LEDR6 = elapsed[6];
+    LEDR7 = elapsed[7];
+    LEDR8 = (fsm == WAITING) || (fsm == EARLY);
+    LEDR9 = (fsm == GO) || (fsm == EARLY);
+}

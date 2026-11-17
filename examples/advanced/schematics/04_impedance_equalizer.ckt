@@ -1,0 +1,44 @@
+# FIXED-COMPLEX-IMPEDANCE QUADRATURE EQUALIZER -- Auto/AC ONLY
+# Z elements are theoretical, frequency-independent phasor impedances; SPICE/LTspice and transient are unsupported.
+# The first inverting stage has gain -(4+j4)/(2-j2)=-2j; its inverse has gain +j/2.
+# At 1 Vrms input: quadrature=-2j V, equalized=1 V, wetMix=-1+j V, null=0 V.
+# wetMix=-(input+quadrature/2), so its magnitude is sqrt(2) Vrms at +135 degrees.
+# Changing f leaves these fixed-Z gains unchanged. All op amps are ideal.
+Vin(1 Vrms) between(input, 0);
+f = 1k;
+
+main {
+    Zinput(2-j2 kohm) between(input, firstSum);
+    Zfeedback(4+j4 kohm) between(quadrature, firstSum);
+    op1(0, firstSum, quadrature);
+
+    ZinverseInput(4+j4 kohm) between(quadrature, secondSum);
+    ZinverseFeedback(2-j2 kohm) between(equalized, secondSum);
+    op2(0, secondSum, equalized);
+
+    Rdry(10k) between(input, mixSum);
+    Rwet(20k) between(quadrature, mixSum);
+    RmixFeedback(10k) between(wetMix, mixSum);
+    op3(0, mixSum, wetMix);
+
+    # A unity-gain difference amplifier tests the recovered signal against the original.
+    Rnull1(10k) between(equalized, nullPlus);
+    Rnull2(10k) between(nullPlus, 0);
+    Rnull3(10k) between(input, nullMinus);
+    Rnull4(10k) between(null, nullMinus);
+    op4(nullPlus, nullMinus, null);
+    RloadQuadrature(10k) between(quadrature, 0);
+    RloadEqualized(10k) between(equalized, 0);
+    RloadMix(10k) between(wetMix, 0);
+    RloadNull(10k) between(null, 0);
+
+    measure = V quadrature 0;
+    measure = V equalized 0;
+    measure = V wetMix 0;
+    measure = V null 0;
+}
+
+
+# @ooc-layout-begin padding=2
+# {"version":1,"mode":"auto","layouts":[[null,"auto",{"symbols":[["Vin","V",["input","0"],[3.5,-0.75],[3.5,-3.25],"+"],["Zinput","Z",["input","firstSum"],[8.5,-6.0],[12.5,-6.0],"+"],["Zfeedback","Z",["quadrature","firstSum"],[29.25,-6.0],[25.25,-6.0],"+"],["ZinverseInput","Z",["quadrature","secondSum"],[34.5,-9.5],[38.5,-9.5],"+"],["ZinverseFeedback","Z",["equalized","secondSum"],[46.75,-9.5],[42.75,-9.5],"+"],["Rdry","R",["input","mixSum"],[8.5,-19.75],[12.5,-19.75],"+"],["Rwet","R",["quadrature","mixSum"],[16.25,-16.25],[20.25,-16.25],"+"],["RmixFeedback","R",["wetMix","mixSum"],[29.25,-16.25],[25.25,-16.25],"+"],["Rnull1","R",["equalized","nullPlus"],[43.25,-21.25],[47.25,-21.25],"+"],["Rnull2","R",["nullPlus","0"],[45.25,-23.25],[45.25,-25.75],"+"],["Rnull3","R",["input","nullMinus"],[8.5,-23.25],[12.5,-23.25],"+"],["Rnull4","R",["null","nullMinus"],[36.5,-29.5],[32.5,-29.5],"+"],["RloadQuadrature","R",["quadrature","0"],[18.25,-11.25],[18.25,-13.75],"+"],["RloadEqualized","R",["equalized","0"],[49.25,-11.25],[53.25,-11.25],"+"],["RloadMix","R",["wetMix","0"],[18.25,-23.25],[18.25,-25.75],"+"],["RloadNull","R",["null","0"],[36.5,-29.5],[36.5,-32.0],"+"],["op1","O",["0","firstSum","quadrature","0"],[25.25,-7.75],[29.25,-7.75],"-"],["op2","O",["0","secondSum","equalized","0"],[42.5,-11.25],[46.5,-11.25],"-"],["op3","O",["0","mixSum","wetMix","0"],[25.25,-23.25],[29.25,-23.25],"-"],["op4","O",["nullPlus","nullMinus","null","0"],[32.5,-27.75],[36.5,-27.75],"+"]],"wires":{"input":[[[3.5,-0.75],[7.75,-0.75]],[[7.75,-23.25],[7.75,-19.75]],[[7.75,-23.25],[8.5,-23.25]],[[7.75,-19.75],[7.75,-6.0]],[[7.75,-19.75],[8.5,-19.75]],[[7.75,-6.0],[7.75,-0.75]],[[7.75,-6.0],[8.5,-6.0]]],"quadrature":[[[18.25,-14.25],[20.5,-14.25]],[[18.25,-11.25],[18.25,-8.75]],[[18.25,-8.75],[20.5,-8.75]],[[20.5,-14.25],[20.5,-8.75]],[[20.5,-8.75],[30.5,-8.75]],[[29.25,-7.75],[30.5,-7.75]],[[29.25,-6.0],[30.5,-6.0]],[[30.5,-8.75],[30.5,-7.75]],[[30.5,-8.75],[31.0,-8.75]],[[30.5,-7.75],[30.5,-6.0]],[[30.5,-7.75],[31.0,-7.75]],[[31.0,-9.5],[31.0,-8.75]],[[31.0,-9.5],[34.5,-9.5]],[[31.0,-8.75],[31.0,-7.75]]],"equalized":[[[45.25,-19.25],[49.25,-19.25]],[[46.5,-11.25],[49.25,-11.25]],[[46.75,-9.5],[49.25,-9.5]],[[49.25,-19.25],[49.25,-11.25]],[[49.25,-11.25],[49.25,-9.5]]],"wetMix":[[[18.25,-23.25],[18.25,-20.0]],[[18.25,-20.0],[29.25,-20.0]],[[29.25,-23.25],[29.25,-20.0]],[[29.25,-20.0],[29.25,-16.25]]],"nullPlus":[[[32.5,-27.5],[32.5,-23.25]],[[32.5,-23.25],[45.25,-23.25]]],"null":[[[36.5,-29.5],[36.5,-27.75]]],"0":[[[3.5,-3.5],[3.5,-3.25]],[[24.5,-23.75],[25.25,-23.75]],[[24.5,-11.5],[24.5,-8.0]],[[24.5,-8.0],[25.25,-8.0]],[[25.25,-23.75],[25.25,-23.5]],[[53.25,-11.25],[56.5,-11.25]]],"firstSum":[[[12.5,-7.5],[12.5,-6.0]],[[12.5,-7.5],[22.5,-7.5]],[[22.5,-7.5],[22.5,-6.0]],[[22.5,-7.5],[25.25,-7.5]],[[22.5,-6.0],[25.25,-6.0]]],"secondSum":[[[38.5,-9.5],[41.0,-9.5]],[[41.0,-11.0],[41.0,-9.5]],[[41.0,-11.0],[42.5,-11.0]],[[41.0,-9.5],[42.75,-9.5]]],"mixSum":[[[12.5,-19.75],[12.5,-19.0]],[[12.5,-19.0],[18.25,-19.0]],[[18.25,-19.0],[18.25,-18.25]],[[18.25,-19.0],[23.5,-19.0]],[[23.5,-23.0],[23.5,-19.0]],[[23.5,-23.0],[25.25,-23.0]],[[23.5,-19.0],[23.5,-16.25]],[[23.5,-16.25],[25.25,-16.25]]],"nullMinus":[[[12.5,-28.0],[12.5,-23.25]],[[12.5,-28.0],[24.5,-28.0]],[[24.5,-29.5],[24.5,-28.0]],[[24.5,-29.5],[32.5,-29.5]],[[24.5,-28.0],[32.5,-28.0]]]},"junctions":{"input":[[7.75,-19.75],[7.75,-6.0]],"quadrature":[[20.5,-8.75],[30.5,-8.75],[30.5,-7.75],[31.0,-8.75]],"equalized":[[49.25,-11.25]],"wetMix":[[29.25,-20.0]],"firstSum":[[22.5,-7.5]],"secondSum":[[41.0,-9.5]],"mixSum":[[18.25,-19.0],[23.5,-19.0]],"nullMinus":[[24.5,-28.0]]},"labels":{},"grounds":[[3.5,-3.5],[45.25,-25.75],[18.25,-13.75],[56.5,-11.25],[18.25,-25.75],[36.5,-32.0],[24.5,-11.5],[42.5,-11.5],[24.5,-23.75]],"ground_names":[],"ground_rotations":[],"connectors":[],"boundary":{},"rotations":{"Rwet":1,"Rnull1":1},"crossings":[["0",[24.5,-11.5],[24.5,-8.0],[-8.75]],["mixSum",[23.5,-23.0],[23.5,-19.0],[-20.0]]],"label_offsets":[],"pin_grid":0.25}]]}
+# @ooc-layout-end

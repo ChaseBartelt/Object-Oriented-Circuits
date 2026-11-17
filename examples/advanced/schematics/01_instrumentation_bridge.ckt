@@ -1,0 +1,36 @@
+# THREE-OP-AMP BRIDGE INSTRUMENTATION AMPLIFIER -- Auto/DC
+# A 5 V bridge gives left=2.5 V and right=2.524752475 V (2.512376238 V common mode).
+# Front-end gain=1+2*10k/2k=11; difference-stage gain=100k/10k=10.
+# Expect out=2.722772277 V, bridge differential=24.752475 mV, load current=272.277 uA.
+# TL072 uses the bundled ideal channels: supplies, clipping, offset and bandwidth are not modeled.
+# Probes report DC; change Rbridge4 to test bridge imbalance and common-mode rejection.
+include("TL072");
+
+Vbridge(5) between(excitation, 0);
+Vpositive(12) between(vplus, 0);
+Vnegative(-12) between(vminus, 0);
+
+main {
+    Rbridge1(10k) between(excitation, left);
+    Rbridge2(10k) between(left, 0);
+    Rbridge3(10k) between(excitation, right);
+    Rbridge4(10.2k) between(right, 0);
+
+    # Physical TL072 pin order: OUT1, IN-1, IN+1, V-, IN+2, IN-2, OUT2, V+.
+    TL072(leftGain, leftFeedback, left, vminus, right, rightFeedback, rightGain, vplus);
+    Rfeedback1(10k) between(leftGain, leftFeedback);
+    Rfeedback2(10k) between(rightGain, rightFeedback);
+    Rgain(2k) between(leftFeedback, rightFeedback);
+
+    Rdifference1(10k) between(leftGain, minus);
+    Rdifference2(100k) between(out, minus);
+    Rdifference3(10k) between(rightGain, plus);
+    Rdifference4(100k) between(plus, 0);
+    op3(plus, minus, out);
+    Rload(10k) between(out, 0);
+
+    measure = V right left;
+    measure = V rightGain leftGain;
+    measure = V out 0;
+    measure = I Rload;
+}

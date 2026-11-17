@@ -1,0 +1,69 @@
+# Dual-voice square-wave synthesizer; DE10-Lite, 50 MHz, digital AUDIO_OUT.
+# Each voice: switches (high, low) = 00 A3/220Hz, 01 C#4/277.1826Hz,
+# 10 E4/329.6276Hz, 11 A4/440Hz. SW1:SW0 selects A; SW3:SW2 selects B.
+# SW5:SW4: 00 solo A, 01 solo B, 10 XOR mixture, 11 AND mixture.
+# SW6 enables 4Hz tremolo; SW7 holds both phases at zero; SW9 mutes.
+# All switches down: solo A3. Equal in-phase notes cancel in XOR mode.
+# LED0..3 show note switches; LED4 tremolo gate; LED5 1Hz heartbeat;
+# LED6/7 voices; LED8 final output; LED9 mute. Fast LEDs show average light.
+# Frequencies have 32-bit DDS rounding (resolution 50MHz / 2^32).
+# Board mode synchronizes switches automatically. No analog audio/DAC model.
+
+chip Voice(clk, low, high, reset_phase, tone) {
+    clk, low, high, reset_phase = input;
+    tone = output;
+    phase[32];
+    clock(clk, 50MHz) {
+        if (reset_phase) { phase = 0; }
+        else if (high) {
+            if (low) { phase += 440Hz; }
+            else { phase += 329.6276Hz; }
+        } else {
+            if (low) { phase += 277.1826Hz; }
+            else { phase += 220Hz; }
+        }
+    }
+    tone = phase[31];
+}
+
+chip Mixer(clk, a, b, low, high, tremolo, mute, audio, gate_light, beat) {
+    clk, a, b, low, high, tremolo, mute = input;
+    audio, gate_light, beat = output;
+    mixed = wire;
+    gate_state;
+    heartbeat;
+    clock(clk, 50MHz) {
+        every(125ms) { gate_state = !gate_state; }
+        every(500ms) { heartbeat = !heartbeat; }
+    }
+    if (high) {
+        if (low) { mixed = a & b; }
+        else { mixed = a ^ b; }
+    } else {
+        if (low) { mixed = b; }
+        else { mixed = a; }
+    }
+    audio = mixed & !mute & (!tremolo | gate_state);
+    gate_light = gate_state;
+    beat = heartbeat;
+}
+
+chip Tap(signal_in, signal_out) {
+    signal_in = input; signal_out = output;
+    signal_out = signal_in;
+}
+
+main HYBRID01 {
+    MAX10_CLK1_50, SW0, SW1, SW2, SW3, SW4, SW5, SW6, SW7, SW9 = input;
+    AUDIO_OUT = output;
+    for (int i = 0; i < 10; i++) { LEDR${i} = output; }
+    voice_a, voice_b = wire;
+    Voice(MAX10_CLK1_50, SW0, SW1, SW7, voice_a);
+    Voice(MAX10_CLK1_50, SW2, SW3, SW7, voice_b);
+    Mixer(MAX10_CLK1_50, voice_a, voice_b, SW4, SW5, SW6, SW9, AUDIO_OUT, LEDR4, LEDR5);
+    for (int i = 0; i < 4; i++) { Tap(SW${i}, LEDR${i}); }
+    Tap(voice_a, LEDR6);
+    Tap(voice_b, LEDR7);
+    Tap(AUDIO_OUT, LEDR8);
+    Tap(SW9, LEDR9);
+}

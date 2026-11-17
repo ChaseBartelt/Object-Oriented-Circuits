@@ -1,0 +1,87 @@
+# DE10-Lite pattern sequencer: chase, bounce, and 8-bit reflected Gray code.
+# SW0 = run (0 pauses counters); SW1 = speed (0:100 ms, 1:50 ms per update).
+# SW2 = reverse sequence direction. SW4=1 selects Gray code; otherwise SW3=1
+# selects bounce and SW3=0 selects chase. SW9 = reset; SW5..SW8 are unused.
+# LEDR7..0 show the pattern; LEDR8 indicates run enabled and reset low.
+# LEDR9 toggles on every pattern update, making a 5 Hz / 10 Hz square wave.
+# Chase: LEDR0,1,2,...,7,0. Bounce: LEDR0,1,...,7,6,...,1,0 (14 steps).
+# Gray: binary_count XOR (binary_count shifted right once), expressed here with
+# adjacent-bit XORs. Forward startup words: 0,1,3,2,6,7,5,4. The underlying
+# binary counter wraps 255 to 0; the displayed Gray word then wraps 128 to 0.
+# Reverse walks these sequences backwards; at a bounce endpoint either
+# direction necessarily moves inward. All three sequences advance together.
+# Changing pattern selects the current phase immediately, even while paused.
+# Run/speed/direction/reset are sampled at a fixed 50 ms base tick. Slow mode
+# uses every second enabled tick; pausing preserves that divider phase.
+# Hold reset high for at least 100 ms: positions/count/heartbeat/divider clear.
+# The base tick itself keeps running. After reset, fast mode steps on the next
+# enabled tick and slow mode on the second. Mode switches do not reset phase.
+# The board profile supplies switch synchronizers, not mechanical debounce.
+# Hardware-untested educational example; no external dependencies.
+
+chip HYBRID01(MAX10_CLK1_50, SW0, SW1, SW2, SW3, SW4, SW9, LEDR0, LEDR1, LEDR2, LEDR3, LEDR4, LEDR5, LEDR6, LEDR7, LEDR8, LEDR9) {
+    MAX10_CLK1_50, SW0, SW1, SW2, SW3, SW4, SW9 = input;
+    LEDR0, LEDR1, LEDR2, LEDR3, LEDR4, LEDR5, LEDR6, LEDR7, LEDR8, LEDR9 = output;
+
+    position[3] = 0;
+    bounce_phase[4] = 0;
+    binary_count[8] = 0;
+    slow_phase;
+    heartbeat;
+    bounce_position[3] = wire;
+    chase_mode, bounce_mode, gray_mode = wire;
+
+    clock(MAX10_CLK1_50, 50MHz) {
+        every(50ms) {
+            if (SW9) {
+                position = 0;
+                bounce_phase = 0;
+                binary_count = 0;
+                slow_phase = 0;
+                heartbeat = 0;
+            } else if (SW0) {
+                slow_phase = !slow_phase;
+                if (SW1 || slow_phase) {
+                    heartbeat = !heartbeat;
+                    if (SW2) {
+                        position = position - 1;
+                        binary_count = binary_count - 1;
+                        if (bounce_phase == 0) {
+                            bounce_phase = 13;
+                        } else {
+                            bounce_phase = bounce_phase - 1;
+                        }
+                    } else {
+                        position += 1;
+                        binary_count += 1;
+                        if (bounce_phase == 13) {
+                            bounce_phase = 0;
+                        } else {
+                            bounce_phase += 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if (bounce_phase < 8) {
+        bounce_position = bounce_phase;
+    } else {
+        bounce_position = 14 - bounce_phase;
+    }
+    chase_mode = !SW4 && !SW3;
+    bounce_mode = !SW4 && SW3;
+    gray_mode = SW4;
+
+    LEDR0 = (chase_mode && position == 0) || (bounce_mode && bounce_position == 0) || (gray_mode && (binary_count[1] ^ binary_count[0]));
+    LEDR1 = (chase_mode && position == 1) || (bounce_mode && bounce_position == 1) || (gray_mode && (binary_count[2] ^ binary_count[1]));
+    LEDR2 = (chase_mode && position == 2) || (bounce_mode && bounce_position == 2) || (gray_mode && (binary_count[3] ^ binary_count[2]));
+    LEDR3 = (chase_mode && position == 3) || (bounce_mode && bounce_position == 3) || (gray_mode && (binary_count[4] ^ binary_count[3]));
+    LEDR4 = (chase_mode && position == 4) || (bounce_mode && bounce_position == 4) || (gray_mode && (binary_count[5] ^ binary_count[4]));
+    LEDR5 = (chase_mode && position == 5) || (bounce_mode && bounce_position == 5) || (gray_mode && (binary_count[6] ^ binary_count[5]));
+    LEDR6 = (chase_mode && position == 6) || (bounce_mode && bounce_position == 6) || (gray_mode && (binary_count[7] ^ binary_count[6]));
+    LEDR7 = (chase_mode && position == 7) || (bounce_mode && bounce_position == 7) || (gray_mode && binary_count[7]);
+    LEDR8 = SW0 && !SW9;
+    LEDR9 = heartbeat;
+}

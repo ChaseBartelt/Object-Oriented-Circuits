@@ -1,0 +1,40 @@
+# STATE-VARIABLE FILTER WITH A NOTCH OUTPUT -- Auto/AC
+# R=10k, C=10n: f0=1/(2*pi*R*C)=1591.549430919 Hz, Q=1.
+# At f0 with 1 Vrms input: HP=+j V, BP=-1 V, LP=-j V; notch=0 V.
+# HP=input+BP-LP; two inverting integrators close the second-order feedback loop.
+# Change f to sweep the responses. Ideal integrators are intended for AC analysis, not DC startup.
+# Probes are RMS phasors; all op amps are ideal (no rail, bandwidth or slew limits).
+Vin(1 Vrms) between(input, 0);
+f = 1.5915494309189535k;
+
+circuit integrator(input, output, ground) {
+    Rinput(10k) between(input, minus);
+    Cfeedback(10n) between(output, minus);
+    op1(ground, minus, output);
+}
+
+main {
+    # The equal input resistors average input and BP; the amplifier doubles this average.
+    Rinput(10k) between(input, plus);
+    Rdamping(10k) between(bp, plus);
+    Rlow(10k) between(lp, minus);
+    Rfeedback(10k) between(hp, minus);
+    op1(plus, minus, hp);
+    integrator(hp, bp, 0);
+    integrator(bp, lp, 0);
+
+    # Inverting sum: notch=-(HP+LP), which cancels at the center frequency.
+    RnotchHigh(10k) between(hp, notchSum);
+    RnotchLow(10k) between(lp, notchSum);
+    RnotchFeedback(10k) between(notch, notchSum);
+    op2(0, notchSum, notch);
+    RloadLP(10k) between(lp, 0);
+    RloadBP(10k) between(bp, 0);
+    RloadHP(10k) between(hp, 0);
+    RloadNotch(10k) between(notch, 0);
+
+    measure = V lp 0;
+    measure = V bp 0;
+    measure = V hp 0;
+    measure = V notch 0;
+}
