@@ -254,6 +254,7 @@ def _module(name, pins, body, header_line):
             remaining.append((statement, line))
         depth += int(statement.endswith("{")) - int(statement == "}")
 
+    declared = set(pins) | wires.keys()
     behavior, depth = [], 0
     for statement, line in remaining:
         match = STATEMENT.fullmatch(statement)
@@ -261,10 +262,10 @@ def _module(name, pins, body, header_line):
         if depth == 0 and constant:
             if "=" not in statement:
                 raise CircuitError("Give each constant an explicit value.", line)
-            _state(constant[1], (*pins, *states, *wires), constants, line)
+            _state(constant[1], declared | states.keys(), constants, line)
         elif depth == 0 and not statement.endswith("{") and (
-                not match or match[1].strip() not in (*pins, *wires)):
-            _state(statement, (*pins, *constants, *wires), states, line)
+                not match or match[1].strip() not in declared):
+            _state(statement, declared | constants.keys(), states, line)
         else:
             behavior.append((statement, line))
         depth += int(statement.endswith("{")) - int(statement == "}")

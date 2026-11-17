@@ -298,17 +298,16 @@ def _schematic(layout, spice, scale, *, pin_flags=False, blocks, ports, aliases,
             points[net].add(at)
             if pin_flags:
                 flags[net].add(at)
-        lines = [
+        symbols.extend((
             f"SYMBOL {symbol} {origin[0]} {origin[1]} {rotation}",
             f"SYMATTR InstName {block.instance if block else model.name}",
-        ]
+        ))
         if not block:
-            lines.append(f"SYMATTR Value {_display_value(model)}")
+            symbols.append(f"SYMATTR Value {_display_value(model)}")
             if model.kind == "L":
-                lines.append(f"SYMATTR SpiceLine {model.extra.strip()}")
+                symbols.append(f"SYMATTR SpiceLine {model.extra.strip()}")
             elif model.kind in "VI" and model.extra:
-                lines.append(f"SYMATTR Value2 {model.extra.strip()}")
-        symbols.extend(lines)
+                symbols.append(f"SYMATTR Value2 {model.extra.strip()}")
 
     io = {}
     for net, port in ports.items():
@@ -324,13 +323,13 @@ def _schematic(layout, spice, scale, *, pin_flags=False, blocks, ports, aliases,
     # LTspice wires carry no net ID. Reject any contact between distinct
     # nets after snapping, including pins and flags that sit on a wire.
     occupied = [
-        (net, segment)
+        (*wires[net], *((p, p) for p in points[net] | flags[net]))
         for net in points
-        for segment in (*wires[net], *((p, p) for p in points[net] | flags[net]))
     ]
     if any(
-        a != b and segments_intersect(segment, other)
-        for (a, segment), (b, other) in combinations(occupied, 2)
+        segments_intersect(segment, other)
+        for first, second in combinations(occupied, 2)
+        for segment in first for other in second
     ):
         raise GridConflict
 
@@ -385,11 +384,10 @@ def _schematic(layout, spice, scale, *, pin_flags=False, blocks, ports, aliases,
     directives = [spice.directive] if commands else []
     if commands:
         directives.extend(f"{name} {node} 0 DC 0" for name, node in spice.references)
-    if commands and any(part.kind == "X" for part in spice.parts.values()):
-        # opamp2's pin order is plus, minus, V+, V-, out. The unused V+
-        # pin and the return pin both connect to the circuit's return net.
-        directives.extend(opamp_subcircuit("plus minus unused return out"))
-    if commands:
+        if any(part.kind == "X" for part in spice.parts.values()):
+            # opamp2's pin order is plus, minus, V+, V-, out. The unused V+
+            # pin and the return pin both connect to the circuit's return net.
+            directives.extend(opamp_subcircuit("plus minus unused return out"))
         directives.extend(spice.models)
     if directives:
         lines.append(f"TEXT {left} {bottom + 96} Left 2 !" + r"\n".join(directives))

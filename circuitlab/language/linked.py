@@ -17,10 +17,11 @@ def include_path(name, source_path=None):
     """Resolve a short bundled chip name or an explicit file path."""
     library = CHIP_LIBRARY.resolve()
     if re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_-]*", name):
+        key = name.casefold()
         matches = sorted({
-            candidate.resolve() for candidate in library.rglob("*.ckt")
-            if candidate.stem.casefold() == name.casefold() and candidate.is_file()
-            and candidate.resolve().is_relative_to(library)
+            resolved for candidate in library.rglob("*.ckt")
+            if candidate.stem.casefold() == key and candidate.is_file()
+            and (resolved := candidate.resolve()).is_relative_to(library)
         })
         if not matches:
             raise CircuitError(f'Unknown chip "{name}". Use a library chip name or a relative .ckt or .txt path.')
@@ -158,10 +159,7 @@ def compile_linked(source, path, mode, *, render_only=False, read_source=None):
         for pin in circuit.connector_pins:
             if circuit.resolve_wire(pin) == "0":
                 shared_names[pin] = "0"
-    if any(circuit.mode == "mixed" for _, circuit in circuits):
-        combined_mode = "mixed"
-    else:
-        combined_mode = mode
+    combined_mode = "mixed" if any(circuit.mode == "mixed" for _, circuit in circuits) else mode
     result = replace(
         root, mode=combined_mode, components=[], known={}, probes=[], port=None, grounds=set(), named_wires=set(),
         wire_taps=[], instances=[], owners={}, component_lines={}, component_files={}, groups=[],

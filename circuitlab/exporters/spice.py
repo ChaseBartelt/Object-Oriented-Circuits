@@ -81,15 +81,12 @@ def spice_netlist(circuit: Circuit) -> str:
     for part in circuit.components:
         model = spice.parts[part.name]
         p, n = spice.nodes[part.p], spice.nodes[part.n]
-        if model.kind == "X":
+        if model.kind in {"X", "S"}:
             plus, minus = spice.nodes[part.in_plus], spice.nodes[part.in_minus]
             lines.append(f"{model.name} {p} {n} {plus} {minus} {model.value}")
         elif model.kind == "Q":
             base = spice.nodes[part.base]
             lines.append(f"{model.name} {p} {base} {n} {model.value}")
-        elif model.kind == "S":
-            plus, minus = spice.nodes[part.in_plus], spice.nodes[part.in_minus]
-            lines.append(f"{model.name} {p} {n} {plus} {minus} {model.value}")
         else:
             dc = "DC " if model.kind in "VI" and part.pulse is None else ""
             lines.append(f"{model.name} {p} {n} {dc}{model.value}{model.extra}")

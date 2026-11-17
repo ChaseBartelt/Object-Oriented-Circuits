@@ -183,9 +183,9 @@ def source_rows(source, *, legacy_markers=True):
                 line,
                 flags=re.I,
             )
-        for item in line.splitlines():
-            if item.strip():
-                yield item.strip(), number, Binding()
+        for item in map(str.strip, line.splitlines()):
+            if item:
+                yield item, number, Binding()
 
 
 def parse_wires(raw: str, count: int | None = None) -> tuple[str, ...]:

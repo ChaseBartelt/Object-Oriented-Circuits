@@ -143,9 +143,8 @@ def expand_main(rows: list[SourceRow], instances: list[MethodInstance], *, impor
                     line,
                 )
         opener = rows[openings[-1]]
-        inline = INLINE.fullmatch(opener[0])
-        device = BATTERY_BRACE.fullmatch(opener[0]) or TRANSISTOR.fullmatch(opener[0])
-        block = inline or device
+        block = (INLINE.fullmatch(opener[0]) or BATTERY_BRACE.fullmatch(opener[0])
+                 or TRANSISTOR.fullmatch(opener[0]))
         label = block[1] if block else name
         raise CircuitError(f'Close "{label}" with }}.', opener[1])
 
@@ -262,13 +261,9 @@ def expand_main(rows: list[SourceRow], instances: list[MethodInstance], *, impor
                     line,
                     path=origin.path,
                 )
-            if transistor:
+            if transistor or TRANSISTOR.fullmatch(text):
                 yield text, line, parent
                 transistor = text != "}"
-                continue
-            if TRANSISTOR.fullmatch(text):
-                transistor = True
-                yield text, line, parent
                 continue
             call = CALL.fullmatch(text.removesuffix(";").rstrip())
             if not call or OP.fullmatch(call[1]):
@@ -372,16 +367,15 @@ def expand_main(rows: list[SourceRow], instances: list[MethodInstance], *, impor
                             statement = f"{part} = {value}"
                     expanded_child.append((statement, body_line, original))
                 child = expanded_child
-            if net_method:
-                yield from expand(child, binding, (*active, method_key))
-            else:
+            if not net_method:
                 header = (
                     f"{kind} {{"
                     if targets
                     else f"{kind} {scope}({', '.join(actual)}) {{"
                 )
                 yield header, line, binding
-                yield from expand(child, binding, (*active, method_key))
+            yield from expand(child, binding, (*active, method_key))
+            if not net_method:
                 yield "}", line, binding
 
     expanded = chain(

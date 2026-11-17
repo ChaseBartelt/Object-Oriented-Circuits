@@ -34,26 +34,26 @@ def _declarations(rows):
     # Import lazily: the exporter invokes this module after defining validators.
     from circuitlab.exporters.verilog import _signal_list, _state
     signals, kinds, states = {}, {}, {}
-    depth, top_rows = 0, []
+    depth, state_rows = 0, []
     for text, line, _ in rows:
         if depth == 0:
-            top_rows.append((text, line))
             if match := DECLARATION.fullmatch(text):
                 for name, width in _signal_list(match[1], line).items():
                     if name in signals:
                         raise CircuitError(f'Signal "{name}" is already declared.', line)
                     signals[name], kinds[name] = width, match[2].lower()
+            elif not text.endswith("{") and not CALL.fullmatch(text):
+                state_rows.append((text, line))
         depth += int(text.endswith("{")) - int(text == "}")
-    for text, line in top_rows:
-        if not text.endswith("{") and not CALL.fullmatch(text) and not DECLARATION.fullmatch(text):
-            declaration = text.removeprefix("const ")
-            left = declaration.partition("=")[0].strip()
-            name = left.partition("[")[0].strip()
-            # Output/wire assignments are behavior, not state declarations.
-            if kinds.get(name) not in {"input", "output", "wire"} and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*(?:\s*\[[^]]+\])?", left):
-                _state(declaration, (), states, line)
-                width, _, vector = states[name]
-                signals[name], kinds[name] = width if vector else None, "state"
+    for text, line in state_rows:
+        declaration = text.removeprefix("const ")
+        left = declaration.partition("=")[0].strip()
+        name = left.partition("[")[0].strip()
+        # Output/wire assignments are behavior, not state declarations.
+        if kinds.get(name) not in {"input", "output", "wire"} and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*(?:\s*\[[^]]+\])?", left):
+            _state(declaration, (), states, line)
+            width, _, vector = states[name]
+            signals[name], kinds[name] = width if vector else None, "state"
     return signals, kinds
 
 

@@ -170,17 +170,10 @@ def compile_program(program, mode, *, render_only=False):
     for pin, line in connectors.items():
         if circuit.resolve_wire(pin) not in circuit.nodes:
             raise CircuitError(f'Connector pin "{pin}" is not a net in this file.', line)
-    circuit.owners = {
-        part.name: owners[part.order]
-        for part in circuit.components
-        if part.order in owners
-    }
-    circuit.component_lines = {
-        part.name: lines[part.order] for part in circuit.components if part.order in lines
-    }
-    circuit.component_files = {
-        part.name: paths[part.order] for part in circuit.components if part.order in paths
-    }
+    circuit.owners, circuit.component_lines, circuit.component_files = (
+        {part.name: origins[part.order] for part in circuit.components if part.order in origins}
+        for origins in (owners, lines, paths)
+    )
     return circuit
 
 
