@@ -1,8 +1,0 @@
-# Load 10110100 into the 165, then shift it out. Results: serial_out.
-include("@chips/sequential/74HC165.ckt");
-VCC(5) between(supply, 0);
-VLoad(pulse(0, 5, 1m, 100u, 100u, 14m, 16m)) between(load_n, 0);
-VClock(pulse(0, 5, 2m, 100u, 100u, 400u, 1.6m)) between(clk, 0);
-main {
-    SN74HC165(load_n, clk, supply, supply, 0, supply, serial_n, 0, serial_out, 0, 0, 0, supply, 0, 0, supply);
-}

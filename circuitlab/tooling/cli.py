@@ -11,7 +11,7 @@ from circuitlab.math.report import result_rows
 from circuitlab.language.syntax import has_chip
 from circuitlab.exporters.verilog import compile_chips
 
-# Visual Studio can capture terminal output using the Windows code page.
+# Editors may capture terminal output using the Windows code page.
 _CONSOLE_SYMBOLS = str.maketrans({
     "→": "->", "∠": "angle", "Ω": "ohm", "µ": "u", "°": " deg",
     "−": "-", "·": "-", "×": "*", "π": "pi", "√": "sqrt",
@@ -19,7 +19,7 @@ _CONSOLE_SYMBOLS = str.maketrans({
 
 
 def _diagnostic(path, severity, message, line=None):
-    """Print a file diagnostic in the format used by Visual Studio tools."""
+    """Print a file diagnostic with a location that editors can recognize."""
     location = f"{path}({line})" if line else str(path)
     code = "OOC001" if severity == "error" else "OOC002"
     print(f"{location}: {severity} {code}: {message.translate(_CONSOLE_SYMBOLS)}", file=sys.stderr)

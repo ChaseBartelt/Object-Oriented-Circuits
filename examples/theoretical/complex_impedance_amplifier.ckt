@@ -1,8 +1,0 @@
-# Ideal inverting amplifier with fixed complex impedances in ohms.
-# AC-only model: gain = -Zf/Zs = -2j (2 V peak, -90 degrees).
-f = 1k
-Vac(1 Vpk) between(input, 0);
-Zs(2-j2) between(input, inv);
-Zf(4+j4) between(output, inv);
-op1(0, inv, output);
-ZLoad between(output, 0);

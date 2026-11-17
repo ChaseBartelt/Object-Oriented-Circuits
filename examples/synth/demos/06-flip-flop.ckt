@@ -1,9 +1,0 @@
-# Alternate D while the clock samples it. Results: q at 10 us.
-include("@chips/sequential/74HC74.ckt");
-VCC(5) between(supply, 0);
-VClear(pulse(0, 5, 0.5m, 100u, 100u, 8m, 10m)) between(clear_n, 0);
-VClock(pulse(0, 5, 1m, 100u, 100u, 400u, 1.6m)) between(clk, 0);
-VData(pulse(0, 5, 500u, 100u, 100u, 1.6m, 3.2m)) between(data, 0);
-main {
-    SN74HC74(clear_n, data, clk, supply, q, q_n, 0, q2_n, q2, supply, 0, 0, 0, supply);
-}

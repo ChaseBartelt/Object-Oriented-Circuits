@@ -1,9 +1,0 @@
-build/
-db/
-incremental_db/
-*.qws
-*.qdf
-*.rpt
-*.summary
-*.smsg
-*.jdi

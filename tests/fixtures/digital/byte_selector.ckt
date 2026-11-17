@@ -1,0 +1,18 @@
+chip SelectByte(choose, a, b, data) {
+    choose = input;
+    a[8], b[8] = input;
+    data[8] = output;
+
+    if (choose) {
+        data = a;
+    } else {
+        data = b;
+    }
+}
+
+main ByteSelector {
+    choose = input;
+    a[8], b[8] = input;
+    data[8] = output;
+    SelectByte(choose, a, b, data);
+}

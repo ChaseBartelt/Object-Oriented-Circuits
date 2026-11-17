@@ -17,4 +17,4 @@ include = ["circuitlab", "circuitlab.*"]
 namespaces = false
 
 [tool.setuptools.package-data]
-circuitlab = ["libraries/layouts/*.json", "libraries/chips/*.md", "libraries/chips/*/*.ckt"]
+circuitlab = ["libraries/layouts/*.json", "libraries/chips/*/*.ckt"]

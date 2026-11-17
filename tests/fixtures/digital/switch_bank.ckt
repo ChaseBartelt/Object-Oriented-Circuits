@@ -1,0 +1,13 @@
+chip Follow(a, y) { a = input; y = output; y = a; }
+chip Invert(a, y) { a = input; y = output; y = !a; }
+
+main HYBRID01 {
+    MAX10_CLK1_50 = input;
+    bool inverted = false;
+    for (int i = 0; i < 10; i++) {
+        SW${i} = input;
+        LEDR${i} = output;
+        if (inverted) { Invert(SW${i}, LEDR${i}); }
+        else { Follow(SW${i}, LEDR${i}); }
+    }
+}

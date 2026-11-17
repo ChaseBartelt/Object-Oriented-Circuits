@@ -1,0 +1,15 @@
+V1(1 Vrms) between(vin, 0);
+f = 1k
+
+series lowpass(input, output) {
+    R1 = 10;
+}
+
+parallel shunt(input, ground) {
+    C1 = 100n;
+}
+
+main {
+    lowpass(vin, out);
+    shunt(out, 0);
+}

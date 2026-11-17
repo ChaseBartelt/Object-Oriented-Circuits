@@ -1,0 +1,24 @@
+chip HYBRID01(MAX10_CLK1_50, SW0, LEDR0, AUDIO_OUT) {
+    MAX10_CLK1_50, SW0 = input;
+    LEDR0, AUDIO_OUT = output;
+
+    phase[32];
+    led_state;
+    sw_meta;
+    sw_sync;
+
+    clock(MAX10_CLK1_50, 50MHz) {
+        sw_meta = SW0;
+        sw_sync = sw_meta;
+        if (sw_sync == 0) {
+            phase += 440Hz;
+        } else {
+            phase += 880Hz;
+        }
+        every(500ms) {
+            led_state = !led_state;
+        }
+    }
+    AUDIO_OUT = phase[31];
+    LEDR0 = led_state;
+}

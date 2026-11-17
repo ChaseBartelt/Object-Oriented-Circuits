@@ -86,7 +86,7 @@ import circuitlab
 root = pathlib.Path(sys.argv[1])
 assert pathlib.Path(circuitlab.__file__).is_relative_to(pathlib.Path(sys.executable).parent)
 sys.path.insert(0, str(root))
-suite = unittest.defaultTestLoader.discover(str(root / 'tests'))
+suite = unittest.defaultTestLoader.discover(str(root / 'tests'), top_level_dir=str(root))
 result = unittest.TextTestRunner(verbosity=2).run(suite)
 pathlib.Path(sys.argv[2]).write_text(json.dumps(dict(tests=result.testsRun, failures=len(result.failures), errors=len(result.errors), skipped=len(result.skipped), package=circuitlab.__file__)), encoding='utf-8')
 raise SystemExit(not result.wasSuccessful())

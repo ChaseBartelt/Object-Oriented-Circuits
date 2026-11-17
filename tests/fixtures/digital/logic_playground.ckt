@@ -1,0 +1,16 @@
+chip LogicPlayground(clk, a, b, and_led, xor_led, blink, count_bit) {
+    clk, a, b = input;
+    and_led, xor_led, blink, count_bit = output;
+    counter[4];
+    flash;
+
+    clock(clk, 1kHz) {
+        if (a) { counter += 1; }
+        every(500ms) { flash = !flash; }
+    }
+
+    and_led = a & b;
+    xor_led = a ^ b;
+    blink = flash;
+    count_bit = counter[3];
+}

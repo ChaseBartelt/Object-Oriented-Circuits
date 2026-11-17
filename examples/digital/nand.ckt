@@ -1,5 +1,0 @@
-chip NandGate(a, b, y) {
-    a, b = input;
-    y = output;
-    y = !(a & b);
-}

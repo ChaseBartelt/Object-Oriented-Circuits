@@ -93,7 +93,6 @@ def build(args):
                   extension_version=extension_version, extension_sha256=digest(extension), runtime_sha256=digest(bundle))
     (payload / 'install.json').write_text(json.dumps(record,indent=2),encoding='utf-8')
     shutil.copy2(REPO / 'LICENSE', payload / 'LICENSE.txt')
-    shutil.copy2(HERE / 'Getting-Started.txt', payload / 'Getting-Started.txt')
     notices = ["OOC bundles unmodified third-party runtime packages. Their license files are retained in the installed runtime.",
                "Python " + PYTHON_VERSION + ": runtime/LICENSE.txt", "", "Python packages:"]
     notices += [f"{item['name']} {item['version']} — runtime/Lib/site-packages/<package>.dist-info/" for item in lock]

@@ -101,7 +101,7 @@ def build(output):
         "installed-updates.js": EXTENSION / "installed-updates.js",
         "structure.js": EXTENSION / "structure.js",
         "language-configuration.json": EXTENSION / "language-configuration.json",
-        "syntaxes/OOC.json": REPO / "ide/visual-studio/Syntaxes/OOC.json",
+        "syntaxes/OOC.json": EXTENSION / "syntaxes/OOC.json",
     }
     for contribution in package["contributes"].get("snippets", ()):
         path = PurePosixPath(contribution["path"])

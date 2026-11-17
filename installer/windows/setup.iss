@@ -42,7 +42,6 @@ Source: "{#Payload}\*"; DestDir: "{app}\{#Bundle}"; Flags: ignoreversion recurse
 
 [Icons]
 Name: "{group}\OOC Viewer"; Filename: "{app}\{#Bundle}\runtime\pythonw.exe"; Parameters: "-m circuitlab --editor"; WorkingDir: "{userdocs}"; Check: not IsPortable
-Name: "{group}\OOC Getting Started"; Filename: "{app}\{#Bundle}\Getting-Started.txt"; Check: not IsPortable
 Name: "{group}\Uninstall OOC"; Filename: "{uninstallexe}"; Check: not IsPortable
 Name: "{autodesktop}\OOC Viewer"; Filename: "{app}\{#Bundle}\runtime\pythonw.exe"; Parameters: "-m circuitlab --editor"; Tasks: desktopicon; Check: not IsPortable
 
