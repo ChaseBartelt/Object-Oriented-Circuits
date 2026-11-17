@@ -9,6 +9,7 @@ from statistics import median_low
 from circuitlab.layout.geometry import (
     source_pin_is_upper,
     BJT_PIN_OFFSET,
+    POT_PIN_OFFSET,
     Layout,
     PACKAGE_WIDTH,
     add_wire,
@@ -21,7 +22,7 @@ from circuitlab.layout.automatic import compact, series_runs, source_cells
 from circuitlab.layout.checks import mark_crossings as _mark_crossings, preserves_nets, segments_intersect
 from circuitlab.layout.search import evolve_placements, feedback_pairs, placement_penalty
 from circuitlab.layout.wiring import connector_names, labeled, signal_flow
-from circuitlab.layout.shorten import optimize_layout, wire_length
+from circuitlab.layout.shorten import compact_spacing, optimize_layout, wire_length
 
 SYMBOL_WIDTH = 4.3
 LANE_PITCH = 0.46
@@ -36,9 +37,15 @@ def schematic_layout(circuit, labels, mode):
         return fast_layout(circuit, labels)
     conventional = compact(circuit, labels) or signal_flow(circuit)
     if conventional and preserves_nets(circuit, conventional):
-        return optimize_layout(circuit, conventional)
-    layout = connected_layout(circuit, labels, simplify=mode == "auto")
-    return optimize_layout(circuit, layout) if preserves_nets(circuit, layout) else labeled(circuit, labels)
+        layout = conventional
+    else:
+        layout = connected_layout(circuit, labels, simplify=mode == "auto")
+    if not preserves_nets(circuit, layout):
+        return labeled(circuit, labels)
+    # Keep direct series joins and rail geometry; accept only group moves that
+    # also survive the viewer's subsequent grid snap. Saved placements bypass
+    # this generator; dense packages retain fast_layout's existing margins.
+    return compact_spacing(circuit, optimize_layout(circuit, layout), budget=12, grid_safe=True)
 
 
 def fast_layout(circuit, labels, *, boundary=(), shorten=True):
@@ -134,6 +141,8 @@ def _channel_layout(
 ):
     """Route from pins through column gutters to shared horizontal net tracks."""
     parts, grounds = circuit.components, circuit.grounds
+    # Dense package pinouts need the existing margins to survive grid rounding.
+    compact = tight and not any(part.kind == "H" for part in parts)
     drawing = Layout()
     columns = 1 + max(column for _, column in cells.values())
     rows = [cells[i][0] for i, *_ in pins]
@@ -232,7 +241,7 @@ def _channel_layout(
         ):
             lanes[gutters[i]].append(i)
 
-    widths = [4.7 if tight else 5.3] * columns
+    widths = [(4.5 if compact else 4.7) if tight else 5.3] * columns
     for i, part in enumerate(parts):
         col = cells[i][1]
         name, *values = labels[part.name]
@@ -263,11 +272,12 @@ def _channel_layout(
             len(indices),
         )
         shared = vertical_lanes[g]
+        lead = 0.75 if compact else 0.9
         for j, i in enumerate(indices):
-            lane_x[i] = x + 0.9 + (j + (len(shared) if j >= split else 0)) * LANE_PITCH
+            lane_x[i] = x + lead + (j + (len(shared) if j >= split else 0)) * LANE_PITCH
         for j, net in enumerate(shared, start=split):
-            vertical_x[net] = x + 0.9 + j * LANE_PITCH
-        x += (1.25 if tight else 1.8) + max(
+            vertical_x[net] = x + lead + j * LANE_PITCH
+        x += ((1.1 if compact else 1.25) if tight else 1.8) + max(
             0, len(indices) + len(shared) - 1
         ) * LANE_PITCH + padding[g][True]
         if g < columns:
@@ -313,10 +323,10 @@ def _channel_layout(
                 n,
             ),
         )
-        clearance = max(2.8, package_rows[row])
+        clearance = max(2.5 if compact else 2.8, package_rows[row])
         for j, net in enumerate(tracks):
             track_y[net] = row_y[-1] - clearance - TRACK_PITCH * j
-        pitch = 4.15 if tight else 4.8 if row in source_rows else 5.0
+        pitch = (3.8 if compact else 4.15) if tight else 4.8 if row in source_rows else 5.0
         if package_rows:
             pitch = max(pitch, clearance + package_rows[row + 1] + 1.2)
         row_y.append(row_y[-1] - pitch - TRACK_PITCH * len(tracks))
@@ -643,8 +653,8 @@ def _compact_channels(
         wires = [edge for segments in layout.wires.values() for edge in segments]
         for part, a, b, _ in layout.symbols:
             x, y = (a[0] + b[0]) / 2, (a[1] + b[1]) / 2
-            if part.kind in {"O", "Q"}:
-                height = BJT_PIN_OFFSET if part.kind == "Q" else 0.73
+            if part.kind in {"O", "Q", "P"}:
+                height = {"Q": BJT_PIN_OFFSET, "P": POT_PIN_OFFSET}.get(part.kind, 0.73)
                 body = ((a[0] + 0.08, y - height), (b[0] - 0.08, y + height))
             elif a[0] == b[0]:
                 body = ((x - 0.44, min(a[1], b[1]) + 0.08),

@@ -55,6 +55,40 @@ class ViewerTest(unittest.TestCase):
         self.window.source_tools.apply(plan)
         return plan
 
+    def test_scope_shares_schematic_page_and_can_resize_hide_and_return(self):
+        window = self.window
+        window.open_path(self.path)
+        self.app.processEvents()
+        self.assertEqual(window.views.currentIndex(), 0)
+        self.assertTrue(window.schematic.isVisible())
+        self.assertTrue(window.scope.isVisible())
+        self.assertGreater(window.scope.geometry().left(), window.schematic.geometry().right())
+        placement = pack_layout(window.schematic.layout)
+        window.scope.run.click()
+        simulation = window.scope.simulation
+        self.assertIsNotNone(simulation)
+        window.scope.pending[1].result(timeout=5)
+        window.scope.advance()
+        self.assertTrue(window.scope.waveform.samples)
+        window.schematic_splitter.setSizes([450, 600])
+        self.app.processEvents()
+        shown_width = window.schematic.width()
+        window.scope_action.trigger()
+        self.app.processEvents()
+        self.assertFalse(window.scope.isVisible())
+        self.assertGreater(window.schematic.width(), shown_width)
+        self.assertIs(window.scope.simulation, simulation)
+        self.assertTrue(window.scope.timer.isActive())
+        window.compile_source()
+        self.app.processEvents()
+        self.assertFalse(window.scope.isVisible())
+        window.scope_action.trigger()
+        self.app.processEvents()
+        self.assertTrue(window.scope.isVisible())
+        self.assertEqual(window.views.currentIndex(), 0)
+        self.assertEqual(pack_layout(window.schematic.layout), placement)
+        self.assertEqual(self.path.read_text(), DIVIDER)
+
     def test_close_discard_restores_all_value_changes_since_open(self):
         self.window.open_path(self.path)
         self.change_value('R1', '2k')

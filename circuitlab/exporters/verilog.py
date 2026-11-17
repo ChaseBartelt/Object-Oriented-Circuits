@@ -3,7 +3,9 @@
 import re
 from graphlib import CycleError, TopologicalSorter
 
-from circuitlab.exporters.clocked import Expressions, compile_clocks
+from circuitlab.exporters.clocked import Expressions, SELECTOR, selected_bits, compile_clocks
+from circuitlab.language.control_flow import expand_digital_loops
+from circuitlab.language.digital_switch import expand_switches, normalize_switch_labels
 from circuitlab.model.graph import CircuitError
 from circuitlab.language.syntax import CHIP, source_rows
 
@@ -150,14 +152,31 @@ def _signal_list(raw, line):
     return result
 
 
-def _combinational(rows, targets):
+def _combinational(rows, targets, signals):
     """Build one complete expression per driven output/net; never infer storage."""
     index = 0
+    split = {match[1] for text, _ in rows
+             if (match := re.match(r"(\w+)\s*\[", text)) and match[1] in signals}
+
+    def assignments(target, expression, line):
+        if "[" in target:
+            bits = selected_bits(target, signals, line)
+            if any(name not in targets for name, _ in bits):
+                raise CircuitError("Combinational assignments must target outputs or wires.", line)
+        else:
+            if target not in targets:
+                raise CircuitError("Combinational assignments must target outputs or wires.", line)
+            if target not in split:
+                return {target: ("value", expression, line)}
+            bits = [(target, bit) for bit in range(signals[target])]
+        return {(name if bit is None else (name, bit)):
+                ("value", expression, line) if len(bits) == 1 else ("bit_value", expression, offset, line)
+                for offset, (name, bit) in enumerate(bits)}
 
     def add(result, incoming, line):
         overlap = result.keys() & incoming.keys()
         if overlap:
-            raise CircuitError(f'Signal "{sorted(overlap)[0]}" already has a logic assignment.', line)
+            raise CircuitError(f'Signal "{sorted(overlap, key=str)[0]}" already has a logic assignment.', line)
         result.update(incoming)
 
     def conditional(condition, line, chain_depth=0):
@@ -176,7 +195,7 @@ def _combinational(rows, targets):
         else:
             raise CircuitError("Combinational if requires an else assigning every output on every path.", line)
         if yes.keys() != no.keys():
-            missing = ", ".join(sorted(yes.keys() ^ no.keys()))
+            missing = ", ".join(map(str, sorted(yes.keys() ^ no.keys(), key=str)))
             raise CircuitError(f"Assign {missing} on every combinational if/else path; use clock(...) for stored state.", line)
         return {name: ("mux", condition, yes[name], no[name], line) for name in yes}
 
@@ -191,10 +210,10 @@ def _combinational(rows, targets):
             if match := re.fullmatch(r"if\s*\((.*)\)\s*\{", statement):
                 add(result, conditional(match[1], line), line)
                 continue
-            match = re.fullmatch(r"([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+)", statement)
-            if not match or match[1] not in targets:
+            match = re.fullmatch(r"([A-Za-z_][A-Za-z0-9_]*(?:\s*\[[^]]+\])?)\s*=\s*(.+)", statement)
+            if not match:
                 raise CircuitError("Combinational behavior assigns declared outputs/wires using expressions or complete if/else branches.", line)
-            add(result, {match[1]: ("value", match[2], line)}, line)
+            add(result, assignments(match[1], match[2], line), line)
         if nested:
             raise CircuitError("Close the combinational block with }.", rows[-1][1])
         return result
@@ -209,6 +228,7 @@ class _CombinationalExpressions(Expressions):
 
 
 def _module(name, pins, body, header_line):
+    body = expand_switches(expand_digital_loops(normalize_switch_labels(body)))
     directions, port_widths, wires, states, constants = {}, {}, {}, {}, {}
     declarations_body, clocks = [], []
     index = outer_depth = 0
@@ -255,6 +275,7 @@ def _module(name, pins, body, header_line):
         depth += int(statement.endswith("{")) - int(statement == "}")
 
     declared = set(pins) | wires.keys()
+    banks = {re.sub(r"\d+$", "", signal) for signal in declared if re.search(r"\d$", signal)}
     behavior, depth = [], 0
     for statement, line in remaining:
         match = STATEMENT.fullmatch(statement)
@@ -264,7 +285,8 @@ def _module(name, pins, body, header_line):
                 raise CircuitError("Give each constant an explicit value.", line)
             _state(constant[1], declared | states.keys(), constants, line)
         elif depth == 0 and not statement.endswith("{") and (
-                not match or match[1].strip() not in declared):
+                not match or (match[1].strip() not in declared and
+                              not ("[" in match[1] and match[1].partition("[")[0].strip() in declared | banks))):
             _state(statement, declared | constants.keys(), states, line)
         else:
             behavior.append((statement, line))
@@ -274,21 +296,35 @@ def _module(name, pins, body, header_line):
         if pin not in directions:
             raise CircuitError(f'Declare "{pin}" as input or output.', header_line)
     targets = {pin for pin, direction in directions.items() if direction == "output"} | wires.keys()
-    trees = _combinational(behavior, targets)
-    for target in targets:
-        if target not in trees:
-            raise CircuitError(f'Signal "{target}" needs a logic assignment.', header_line)
-
     signals = {**port_widths, **wires}
     signals.update((state, width if vector else None) for state, (width, _, vector) in {**states, **constants}.items())
+    trees = _combinational(behavior, targets, signals)
+    for target in targets:
+        if target not in trees and any((target, bit) not in trees for bit in range(signals[target] or 1)):
+            raise CircuitError(f'Signal "{target}" needs a logic assignment for every bit.', header_line)
     for header, line, _ in clocks:
         match = re.match(r"clock\s*\(\s*([A-Za-z_][A-Za-z0-9_]*)", header)
         if match and signals.get(match[1]) not in (None, 1):
             raise CircuitError("A clock input must be one bit wide.", line)
     expressions = _CombinationalExpressions(signals)
+    selections = {}
+
+    def reads_in(expression, line):
+        reads = {token for token in TOKEN.findall(expression) if token in signals}
+        for selection in SELECTOR.finditer(expression):
+            reads.update(name for name, _ in selected_bits(selection[0], signals, line))
+        return reads
 
     def lower(tree):
         line = tree[-1]
+        if tree[0] == "bit_value":
+            key = tree[1], line
+            if key not in selections:
+                code, width, reads = lower(("value", tree[1], line))
+                code, _ = expressions.temporary(code, width)
+                selections[key] = code, width, reads
+            code, width, reads = selections[key]
+            return (f"{code}[{tree[2]}]" if tree[2] < width else "1'b0"), 1, reads
         if tree[0] == "value":
             expression = tree[1]
             if "~" in expression:
@@ -296,22 +332,31 @@ def _module(name, pins, body, header_line):
             # Keep existing single-bit HDL stable, including its spelling.
             try:
                 code, reads = _logic(expression, signals, line)
-                return code, 1, set(reads)
+                width, reads = 1, set(reads)
             except CircuitError:
                 code, width = expressions.parse(expression, line)
-                reads = {token for token in TOKEN.findall(expression) if token in signals}
-                return code, width, reads
+                reads = reads_in(expression, line)
+            return code, width, reads
         condition, yes, no = tree[1:4]
         code, _ = expressions.parse(condition, line)
         yes_code, yes_width, yes_reads = lower(yes)
         no_code, no_width, no_reads = lower(no)
         code, width = expressions.temporary(f"({code} ? {yes_code} : {no_code})", max(yes_width, no_width))
-        reads = {token for token in TOKEN.findall(condition) if token in signals}
+        reads = reads_in(condition, line)
         return code, width, reads | yes_reads | no_reads
 
     drivers = {}
-    for target, tree in trees.items():
-        code, width, reads = lower(tree)
+    for target in dict.fromkeys(key[0] if isinstance(key, tuple) else key for key in trees):
+        if target in trees:
+            tree = trees[target]
+            code, width, reads = lower(tree)
+        else:
+            bit_values = [lower(trees[target, bit]) for bit in range(signals[target])]
+            if any(width != 1 for _, width, _ in bit_values):
+                raise CircuitError("Assign a one-bit expression to an indexed output.", header_line)
+            code, width = expressions.pack([value for value, _, _ in bit_values])
+            reads = set().union(*(reads for _, _, reads in bit_values))
+            tree = trees[target, 0]
         if signals[target] is None and width != 1:
             raise CircuitError(f'Assign a one-bit expression to scalar "{target}" or declare a vector output/wire.', tree[-1])
         drivers[target] = code, reads, tree[-1]

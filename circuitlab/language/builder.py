@@ -46,6 +46,7 @@ from circuitlab.language.syntax import (
     UNITS,
     WAVE,
     analysis_mode,
+    parse_potentiometer,
     parse_wires,
 )
 
@@ -714,6 +715,8 @@ class Compiler:
         return name
 
     def group_entry(self, assignment, binding):
+        if assignment and assignment[1][0].upper() == "P":
+            raise CircuitError("A potentiometer needs three terminals: P1(value) between(high, wiper, low).")
         if not assignment or assignment[1][0].upper() not in UNITS or (
             not assignment[2].strip() and assignment[1][0].upper() == "X"
         ):
@@ -820,11 +823,9 @@ class Compiler:
     def node_row(self, text, binding):
         if placement := PLACEMENT.fullmatch(text.removesuffix(";").rstrip()):
             name, raw, wires = placement.groups()
-            p, n = parse_wires(wires, 2)
         elif placement := PART_PLACEMENT.fullmatch(text.removesuffix(";").rstrip()):
             name, wires = placement.groups()
             raw = ""
-            p, n = parse_wires(wires, 2)
         else:
             match = re.fullmatch(
                 r"([A-Za-z][A-Za-z0-9_]*)\s+(\S+)\s+(\S+)\s+(.+)", text
@@ -834,6 +835,20 @@ class Compiler:
                     "Use quantity = value or name positive_node negative_node value."
                 )
             name, p, n, raw = match.groups()
+            self.add_node_component(name, raw, p, n, binding)
+            return
+        if name[0].upper() == "P":
+            if self.mode == "transient":
+                raise CircuitError("Use DC mode and Run in Results for a potentiometer time simulation.")
+            p, wiper, n = map(binding.wire, parse_wires(wires, 3))
+            value, position = parse_potentiometer(raw)
+            name = self.component_name(name, binding)
+            self.circuit.components.append(Component(name, "P", p, n, value, label=name,
+                                                    order=self.order, wiper=wiper, position=position))
+            self.circuit.named_wires.update((p, wiper, n))
+            self.method_parts |= bool(binding.scope)
+            return
+        p, n = parse_wires(wires, 2)
         self.add_node_component(name, raw, p, n, binding)
 
     def add_node_component(self, name, raw, p, n, binding):
@@ -998,7 +1013,7 @@ class Compiler:
         """Find each ideal op amp's output reference after wiring is resolved."""
         c = self.circuit
         branches = [
-            part.terminal_nets if part.kind in {"Q", "S"} else (part.p, part.n)
+            part.terminal_nets if part.kind in {"Q", "S", "P"} else (part.p, part.n)
             for part in c.components
             if part.kind != "O"
         ]
@@ -1062,6 +1077,7 @@ class Compiler:
                 in_plus=resolve_alias(part.in_plus, aliases),
                 in_minus=resolve_alias(part.in_minus, aliases),
                 base=resolve_alias(part.base, aliases),
+                wiper=resolve_alias(part.wiper, aliases),
             )
             for part in c.components
         ]

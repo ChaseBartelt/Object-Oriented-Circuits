@@ -7,6 +7,7 @@
 Vin(1 Vrms) between(input, 0);
 f = 1k;
 
+
 main {
     Zinput(2-j2 kohm) between(input, firstSum);
     Zfeedback(4+j4 kohm) between(quadrature, firstSum);

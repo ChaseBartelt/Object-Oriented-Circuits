@@ -50,11 +50,11 @@ def series_runs(circuit):
     incident = {}
     for i, net, *_ in component_pins(parts):
         incident.setdefault(net, []).append(i)
-    # Only two-terminal parts can be reversed along a series run. Switches
-    # also have control pins, whose sides must agree with symbol_pins().
+    # Only two-terminal parts can be reversed along a series run. Device
+    # pin sides must agree with symbol_pins().
     passive = {
         i for i, part in enumerate(parts)
-        if not part.is_source and part.kind not in {"O", "Q", "H", "S"} and part.p != part.n
+        if not part.is_source and part.kind not in {"O", "Q", "H", "S", "P"} and part.p != part.n
     }
     joins = {i: {} for i in passive}
 
@@ -189,7 +189,7 @@ class Block:
     kind: str
     part: object = None
     children: tuple = ()
-    width: float = 4.3
+    width: float = 3.5
     depth: float = 0
 
     def oriented(self, start):
@@ -503,7 +503,7 @@ def _divider_bank(circuit, source, tree, ground):
 def compact(circuit, labels=None):
     """Choose a conventional layout when the resolved topology supports one."""
     parts = circuit.components
-    if len(parts) > 12 or any(part.kind == "Q" for part in parts):
+    if len(parts) > 12 or any(part.kind in {"Q", "P"} for part in parts):
         return None
     if any(part.kind == "O" for part in parts):
         return compact_amplifier(circuit)
@@ -606,10 +606,10 @@ def compact_amplifier(circuit):
             return None
     d = Layout()
     x = input_tree.width
-    chip_x = x + 1.15
+    chip_x = x + 0.75
     out_x = max(chip_x + 4.7, x + feedback_tree.width + 0.8)
-    fy = 2.25 + feedback_tree.depth
-    gy = -3.3 - input_tree.depth
+    fy = 1.75 + feedback_tree.depth
+    gy = -2.75 - input_tree.depth
     place_tree(d, circuit, input_tree, 0, 0.35)
     d.positions[source.name] = (0, 0.35)
     d.symbols.append((source, (0, 0.35), (0, gy), "+"))
@@ -627,22 +627,22 @@ def compact_amplifier(circuit):
     label_node(d, circuit, (x, 0.35), chip.in_minus)
     d.junctions.setdefault(chip.p, []).append((out_x, 0))
     for follower in chain:
-        nx = out_x + 2.4
+        nx = out_x + 1.35
         add_wire(d, chip.p, (out_x, 0), (nx - 0.65, 0), (nx - 0.65, 0.35), (nx, 0.35))
         d.labels[chip.p] = (out_x + 0.4, 0.22)
         d.positions[follower.name] = (nx, 0)
         d.symbols.append((follower, (nx, 0), (nx + 4.3, 0), "+"))
         out_x = nx + 4.8
         add_wire(d, follower.p, (nx + 4.3, 0), (out_x, 0))
-        add_wire(d, follower.p, (out_x, 0), (out_x, -1.65),
-                 (nx - 0.55, -1.65), (nx - 0.55, -0.35), (nx, -0.35))
+        add_wire(d, follower.p, (out_x, 0), (out_x, -1.35),
+                 (nx - 0.55, -1.35), (nx - 0.55, -0.35), (nx, -0.35))
         d.junctions.setdefault(follower.p, []).append((out_x, 0))
         chip = follower
     if not load_tree:
         add_wire(d, chip.p, (out_x, 0), (out_x + 0.9, 0))
         d.labels[chip.p] = (out_x + 1.05, 0)
     else:
-        lx, ly = out_x + 1.2, -2.6
+        lx, ly = out_x + 0.75, -2.0
         add_wire(d, chip.p, (out_x, 0), (lx, 0), (lx, ly))
         d.labels[chip.p] = (lx, 0.27)
         place_tree(d, circuit, load_tree, lx, ly)
@@ -682,26 +682,26 @@ def _summing_amplifier(circuit, sources, amp):
         return None
 
     drawing = Layout()
-    sum_x, amp_x, out_x = 8.0, 12.4, 19.1
-    rows = [-5.3 * i for i in range(len(sources))]
+    sum_x, amp_x, out_x = 4.25, 7.0, 12.0
+    rows = [-4.0 * i for i in range(len(sources))]
     for source, edge, y in zip(sources, input_edges, rows):
         _grounded_source(drawing, source, source.p, ground, (0, y), (0, y - 2.9))
-        add_wire(drawing, source.p, (0, y), (1.4, y))
-        place_symbol(drawing, branches[edge], source.p, (1.4, y), (sum_x, y))
-    add_wire(drawing, tap, (sum_x, 3.0), *((sum_x, y) for y in rows))
+        add_wire(drawing, source.p, (0, y), (0.75, y))
+        place_symbol(drawing, branches[edge], source.p, (0.75, y), (sum_x, y))
+    add_wire(drawing, tap, (sum_x, 2.0), *((sum_x, y) for y in rows))
     drawing.junctions[tap] = [(sum_x, y) for y in rows[:-1]]
     drawing.labels[tap] = (sum_x + 1.0, 0)
     add_wire(drawing, tap, (sum_x, 0), (amp_x - 1.4, 0), (amp_x - 1.4, -0.65), (amp_x, -0.65))
     drawing.symbols.append((amp, (amp_x, -1), (amp_x + 4.3, -1), "-"))
     drawing.positions[amp.name] = (amp_x, -1)
-    add_wire(drawing, ground, (amp_x, -1.35), (amp_x - 0.85, -1.35), (amp_x - 0.85, -3.6))
-    ground_at(drawing, (amp_x - 0.85, -3.6), ground)
-    place_symbol(drawing, branches[feedback], tap, (sum_x, 3.0), (out_x, 3.0))
-    end = (out_x + 2.5, -1)
-    add_wire(drawing, output, (out_x, 3.0), (out_x, -1), (amp_x + 4.3, -1))
+    add_wire(drawing, ground, (amp_x, -1.35), (amp_x - 0.85, -1.35), (amp_x - 0.85, -3.0))
+    ground_at(drawing, (amp_x - 0.85, -3.0), ground)
+    place_symbol(drawing, branches[feedback], tap, (sum_x, 2.0), (out_x, 2.0))
+    end = (out_x + 1.5, -1)
+    add_wire(drawing, output, (out_x, 2.0), (out_x, -1), (amp_x + 4.3, -1))
     drawing.junctions[output] = [(out_x, -1)]
     _connector(drawing, output, (out_x, -1), end)
     if load in branches:
-        place_symbol(drawing, branches[load], output, (out_x, -1), (out_x, -4.6))
-        ground_at(drawing, (out_x, -4.6), ground)
+        place_symbol(drawing, branches[load], output, (out_x, -1), (out_x, -4.0))
+        ground_at(drawing, (out_x, -4.0), ground)
     return drawing

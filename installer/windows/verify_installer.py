@@ -79,6 +79,13 @@ def verify(args):
         run([python, "-m", "circuitlab.tooling.cli", "solve", chip], "chip-library")
         report["checks"].append("Packaged compiler solves external 4 V divider and @chips NAND")
 
+        pot = project / "potentiometer.ckt"
+        pot.write_text("V1(5) between(supply, 0);\nP1(10k, 25%) between(supply, level, 0);\n"
+                       "op1(level, out, out);\nR1(1k) between(out, 0);\n", encoding="utf-8")
+        solved = run([python, "-m", "circuitlab.tooling.cli", "solve", pot], "potentiometer")
+        assert "Node level: 1.25 V" in solved and "Node out: 1.25 V" in solved, solved
+        report["checks"].append("Packaged three-terminal potentiometer and buffered output solve to 1.25 V")
+
         if args.full_tests:
             print("Running all tests against the installed package", flush=True)
             execute_python(python, '''import json, pathlib, sys, unittest

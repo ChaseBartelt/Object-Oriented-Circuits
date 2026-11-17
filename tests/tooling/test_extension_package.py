@@ -1,13 +1,74 @@
 import json
 import unittest
 from pathlib import Path
+from shutil import copyfile, copytree, ignore_patterns
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
+from xml.etree import ElementTree as ET
 from zipfile import ZipFile
 
-from ide.vscode.package_extension import build, publish, runtime_bundle, RUNTIME_FILES
+from ide.vscode.package_extension import (
+    EXTENSION, REPO, RUNTIME_FILES, VSIX_SCHEMA, build, publish, runtime_bundle,
+)
 
 
 class ExtensionPackageTest(unittest.TestCase):
+    def copy_sources(self, root):
+        extension = root / "extension"
+        copytree(EXTENSION, extension, ignore=ignore_patterns("README.md", "dist", "__pycache__"))
+        copyfile(REPO / "LICENSE", root / "LICENSE")
+        return extension
+
+    def test_optional_readme_has_no_dangling_manifest_asset_or_runtime_change(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            extension = self.copy_sources(root)
+            bundles = []
+            with patch.multiple("ide.vscode.package_extension", EXTENSION=extension, REPO=root):
+                for include_readme in (False, True):
+                    with self.subTest(include_readme=include_readme):
+                        if include_readme:
+                            (extension / "README.md").write_bytes(b"# OOC extension\r\nOptional documentation.\r\n")
+                        package = root / f"readme-{include_readme}.vsix"
+                        build(package)
+                        with ZipFile(package) as archive:
+                            manifest = ET.fromstring(archive.read("extension.vsixmanifest"))
+                            assets = {
+                                asset.attrib["Type"].rsplit(".", 1)[-1]: asset.attrib["Path"]
+                                for asset in manifest.findall("v:Assets/v:Asset", {"v": VSIX_SCHEMA})
+                            }
+                            self.assertEqual(set(assets), {"Manifest", "License"} | ({"Details"} if include_readme else set()))
+                            for path in assets.values():
+                                self.assertIn(path, archive.namelist())
+                            self.assertEqual("extension/README.md" in archive.namelist(), include_readme)
+                            if include_readme:
+                                self.assertEqual(assets["Details"], "extension/README.md")
+                                self.assertEqual(archive.read(assets["Details"]), b"# OOC extension\nOptional documentation.\n")
+                            bundles.append(archive.read("extension/runtime-bundle.json"))
+            self.assertEqual(*bundles)
+
+    def test_missing_required_assets_still_fail_the_build(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            extension = self.copy_sources(root)
+            required = [
+                *extension.glob("*.js"),
+                extension / "language-configuration.json",
+                extension / "syntaxes/OOC.json",
+                *extension.glob("snippets/*.code-snippets"),
+                root / "LICENSE",
+            ]
+            with patch.multiple("ide.vscode.package_extension", EXTENSION=extension, REPO=root):
+                for path in required:
+                    with self.subTest(asset=path.relative_to(root)):
+                        data = path.read_bytes()
+                        path.unlink()
+                        try:
+                            with self.assertRaises(FileNotFoundError):
+                                build(root / "missing.vsix")
+                        finally:
+                            path.write_bytes(data)
+
     def test_line_endings_do_not_force_a_live_update_reload(self):
         package = {"version": "0.7.3", "main": "extension.js"}
         files = {name: b"exports.activate = () => {};\n" for name in RUNTIME_FILES}

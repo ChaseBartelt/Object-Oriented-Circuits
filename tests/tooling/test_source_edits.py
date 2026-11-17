@@ -23,6 +23,9 @@ IMPEDANCE_SOURCE = ('f=1k\nV1(1 Vrms) between(v,0);\n'
                     'R2(1k) between(out,0);\n')
 UNSPECIFIED_IMPEDANCE_SOURCE = IMPEDANCE_SOURCE.replace('Z1(2-j2)', 'Z1()')
 BARE_IMPEDANCE_SOURCE = IMPEDANCE_SOURCE.replace('Z1(2-j2)', 'Z1')
+POTENTIOMETER_SOURCE = ('V1(5) between(v,0);\n'
+                        'P1(10k,25%) between(v,out,0); # keep potentiometer comment\n'
+                        'Rload(1k) between(out,0);\n')
 
 
 class SourceEditsTest(unittest.TestCase):
@@ -110,6 +113,90 @@ class SourceEditsTest(unittest.TestCase):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 edit_value(circuit, 'Z1', value, self.path, IMPEDANCE_SOURCE, self.reader)
         self.assertEqual(self.path.read_bytes(), original)
+
+    def test_potentiometer_edits_preserve_three_terminals_and_validate_both_values(self):
+        self.path.write_text(POTENTIOMETER_SOURCE, encoding='utf-8')
+        circuit = compile_circuit(POTENTIOMETER_SOURCE, path=self.path, render_only=True)
+        for value, expected in (('200,75%', (200, .75)), ('4.7k', (4700, .5)),
+                                ('1k,0', (1000, 0)), (',25%', (None, .25))):
+            with self.subTest(value=value):
+                plan = edit_value(circuit, 'P1', value, self.path, POTENTIOMETER_SOURCE, self.reader)
+                self.assertEqual(plan.after, POTENTIOMETER_SOURCE.replace('10k,25%', value))
+                changed = compile_circuit(plan.after, path=self.path, render_only=True)
+                part = next(part for part in changed.components if part.name == 'P1')
+                self.assertEqual((part.value, part.position), expected)
+                self.assertEqual(part.terminal_nets, ('v', 'out', '0'))
+                if part.value is None:
+                    from circuitlab.math.analysis import analyze
+                    with self.assertRaises(ValueError) as caught:
+                        analyze(changed)
+                    self.assertEqual(caught.exception.code, 'MissingComponentValue')
+        original = self.path.read_bytes()
+        for value in ('0,25%', '-1,25%', '1k,101%', '1k,-1%', '1k,', '1k,1,2',
+                      '1k,nan', '1e999,25%', '1k,25%; R99(1) between(a,b);', '1k,25%\n# changed'):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                edit_value(circuit, 'P1', value, self.path, POTENTIOMETER_SOURCE, self.reader)
+        self.assertEqual(self.path.read_bytes(), original)
+
+    def test_included_potentiometer_edit_updates_shared_definition(self):
+        library = self.path.with_name('pot.ckt')
+        definition = 'chip knob(high,wiper,low) {\n  P1(10k,25%) between(high,wiper,low);\n}\n'
+        library.write_text(definition, encoding='utf-8')
+        source = 'include("pot.ckt");\nmain { knob(v,a,0); knob(v,b,0); }\n'
+        circuit = compile_circuit(source, path=self.path, render_only=True)
+        part = next(part for part in circuit.components if part.kind == 'P')
+        plan = edit_value(circuit, part.name, '20k,75%', self.path, source, self.reader)
+        self.assertEqual(plan.path, library.resolve())
+        self.assertEqual(plan.after, definition.replace('10k,25%', '20k,75%'))
+        changed = compile_circuit(source, path=self.path, render_only=True,
+                                  read_source=lambda path: plan.after if path == library else self.reader(path))
+        self.assertEqual([(part.value, part.position) for part in changed.components], [(20000, .75)] * 2)
+        self.assertEqual(self.reader(library), definition)
+
+    def test_potentiometer_right_click_edit_undo_clear_and_discard_are_atomic(self):
+        self.path.write_text(POTENTIOMETER_SOURCE, encoding='utf-8')
+        window = self.window()
+        window.resize(1400, 800)
+        window.show()
+        self.app.processEvents()
+        window.schematic.fit()
+        layout = pack_layout(window.schematic.layout)
+        _, a, b, _ = next(row for row in window.schematic.layout.symbols if row[0].name == 'P1')
+        pos = window.schematic.mapFromScene(point(tuple((x + y) / 2 for x, y in zip(a, b))))
+        event = QContextMenuEvent(QContextMenuEvent.Reason.Mouse, pos,
+                                  window.schematic.viewport().mapToGlobal(pos))
+        with patch('circuitlab.viewer.schematic.QMenu') as menu, \
+             patch('circuitlab.viewer.source_editing.QInputDialog.getText', return_value=('20k,75%', True)) as dialog:
+            window.schematic.contextMenuEvent(event)
+            actions = dict(call.args for call in menu.return_value.addAction.call_args_list)
+            self.assertIn('Edit value…', actions)
+            actions['Edit value…']()
+        self.assertEqual(dialog.call_args.kwargs['text'], '10k,25%')
+        self.assertIn('resistance, position', dialog.call_args.args[2])
+        changed_source = POTENTIOMETER_SOURCE.replace('10k,25%', '20k,75%')
+        self.assertEqual(self.reader(self.path), changed_source)
+        self.assertEqual(len(window.source_tools.history), 1)
+        part = next(part for part in window.schematic.circuit.components if part.name == 'P1')
+        self.assertEqual((part.value, part.position), (20000, .75))
+        window.schematic.undo()
+        self.assertEqual(self.reader(self.path), POTENTIOMETER_SOURCE)
+        with patch('circuitlab.viewer.source_editing.QInputDialog.getText', return_value=(',25%', True)):
+            window.source_tools.change_value('P1')
+        self.assertEqual(self.reader(self.path), POTENTIOMETER_SOURCE.replace('10k,25%', ',25%'))
+        self.assert_missing_component(window, 'P1')
+        with patch('circuitlab.viewer.source_editing.QInputDialog.getText', return_value=('', True)):
+            window.source_tools.change_value('P1')
+        self.assertEqual(self.reader(self.path), POTENTIOMETER_SOURCE.replace('P1(10k,25%)', 'P1'))
+        self.assert_missing_component(window, 'P1')
+        with patch('circuitlab.viewer.source_editing.QInputDialog.getText', return_value=('200', True)):
+            window.source_tools.change_value('P1')
+        part = next(part for part in window.schematic.circuit.components if part.name == 'P1')
+        self.assertEqual((part.value, part.position), (200, .5))
+        self.assertTrue(window.source_tools.discard_values())
+        self.assertEqual(self.reader(self.path), POTENTIOMETER_SOURCE)
+        self.assertEqual(pack_layout(window.schematic.layout), layout)
+        self.assertFalse(window.source_tools.history)
+        self.assertFalse(window.source_tools.value_changes)
 
     def test_impedance_edit_keeps_explicitly_selected_ac_mode(self):
         source = IMPEDANCE_SOURCE.replace('f=1k\n', '').replace('1 Vrms', '1')

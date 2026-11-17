@@ -27,49 +27,49 @@ chip HYBRID01(MAX10_CLK1_50, SW0, SW1, SW9, LEDR0, LEDR1, LEDR2, LEDR3, LEDR4, L
     wait_ticks[7] = 0;
     elapsed[8] = 0;
 
-    clock(MAX10_CLK1_50, 50MHz) {
-        every(10ms) {
-            if (SW9) {
-                fsm = IDLE;
-                wait_ticks = 0;
-                elapsed = 0;
-            } else if (fsm == IDLE) {
-                if (SW0) {
-                    wait_ticks = 0;
-                    elapsed = 0;
+clock(MAX10_CLK1_50, 50MHz) {
+    every(10ms) {
+        if (SW9) {
+            fsm = IDLE;
+            wait_ticks = 0;
+            elapsed = 0;
+        } else {
+            switch (fsm) {
+                case IDLE:
+                    if (SW0) {
+                        wait_ticks = 0;
+                        elapsed = 0;
+                        fsm = SW1 ? EARLY : WAITING;
+                    }
+                    break;
+
+                case WAITING:
                     if (SW1) {
                         fsm = EARLY;
+                    } else if (wait_ticks == 99) {
+                        fsm = GO;
+                        elapsed = 0;
                     } else {
-                        fsm = WAITING;
+                        wait_ticks += 1;
                     }
-                }
-            } else if (fsm == WAITING) {
-                if (SW1) {
-                    fsm = EARLY;
-                } else if (wait_ticks == 99) {
-                    fsm = GO;
-                    elapsed = 0;
-                } else {
-                    wait_ticks += 1;
-                }
-            } else if (fsm == GO) {
-                if (SW1) {
-                    fsm = RESULT;
-                } else if (elapsed < 255) {
-                    elapsed += 1;
-                }
+                    break;
+
+                case GO:
+                    if (SW1) {
+                        fsm = RESULT;
+                    } else if (elapsed < 255) {
+                        elapsed += 1;
+                    }
+                    break;
+
+                default:
+                    break;
             }
         }
     }
+}
 
-    LEDR0 = elapsed[0];
-    LEDR1 = elapsed[1];
-    LEDR2 = elapsed[2];
-    LEDR3 = elapsed[3];
-    LEDR4 = elapsed[4];
-    LEDR5 = elapsed[5];
-    LEDR6 = elapsed[6];
-    LEDR7 = elapsed[7];
+    LEDR[7:0] = elapsed[7:0];
     LEDR8 = (fsm == WAITING) || (fsm == EARLY);
     LEDR9 = (fsm == GO) || (fsm == EARLY);
 }

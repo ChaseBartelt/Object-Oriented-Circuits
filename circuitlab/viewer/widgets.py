@@ -85,8 +85,16 @@ def probe_text(result, kind, name, *, separator=" · "):
         elif kind == "component" and name in network.names:
             index = network.names.index(name)
             voltage = format_value(network.branch_voltage[index], "V", ac, False)
-            current = format_value(network.branch_current[index], "A", ac, False)
-            readings.append(prefix + f"{name} voltage = {voltage}   |   current = {current}")
+            part = next((part for part in result.circuit.components if part.name == name), None)
+            if part and part.kind == "P":
+                currents = "   |   ".join(
+                    f"current into {terminal} = {format_value(amps, 'A', ac, False)}"
+                    for terminal, amps in zip(("high", "wiper", "low"), network.terminal_current[name])
+                )
+                readings.append(prefix + f"{name} high-low voltage = {voltage}   |   {currents}")
+            else:
+                current = format_value(network.branch_current[index], "A", ac, False)
+                readings.append(prefix + f"{name} voltage = {voltage}   |   current = {current}")
     return "\n".join(readings) or "No result for this selection."
 
 

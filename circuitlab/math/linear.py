@@ -6,7 +6,8 @@ import numpy as np
 from scipy import linalg
 
 from circuitlab.model.graph import CircuitError, ground_references
-from circuitlab.math.results import Network, SimulationBackend
+from circuitlab.model.potentiometer import expand_potentiometers
+from circuitlab.math.results import Network, SimulationBackend, fold_potentiometers
 
 
 def solve_system(matrix, rhs, scale):
@@ -49,7 +50,7 @@ class NodalBackend:
 
     def solve(self, circuit, *, ac, frequency=None, port=None):
         circuit.require_values()
-        parts = circuit.components
+        parts, potentiometers = expand_potentiometers(circuit)
         nonlinear = any(part.kind in {"Q", "S"} for part in parts)
         if any(part.kind == "Z" for part in parts):
             if not ac or circuit.mode != "ac":
@@ -60,7 +61,9 @@ class NodalBackend:
                                    "their native solver supports DC and time-domain analysis, not AC.", code="UnsupportedComponent")
         if nonlinear:
             if ac or port or circuit.mode != "dc":
-                raise CircuitError("Use DC for the built-in nonlinear operating point. Use SPICE for AC or port analysis.",
+                raise CircuitError("Use DC for the built-in nonlinear operating point. "
+                                   "Run AC time-domain waveforms in the Results oscilloscope; "
+                                   "use SPICE for small-signal AC or port analysis.",
                                    code="UnsupportedComponent")
             from circuitlab.math.nonlinear import TimeDomain
 
@@ -235,7 +238,7 @@ class NodalBackend:
                 network.equivalent_issue = (
                     "The port impedance is below numerical precision."
                 )
-                return network
+                return fold_potentiometers(network, circuit, potentiometers)
             if not z:
                 network.equivalent_issue = (
                     "Zero port impedance leaves no unique finite short-circuit current."
@@ -245,4 +248,4 @@ class NodalBackend:
                 "impedance": z,
                 "current": v / z if z else None,
             }
-        return network
+        return fold_potentiometers(network, circuit, potentiometers)

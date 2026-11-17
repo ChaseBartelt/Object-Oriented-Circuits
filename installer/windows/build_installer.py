@@ -71,8 +71,10 @@ def build(args):
     # Build from a clean source staging folder to exclude stale setuptools output.
     source = stage / "source"
     source.mkdir()
-    for filename in ("pyproject.toml", "README.md", "LICENSE"):
+    for filename in ("pyproject.toml", "LICENSE"):
         shutil.copy2(REPO / filename, source / filename)
+    if (REPO / "README.md").is_file():
+        shutil.copy2(REPO / "README.md", source / "README.md")
     shutil.copytree(REPO / "circuitlab", source / "circuitlab", ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
     own = stage / "wheel"
     execute([sys.executable, "-m", "pip", "wheel", source, "--no-deps", "--no-build-isolation", "--wheel-dir", own])

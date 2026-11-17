@@ -4,17 +4,17 @@ from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from threading import Event
 
-from PySide6.QtCore import QPointF, QRectF, QTimer
+from PySide6.QtCore import QPointF, QRectF, QSignalBlocker, QTimer
 from PySide6.QtGui import QColor, QPainter, QPainterPath
 from PySide6.QtWidgets import (
-    QComboBox, QDoubleSpinBox, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget,
+    QComboBox, QDoubleSpinBox, QFormLayout, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget,
 )
 
 from circuitlab.model.graph import CircuitError
-from circuitlab.math.nonlinear import TimeDomain
+from circuitlab.math.nonlinear import TimeDomain, source_frequency
 
 
-def sample_batch(simulation, node, stop):
+def sample_batch(simulation, stop):
     samples = []
     error = None
     for _ in range(12):
@@ -25,7 +25,7 @@ def sample_batch(simulation, node, stop):
         except CircuitError as failure:
             error = failure
             break
-        samples.append((simulation.time, voltage[node]))
+        samples.append((simulation.time, voltage.copy()))
     return samples, error
 
 
@@ -65,16 +65,24 @@ class Waveform(QWidget):
 
 
 class Oscilloscope(QWidget):
-    def __init__(self):
+    def __init__(self, *, compact=False):
         super().__init__()
+        self.panel_visible = True
         self.circuit = None
         self.simulation = None
+        self.frequency = None
         self.worker = ThreadPoolExecutor(max_workers=1, thread_name_prefix="waveform")
         self.pending = None
+        self.history = deque(maxlen=600)
+        self.history_nodes = ()
         self.stop_batch = Event()
         self.timer = QTimer(self)
         self.timer.setInterval(35)
         self.timer.timeout.connect(self.advance)
+        self.refresh_timer = QTimer(self)
+        self.refresh_timer.setSingleShot(True)
+        self.refresh_timer.setInterval(15)
+        self.refresh_timer.timeout.connect(self.refresh_simulation)
         self.waveform = Waveform()
         self.node = QComboBox()
         self.initial = QComboBox()
@@ -82,8 +90,8 @@ class Oscilloscope(QWidget):
         self.voltage.setRange(-100, 100)
         self.voltage.setSuffix(" V")
         self.step = QDoubleSpinBox()
-        self.step.setDecimals(2)
-        self.step.setRange(0.01, 100000)
+        self.step.setDecimals(6)
+        self.step.setRange(0.000001, 100000)
         self.step.setValue(10)
         self.step.setSuffix(" µs")
         self.run = QPushButton("Run")
@@ -94,42 +102,142 @@ class Oscilloscope(QWidget):
         self.message.setWordWrap(True)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        for controls in (
-            (self.run, self.reset, QLabel("Node"), self.node, QLabel("Time step"), self.step),
-            (QLabel("Initial capacitor"), self.initial, QLabel("Initial voltage"), self.voltage),
-        ):
+        if compact:
+            self.setMinimumWidth(280)
+            for combo in (self.node, self.initial):
+                combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+                combo.setMinimumContentsLength(10)
             row = QHBoxLayout()
-            for control in controls:
-                row.addWidget(control)
+            row.addWidget(QLabel("Oscilloscope"))
             row.addStretch()
+            row.addWidget(self.run)
+            row.addWidget(self.reset)
             layout.addLayout(row)
-        layout.addWidget(self.waveform)
+            fields = QFormLayout()
+            fields.addRow("Node", self.node)
+            fields.addRow("Time step", self.step)
+            fields.addRow("Initial capacitor", self.initial)
+            fields.addRow("Initial voltage", self.voltage)
+            layout.addLayout(fields)
+        else:
+            for controls in (
+                (self.run, self.reset, QLabel("Node"), self.node, QLabel("Time step"), self.step),
+                (QLabel("Initial capacitor"), self.initial, QLabel("Initial voltage"), self.voltage),
+            ):
+                row = QHBoxLayout()
+                for control in controls:
+                    row.addWidget(control)
+                row.addStretch()
+                layout.addLayout(row)
+        layout.addWidget(self.waveform, 1)
         layout.addWidget(self.message)
-        for signal in (self.node.currentIndexChanged, self.initial.currentIndexChanged,
-                       self.voltage.valueChanged, self.step.valueChanged):
-            signal.connect(self.restart)
+        self.node.currentIndexChanged.connect(self.show_node)
+        self.step.valueChanged.connect(self.change_step)
+        for control in (self.initial, self.voltage):
+            control.setToolTip("Initial conditions apply after Reset; changing them does not interrupt a running circuit.")
         self.hide()
 
-    def set_circuit(self, circuit):
+    def set_panel_visible(self, visible):
+        self.panel_visible = visible
+        self.update_visibility()
+
+    def update_visibility(self):
+        circuit = self.circuit
+        supported = circuit is not None and circuit.mode in {"dc", "ac", "mixed"} and bool(circuit.components)
+        self.setVisible(supported and self.panel_visible)
+        return supported
+
+    def set_circuit(self, circuit, *, preserve_state=False):
         if circuit is self.circuit:
             return
-        previous = self.node.currentText()
+        previous = self.node.currentText(), self.initial.currentData()
         self.circuit = circuit
-        self.restart()
-        self.node.clear()
-        self.initial.clear()
-        self.initial.addItem("None", None)
-        supported = circuit is not None and circuit.mode == "dc" and bool(circuit.components)
-        self.setVisible(supported)
-        if supported:
-            self.node.addItems(net for net in circuit.nodes if net not in circuit.grounds)
-            index = self.node.findText(previous)
-            if index < 0:
-                index = self.node.findText("out")
-            self.node.setCurrentIndex(max(0, index))
-            for part in circuit.components:
-                if part.kind == "C":
-                    self.initial.addItem(part.label, part.name)
+        supported = self.update_visibility()
+        if not preserve_state or not supported:
+            self.restart()
+        with QSignalBlocker(self.node), QSignalBlocker(self.initial), QSignalBlocker(self.step):
+            self.node.clear()
+            self.initial.clear()
+            self.initial.addItem("None", None)
+            if supported:
+                self.node.addItems(net for net in circuit.nodes if net not in circuit.grounds)
+                index = self.node.findText(previous[0])
+                if index < 0:
+                    index = self.node.findText("out")
+                self.node.setCurrentIndex(max(0, index))
+                for part in circuit.components:
+                    if part.kind == "C":
+                        self.initial.addItem(part.label, part.name)
+                self.initial.setCurrentIndex(max(0, self.initial.findData(previous[1])))
+                try:
+                    frequency = source_frequency(circuit)
+                    if not preserve_state and frequency is not None and frequency != self.frequency:
+                        self.step.setValue(1e6 / (100 * frequency))
+                    self.frequency = frequency
+                except CircuitError as error:
+                    self.frequency = None
+                    self.message.setText(str(error))
+        self.show_node()
+        if preserve_state and supported and self.simulation is not None:
+            self.stop_batch.set()
+            self.refresh_simulation()
+
+    def show_node(self, *_):
+        """Change probes using the same recorded times, without touching the solver."""
+        self.waveform.samples.clear()
+        node = self.node.currentText()
+        if node in self.history_nodes:
+            index = self.history_nodes.index(node)
+            self.waveform.samples.extend((time, voltage[index]) for time, voltage in self.history)
+        self.waveform.update()
+
+    def change_step(self, *_):
+        if self.simulation is not None:
+            self.stop_batch.set()
+            self.refresh_simulation()
+
+    def finish_batch(self):
+        if self.pending is None:
+            return True
+        owner, future = self.pending
+        if not future.done():
+            return False
+        self.pending = None
+        samples, error = future.result()
+        if owner is self.simulation:
+            nodes = tuple(owner.nodes)
+            if self.history and nodes != self.history_nodes:
+                # Compatible edits may reorder declarations, but keep net identities.
+                indices = [self.history_nodes.index(node) for node in nodes]
+                self.history = deque(((time, voltage[indices]) for time, voltage in self.history), maxlen=600)
+            self.history_nodes = nodes
+            self.history.extend(samples)
+            self.show_node()
+            if error is not None:
+                self.pause()
+                self.message.setText(f"{error} Try a smaller time step or set an initial capacitor voltage.")
+        return True
+
+    def refresh_simulation(self):
+        """Apply the newest value change only after the worker releases its state."""
+        if not self.finish_batch():
+            self.refresh_timer.start()
+            return False
+        self.refresh_timer.stop()
+        simulation = self.simulation
+        step = self.step.value() * 1e-6
+        if simulation is not None and (simulation.circuit is not self.circuit or simulation.step != step):
+            try:
+                self.simulation = simulation.reconfigure(self.circuit, step)
+                self.message.clear()
+            except CircuitError as error:
+                if error.code == "TopologyChanged":
+                    self.restart()
+                else:
+                    self.pause()
+                self.message.setText(str(error))
+                return False
+        return True
 
     def pause(self):
         self.timer.stop()
@@ -138,11 +246,15 @@ class Oscilloscope(QWidget):
 
     def shutdown(self):
         self.pause()
+        self.refresh_timer.stop()
         self.worker.shutdown(wait=False, cancel_futures=True)
 
     def restart(self):
+        self.refresh_timer.stop()
         self.simulation = None
         self.pause()
+        self.history.clear()
+        self.history_nodes = ()
         self.waveform.samples.clear()
         self.waveform.update()
         self.message.clear()
@@ -170,23 +282,10 @@ class Oscilloscope(QWidget):
     def advance(self):
         if not self.timer.isActive():
             return
+        if not self.refresh_simulation() or not self.timer.isActive():
+            return
         simulation = self.simulation
         if simulation is None:
             return
-        if self.pending is not None:
-            owner, future = self.pending
-            if not future.done():
-                return
-            self.pending = None
-            samples, error = future.result()
-            if owner is simulation:
-                self.waveform.samples.extend(samples)
-                self.waveform.update()
-                if error is not None:
-                    self.pause()
-                    self.message.setText(
-                        f"{error} Try a smaller time step or set an initial capacitor voltage."
-                    )
-                    return
-        node = simulation.nodes.index(self.node.currentText())
-        self.pending = simulation, self.worker.submit(sample_batch, simulation, node, self.stop_batch)
+        self.stop_batch = Event()
+        self.pending = simulation, self.worker.submit(sample_batch, simulation, self.stop_batch)

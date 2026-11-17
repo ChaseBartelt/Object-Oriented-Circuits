@@ -100,6 +100,13 @@ class _Parser:
         elif token == "(":
             left = self.expression(1, depth + 1)
             self.take(")")
+        elif token == "{":
+            values = [self.expression(1, depth + 1)]
+            while self.peek() == ",":
+                self.take(",")
+                values.append(self.expression(1, depth + 1))
+            self.take("}")
+            left = ("concat", tuple(values))
         elif literal := re.fullmatch(r"([0-9]+)'([bd])([0-9]+)", token):
             if len(literal[1]) > 4 or len(literal[3]) > 4096:
                 raise _error("generated literal exceeds the simulator limit.")
@@ -114,7 +121,12 @@ class _Parser:
             left = ("name", token)
             if self.peek() == "[":
                 self.take("[")
-                left = ("bit", token, self.integer())
+                high = self.integer()
+                if self.peek() == ":":
+                    self.take(":")
+                    left = ("slice", token, high, self.integer())
+                else:
+                    left = ("bit", token, high)
                 self.take("]")
         else:
             raise _error("unsupported generated expression.")
@@ -137,8 +149,15 @@ class _Parser:
                 result.append(self.conditional(depth))
             else:
                 target = self.identifier()
+                selection = ()
+                if self.peek() == "[":
+                    self.take("[")
+                    high = self.integer()
+                    self.take(":")
+                    selection = high, self.integer()
+                    self.take("]")
                 self.take("<=")
-                result.append(("write", target, self.expression()))
+                result.append(("write", target, self.expression(), *selection))
                 self.take(";")
         self.take("end")
         return result
@@ -250,7 +269,15 @@ def _expression(node, names, widths, slots, depth=0):
     op = node[0]
     if op == "literal":
         return lambda values: node[1], node[2], set()
-    if op in {"name", "bit"}:
+    if op == "concat":
+        pieces = [_expression(part, names, widths, slots, depth + 1) for part in node[1]]
+        def packed(values):
+            result = 0
+            for expression, width, _ in pieces:
+                result = (result << width) | (expression(values) & ((1 << width) - 1))
+            return result
+        return packed, sum(width for _, width, _ in pieces), set().union(*(reads for _, _, reads in pieces))
+    if op in {"name", "bit", "slice"}:
         if node[1] not in names:
             raise _error(f"unknown generated signal {node[1]}.")
         name = names[node[1]]
@@ -259,6 +286,12 @@ def _expression(node, names, widths, slots, depth=0):
             if node[2] >= width:
                 raise _error("generated bit index is outside its signal.")
             return lambda values: (values[index] >> node[2]) & 1, 1, {name}
+        if op == "slice":
+            high, low = node[2:]
+            if not 0 <= low <= high < width:
+                raise _error("generated slice is outside its signal.")
+            mask = (1 << (high - low + 1)) - 1
+            return lambda values: (values[index] >> low) & mask, high - low + 1, {name}
         return lambda values: values[index], width, {name}
     left, left_width, reads = _expression(node[1], names, widths, slots, depth + 1)
     if op == "!":
@@ -302,6 +335,7 @@ class DigitalSimulation:
         widths, initials, drivers, blocks, visible, raw_dependencies = {}, {}, {}, [], set(), {}
         kinds, clock_names, descriptions = {}, {}, {}
         declared_wires = set()
+        self.source_bindings = {}
         for row in chips[0][2]:
             if declaration := re.fullmatch(r"(.+?)\s*=\s*wire", row, re.I):
                 declared_wires.update(re.sub(r"\[.*", "", name).strip()
@@ -311,6 +345,10 @@ class DigitalSimulation:
             if module.name in ancestors or len(ancestors) > 1:
                 raise _error("recursive or deeper generated hierarchy is unsupported.")
             names = {name: (aliases or {}).get(name, prefix + name) for name in module.widths}
+            if not module.instances:
+                # The source core is the leaf module; the board profile may
+                # wrap it and connect its input pins to synchronizer outputs.
+                self.source_bindings = dict(names)
             for name, width in module.widths.items():
                 full = names[name]
                 if aliases and name in module.ports:
@@ -380,7 +418,14 @@ class DigitalSimulation:
                     dependencies.setdefault(target, set()).update(reads | controls | {clock})
                     clock_names[target] = clock
                     descriptions.setdefault(target, []).append((statement[2], names, guards))
-                    result.append(("write", self._slots[target], expression, (1 << widths[target]) - 1))
+                    if len(statement) == 5:
+                        high, low = statement[3:]
+                        if not 0 <= low <= high < widths[target]:
+                            raise _error("clocked slice is outside its register.")
+                        result.append(("partial", self._slots[target], expression,
+                                       ((1 << (high - low + 1)) - 1) << low, low))
+                    else:
+                        result.append(("write", self._slots[target], expression, (1 << widths[target]) - 1))
                     targets.add(target)
                 else:
                     condition, _, reads = _expression(statement[1], names, widths, self._slots)
@@ -434,14 +479,18 @@ class DigitalSimulation:
             op = node[0]
             if op == "literal":
                 return clip(str(node[1]), limit)
-            if op in {"name", "bit"}:
+            if op == "concat":
+                return clip("{" + ", ".join(describe(part, names, max(8, limit // len(node[1])), depth + 1)
+                                             for part in node[1]) + "}", limit)
+            if op in {"name", "bit", "slice"}:
                 name = names[node[1]]
                 if name not in visible and name in drivers:
                     expression, context = drivers[name]
                     text = describe(expression, context, limit, depth + 1)
                 else:
                     text = name
-                return clip(text + (f"[{node[2]}]" if op == "bit" else ""), limit)
+                selection = f"[{node[2]}]" if op == "bit" else f"[{node[2]}:{node[3]}]" if op == "slice" else ""
+                return clip(text + selection, limit)
             left = describe(node[1], names, limit - 3, depth + 1)
             if op == "!":
                 return clip("!" + left, limit)
@@ -481,7 +530,9 @@ class DigitalSimulation:
             match = re.fullmatch(r"clock\s*\([^,()]+,\s*([^()]+)\)\s*\{", row)
             if match:
                 rates.append(frequency(match[1], 1))
-        self.frequency = 50_000_000.0 if profile == "de10-lite" else (float(rates[0]) if rates else None)
+        self.frequency = float(rates[0]) if rates else None
+        if profile == "de10-lite":
+            self.frequency = 50_000_000.0 if self.clocks else None
         self.reset()
 
     def _settle(self):
@@ -512,6 +563,10 @@ class DigitalSimulation:
             for statement in statements:
                 if statement[0] == "write":
                     pending[statement[1]] = statement[2](self._values) & statement[3]
+                elif statement[0] == "partial":
+                    _, target, expression, mask, low = statement
+                    previous = pending.get(target, self._values[target])
+                    pending[target] = (previous & ~mask) | ((expression(self._values) << low) & mask)
                 else:
                     execute(statement[2] if statement[1](self._values) else statement[3])
 

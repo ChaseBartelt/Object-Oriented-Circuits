@@ -1,0 +1,11 @@
+# Ideal linear potentiometer with a buffered output.
+# Right-click P1 -> Edit value: try 10k, 25% or 10k, 75%.
+# Pin order is high, wiper, low; position is measured from low.
+# Expect level = out = 1.25 V at 25%, 2.5 V at 50%, or 3.75 V at 75%.
+# Omitting position uses 50%; the ideal op amp isolates the 1k load.
+V1(5) between(supply, 0);
+P1(10k, 25%) between(supply, level, 0);
+op1(level, out, out);
+Rload(1k) between(out, 0);
+measure = V level 0;
+measure = V out 0;

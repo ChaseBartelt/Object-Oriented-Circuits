@@ -26,6 +26,7 @@ RESOURCES = (
     ("pins", "Pins"), ("memory_bits", "Memory bits"),
     ("multipliers", "9-bit multiplier elements"), ("plls", "PLLs"),
 )
+CLOCK_ONLY = {'clock_mhz', 'fmax_mhz', 'pulse_slack_ns'}
 
 
 def number(value, unit="", *, delta=False):
@@ -86,7 +87,8 @@ class PerformancePanel(QWidget):
         splitter.setSizes([330, 190])
         layout.addWidget(splitter, 1)
         caveat = QLabel("Fmax is an estimate, not the running clock. Higher Fmax/slack and fewer resources can help; "
-                        "a comparison does not prove equivalent behavior or latency. — means unavailable.")
+                        "a comparison does not prove equivalent behavior or latency. — means unavailable; "
+                        "N/A means that clocked measurement does not apply.")
         caveat.setWordWrap(True)
         layout.addWidget(caveat)
         self.refresh()
@@ -127,6 +129,8 @@ class PerformancePanel(QWidget):
                 status += " · source changed; rebuild for current results"
             if self.building:
                 status = "Building… showing previous results. " + status
+            if current.get('clockless'):
+                status += ' · clockless combinational'
             self.summary.setText(f"{status}\n{current.get('device') or 'Unknown device'} · "
                                  f"Quartus {current.get('quartus_version') or 'unknown'}\n"
                                  f"{current.get('captured_at', '')} · source {current.get('source_sha256', '')[:12]}")
@@ -143,8 +147,13 @@ class PerformancePanel(QWidget):
             self.comparison.setText("Save a verified build as baseline, edit your OOC, then build again to compare.")
         for row, (key, label, unit) in enumerate(METRICS):
             delta = comparison["metrics"].get(key) if comparison else None
-            self._row(row, label, number(baseline.get("metrics", {}).get(key), unit),
-                      number((current or {}).get("metrics", {}).get(key), unit), number(delta, unit, delta=True))
+            if current and current.get('clockless'):
+                label = {'setup_slack_ns': 'Worst pin-to-pin max-delay slack',
+                         'hold_slack_ns': 'Worst pin-to-pin min-delay slack'}.get(key, label)
+            def measurement(report):
+                value = (report or {}).get('metrics', {}).get(key)
+                return 'N/A' if (report or {}).get('clockless') and key in CLOCK_ONLY and value is None else number(value, unit)
+            self._row(row, label, measurement(baseline), measurement(current), number(delta, unit, delta=True))
         for row, (key, label) in enumerate(RESOURCES, len(METRICS)):
             delta = comparison["resources"].get(key) if comparison else None
             self._row(row, label, resource(baseline.get("resources", {}).get(key, {})),
@@ -163,9 +172,12 @@ class PerformancePanel(QWidget):
         if report.get("verification_error"):
             lines.extend((report["verification_error"], ""))
         paths = report.get("paths", [])
+        clockless = report.get('clockless', False)
         for index, path in enumerate(sorted(paths, key=lambda p: p.get("slack_ns") if p.get("slack_ns") is not None else float("inf"))):
+            title = ('WORST PIN-TO-PIN PATH' if index == 0 else 'Pin-to-pin path') if clockless else (
+                'WORST SETUP PATH' if index == 0 else 'Setup path')
             lines.extend((
-                f"{'WORST SETUP PATH' if index == 0 else 'Setup path'} · {path.get('corner', 'Unknown corner')}",
+                f"{title} · {path.get('corner', 'Unknown corner')}",
                 f"From: {path.get('from_node') or 'Unavailable'}",
                 f"To:   {path.get('to_node') or 'Unavailable'}",
                 f"Slack: {number(path.get('slack_ns'), 'ns')} · Data delay: {number(path.get('data_delay_ns'), 'ns')}",
@@ -173,7 +185,10 @@ class PerformancePanel(QWidget):
                 f" · Logic levels: {number(path.get('logic_levels'))}", "",
             ))
         if not paths:
-            lines.append("Detailed setup path unavailable. See report notes and the Quartus build log.")
+            lines.append("Detailed pin-to-pin path unavailable. See report notes and the Quartus build log."
+                         if clockless else "Detailed setup path unavailable. See report notes and the Quartus build log.")
+        if clockless:
+            lines.append('No clock is generated. Pin-to-pin delay constraints apply; clock frequency and Fmax do not.')
         lines.extend(report.get("notes", []))
         lines.extend(("", f"Reports: {report.get('build_directory', '')}"))
         return "\n".join(lines)

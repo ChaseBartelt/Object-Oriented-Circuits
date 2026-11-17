@@ -21,7 +21,7 @@ Headless commands and the optional desktop editor:
     .\.venv\Scripts\python.exe -m circuitlab path\to\circuit.ckt
     .\.venv\Scripts\python.exe -m circuitlab --editor
 
-On macOS/Linux use python3 and .venv/bin/python. Solve is for electrical designs; digital designs use Check, Logic simulation or Verilog export. This checkout contains no demonstration projects. Keep your circuits outside the application source tree.
+On macOS/Linux use python3 and .venv/bin/python. Solve is for electrical designs; digital designs use Check, Logic simulation or Verilog export. Test designs are in examples/advanced. Keep your own circuits outside the application source tree.
 
 ## Daily workflow
 
@@ -31,11 +31,19 @@ On macOS/Linux use python3 and .venv/bin/python. Solve is for electrical designs
 - **Chip library:** include("74HC00"); resolves a bundled definition. Chip sources are in circuitlab/libraries/chips/; shared drawing defaults are in circuitlab/libraries/layouts/.
 - **Updates:** installed users use **OOC: Check for Updates**. Developers rebuild the VSIX after extension changes; compatible runtime updates can apply live, while registration/loader changes require reload.
 
+Potentiometers use `P1(10k, 25%) between(high, wiper, low);`. The first value is total resistance; the position runs from 0% at `low` to 100% at `high`. Omitting position gives 50%. Click the potentiometer to open its position slider: dragging previews the electrical result, and releasing updates the code in one undoable edit. Right-click **Edit value** to change resistance and position together; leaving the resistance unspecified creates a schematic placeholder. The native model is an ideal linear potentiometer, exported to SPICE/LTspice as two resistor legs (an exact short at either endpoint). Try [the potentiometer example](examples/potentiometer.ckt).
+
+The **Schematic** tab has a resizable oscilloscope beside the drawing. Choose its node and click **Run** to watch the waveform while adjusting a potentiometer; **View → Oscilloscope** hides or restores the panel. Value and time-step adjustments preserve elapsed time, capacitor voltages, and inductor currents. Changing the monitored node displays that signal's recorded history without restarting the circuit. AC and DC+AC waveforms use the configured frequency and phase, converting RMS amplitudes to peak amplitudes. **Pause/Resume** preserves the simulation; **Reset** starts it over and applies the initial-condition controls. Changing the circuit's connections requires a new run. Theoretical `Z` blocks still require physical R/L/C equivalents for time simulation.
+
+**Optimize wiring** can compact empty space and move components as well as shorten wires. It checks electrical connections and grid alignment before accepting changes; **Ctrl+Z** restores the previous drawing. Saved layouts keep their positions until you explicitly optimize or move them.
+
 ## FPGA
 
 The viewer's **FPGA...** window supports the DE10-Lite HYBRID01 profile: 50 MHz clock, SW0-SW9, LEDR0-LEDR9 and optional AUDIO_OUT. The profile can add two-stage switch synchronization; it is not debouncing. Install Quartus with MAX 10 support and the USB-Blaster driver separately.
 
 Open a saved digital design, **Build from OOC**, inspect **Performance**, select the cable, then **Program FPGA**. A verified build is required. Programming uses volatile SRAM (.sof), not power-on flash. Fmax is a fitted estimate, not the running clock. Electrical transistor/op-amp circuits cannot compile directly to FPGA logic.
+
+Digital chip behavior supports bounded `for` loops, bit/slice assignments (`LEDR[7:0] = elapsed[7:0];`), ternary expressions (`fsm = SW1 ? EARLY : WAITING;`), and `switch` with `case`, `break`, and `default`, including inside clock blocks. Loops expand at compile time; they do not consume one clock cycle per iteration. Indexed pin banks such as `LEDR[i]` can refer to separately declared `LEDR0`…`LEDR9` pins. Switches support stacked labels and fallthrough; put `break` directly at the end of a case, since conditional breaks are rejected.
 
 ## Where to change the implementation
 
@@ -59,8 +67,7 @@ Implement directly in these packages. Preserve source locations, instance names 
 
     $env:QT_QPA_PLATFORM = 'offscreen'
     .\.venv\Scripts\python.exe -m unittest discover -s tests -t . -v
-    $env:OOC_PYTHON = (Resolve-Path .\.venv\Scripts\python.exe).Path
-    node --test ide/vscode/test/*.test.js
+    Get-ChildItem ide/vscode -Filter *.js | ForEach-Object { node --check $_.FullName; if ($LASTEXITCODE -ne 0) { throw "JavaScript syntax check failed" } }
 
 Tests are grouped by the area to work on:
 
@@ -81,6 +88,11 @@ Run one area or one module from the checkout root:
     .\.venv\Scripts\python.exe -m unittest discover -s tests/layout -t . -v
     .\.venv\Scripts\python.exe -m unittest tests.tooling.test_fpga -v
 
-Use -t . with discovery so imports consistently start at the repository root. If a combined Qt run hangs during teardown, run modules in separate processes and report that distinction. Fixtures are regression inputs, not user projects; keep expected values independent of the implementation. JavaScript extension tests remain in ide/vscode/test and use the Node command above.
+Use -t . with discovery so imports consistently start at the repository root. If a combined Qt run hangs during teardown, run modules in separate processes and report that distinction. Fixtures are regression inputs, not user projects; keep expected values independent of the implementation. Extension packaging and grammar tests are in tests/tooling; the Node command checks JavaScript syntax.
 
-See [extension packaging](ide/vscode/README.md) and [Windows installer builds](installer/windows/README.md). Retain license and dependency metadata in distributions.
+For a complete Windows installer, run the **Windows installer** workflow in GitHub Actions, or build locally with pip/setuptools and Inno Setup:
+
+    .\.venv\Scripts\python.exe -m pip install setuptools
+    .\.venv\Scripts\python.exe installer/windows/build_installer.py --iscc "C:\path\to\ISCC.exe"
+
+The build downloads checksum-verified dependencies and writes the installer to dist/windows. Optional draft releases use GitHub-generated notes. See [extension packaging](ide/vscode/README.md); retain license and dependency metadata in distributions.

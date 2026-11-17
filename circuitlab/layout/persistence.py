@@ -117,9 +117,12 @@ def _embed_payload(source, data):
     return code + separator + marker + newline + "# " + lines + newline + _END + newline
 
 
-def embed_placement(source, mode, records, *, pin_overrides=None):
+def embed_placement(source, mode, records, *, pin_overrides=None, logic_layouts=None):
     """Replace the managed comment block without touching executable source."""
-    data = _decode_payload(write_placement(mode, records, pin_overrides=pin_overrides))
+    if logic_layouts is None:
+        logic_layouts = (layout_payload(source) or {}).get('logic')
+    data = _decode_payload(write_placement(mode, records, pin_overrides=pin_overrides,
+                                          logic_layouts=logic_layouts))
     return _embed_payload(source, data)
 
 
@@ -152,6 +155,12 @@ def read_pin_overrides(path):
     """
     data = _read_payload(path)
     return dict(data.get("pin_overrides", {})) if data else {}
+
+
+def read_logic_placement(path):
+    """Read optional digital geometry without invalidating older analog layouts."""
+    data = (_read_payload(path) or {}).get('logic', {})
+    return data if isinstance(data, dict) else {}
 
 
 def migrate_placement(path):
@@ -199,7 +208,7 @@ def migrate_placement(path):
     return True
 
 
-def write_placement(mode, records, *, pin_overrides=None):
+def write_placement(mode, records, *, pin_overrides=None, logic_layouts=None):
     data = {
         "version": 1,
         "mode": mode,
@@ -207,6 +216,8 @@ def write_placement(mode, records, *, pin_overrides=None):
     }
     if pin_overrides:
         data["pin_overrides"] = dict(pin_overrides)
+    if isinstance(logic_layouts, dict) and logic_layouts:
+        data['logic'] = logic_layouts
     return json.dumps(data, ensure_ascii=False, allow_nan=False, indent=2).encode("utf-8")
 
 

@@ -161,6 +161,8 @@ diagnosing a failed build, so resource and timing availability are independent.
         return result
     constraints = {key: value for key, value in record["inputs"].items() if key.endswith((".qsf", ".sdc"))}
     result["constraints_sha256"] = hashlib.sha256(json.dumps(constraints, sort_keys=True).encode()).hexdigest()
+    result["clockless"] = "create_clock " not in fpga.canonical_constraints(
+        (project.directory / "HYBRID01.sdc").read_text())
     out = project.directory / "build/output_files"
     stamp = record["input_mtime_ns"]
     fit = _fresh_text(out / f"{fpga.TOP}.fit.summary", stamp, notes)
@@ -188,10 +190,15 @@ diagnosing a failed build, so resource and timing availability are independent.
         notes.append("At least one Fmax corner is unavailable; the displayed minimum covers reported numeric corners only.")
     if not summary or not timing:
         result["verified"] = False
-    if any(value is None for value in result["metrics"].values()):
+    inapplicable = {"clock_mhz", "fmax_mhz", "pulse_slack_ns"} if result["clockless"] else set()
+    if any(value is None for key, value in result["metrics"].items() if key not in inapplicable):
         notes.append("Some measurements are unavailable; unknown values are not zero.")
-    notes.append("Cell delay includes register clock-to-Q; routing delay excludes the launch clock network.")
-    notes.append("Fmax is a fitted estimate for same-clock paths, not the running clock rate; setup/hold constraints still apply.")
+    if result["clockless"]:
+        notes.append("Clockless combinational logic: clock rate, Fmax, and pulse-width checks do not apply. "
+                     "Setup/hold slack checks the 20 ns maximum / 0 ns minimum pin-to-pin delay budget.")
+    else:
+        notes.append("Cell delay includes register clock-to-Q; routing delay excludes the launch clock network.")
+        notes.append("Fmax is a fitted estimate for same-clock paths, not the running clock rate; setup/hold constraints still apply.")
     return result
 
 

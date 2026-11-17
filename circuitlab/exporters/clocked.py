@@ -5,12 +5,34 @@ from fractions import Fraction
 
 from circuitlab.model.graph import CircuitError
 
-TOKEN = re.compile(r"\s*([A-Za-z_][A-Za-z0-9_]*|[0-9]+(?:_[0-9]+)*|==|!=|<=|>=|&&|\|\||[!+\-&^|<>()\[\]])")
+TOKEN = re.compile(r"\s*([A-Za-z_][A-Za-z0-9_]*|[0-9]+(?:_[0-9]+)*|==|!=|<=|>=|&&|\|\||[!+\-&^|<>()\[\]:?])")
 PRECEDENCE = {"||": 1, "&&": 2, "|": 3, "^": 4, "&": 5,
               "==": 6, "!=": 6, "<": 7, "<=": 7, ">": 7, ">=": 7,
               "+": 8, "-": 8}
 DECIMAL = r"[0-9]+(?:_[0-9]+)*(?:\.[0-9]+(?:_[0-9]+)*)?"
 FREQUENCY = rf"({DECIMAL})\s*(Hz|kHz|MHz|GHz)"
+SELECTOR = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)\s*\[\s*([0-9]+(?:_[0-9]+)*)\s*(?::\s*([0-9]+(?:_[0-9]+)*)\s*)?\]")
+
+
+def selected_bits(text, signals, line):
+    """Resolve a vector selection or a bank of numbered scalar pins, low bit first."""
+    match = SELECTOR.fullmatch(text)
+    if not match or any(len(value or "") > 16 for value in match.groups()[1:]):
+        raise CircuitError("Select a constant bit or descending slice: name[3] or name[7:0].", line)
+    name, high, low = match.groups()
+    high = int(high.replace("_", ""))
+    low = high if low is None else int(low.replace("_", ""))
+    if not 0 <= low <= high < 4096:
+        raise CircuitError("Select bits in descending order within the 4096-bit limit.", line)
+    if name in signals:
+        width = signals[name]
+        if width is None or high >= width:
+            raise CircuitError(f'Bit selection is outside declared vector "{name}".', line)
+        return [(name, bit) for bit in range(low, high + 1)]
+    bits = [(f"{name}{bit}", None) for bit in range(low, high + 1)]
+    if any(pin not in signals or signals[pin] is not None for pin, _ in bits):
+        raise CircuitError(f'Declare vector "{name}" or each numbered scalar pin in "{text}".', line)
+    return bits
 
 
 def interval_cycles(text, rate, line):
@@ -78,6 +100,9 @@ class Expressions:
         self._wires[name] = f"    wire [{width - 1}:0] {name} = {code};"
         return name, width
 
+    def pack(self, bits):
+        return self.temporary("{" + ", ".join(reversed(bits)) + "}", len(bits))
+
     @property
     def wires(self):
         return list(self._wires.values())
@@ -96,10 +121,21 @@ class Expressions:
         if len(self.tokens) > 256:
             raise CircuitError("Digital expression is too long.", line)
         self.index = 0
-        value = self.binary(1)
+        value = self.conditional()
         if self.index != len(self.tokens):
             raise CircuitError("Unexpected token in digital expression.", line)
         return value
+
+    def conditional(self):
+        condition, width = self.binary(1)
+        if self.peek() != "?":
+            return condition, width
+        self.take()
+        yes, yes_width = self.conditional()
+        if self.take() != ":":
+            raise CircuitError("Complete the conditional expression: condition ? yes : no.", self.line)
+        no, no_width = self.conditional()
+        return self.temporary(f"({condition} ? {yes} : {no})", max(yes_width, no_width))
 
     def peek(self):
         return self.tokens[self.index] if self.index < len(self.tokens) else None
@@ -117,7 +153,7 @@ class Expressions:
             code, _ = self.primary()
             return self.temporary(f"!{code}", 1)
         if token == "(":
-            value = self.binary(1)
+            value = self.conditional()
             if self.take() != ")":
                 raise CircuitError("Close the expression parentheses.", self.line)
             return value
@@ -130,18 +166,21 @@ class Expressions:
             if width > 4096:
                 raise CircuitError("Digital literal exceeds 4096 bits.", self.line)
             return f"{width}'d{value}", width
+        if self.peek() == "[":
+            self.take()
+            selection = self.take()
+            if self.peek() == ":":
+                selection += self.take() + self.take()
+            if self.take() != "]":
+                raise CircuitError("Close the bit selection with ].", self.line)
+            bits = selected_bits(f"{token}[{selection}]", self.signals, self.line)
+            if token in self.signals:
+                low, high = bits[0][1], bits[-1][1]
+                return f"{token}[{high}:{low}]" if high != low else f"{token}[{low}]", len(bits)
+            return (bits[0][0], 1) if len(bits) == 1 else self.pack([name for name, _ in bits])
         if token not in self.signals:
             raise CircuitError(f'Unknown digital signal "{token}".', self.line)
         width = self.signals[token]
-        if self.peek() == "[":
-            self.take()
-            bit = self.take()
-            if not re.fullmatch(r"[0-9]+(?:_[0-9]+)*", bit) or len(bit) > 16:
-                raise CircuitError("Use a constant nonnegative bit index.", self.line)
-            index = int(bit.replace("_", ""))
-            if self.take() != "]" or width is None or index >= width:
-                raise CircuitError("Bit index must select a bit inside a declared vector.", self.line)
-            return f"{token}[{index}]", 1
         return token, width or 1
 
     def binary(self, minimum):
@@ -275,19 +314,23 @@ def compile_clocks(clocks, signals, states, directions):
                 if condition:
                     output.extend(conditional(indent, condition[1], number, update_rate))
                     continue
-                assignment = re.fullmatch(r"([A-Za-z_][A-Za-z0-9_]*)\s*(\+=|=)\s*(.+)", statement)
-                if not assignment or assignment[1] not in states:
+                assignment = re.fullmatch(r"([A-Za-z_][A-Za-z0-9_]*(?:\s*\[[^]]+\])?)\s*(\+=|=)\s*(.+)", statement)
+                target = assignment[1].partition("[")[0].strip() if assignment else ""
+                if not assignment or target not in states:
                     raise CircuitError("Clock blocks assign declared state and support if / else and every blocks.", number)
-                target = assignment[1]
+                selected = selected_bits(assignment[1], signals, number) if "[" in assignment[1] else None
+                destination = (f"{target}[{selected[-1][1]}:{selected[0][1]}]" if selected else target)
                 if target in owners:
                     raise CircuitError(f'State "{target}" is driven by more than one clock block.', number)
                 expression = assignment[3].strip()
                 if assignment[2] == "+=":
+                    if selected:
+                        raise CircuitError("Use = for slice updates; use += on the whole state.", number)
                     operand = expression if re.fullmatch(FREQUENCY, expression) else f"({expression})"
                     expression = f"{target} + {operand}"
                 expression = phase_increment(expression, target, states, update_rate, number)
                 code, _ = expressions.parse(expression, number)
-                output.append(f"{indent}{target} <= {code};")
+                output.append(f"{indent}{destination} <= {code};")
                 written.add(target)
             if nested:
                 raise CircuitError("Close the conditional block with }.", line)

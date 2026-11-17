@@ -153,6 +153,24 @@ class PerformancePanelTest(unittest.TestCase):
         self.assertEqual(self.panel.table.editTriggers(), QAbstractItemView.EditTrigger.NoEditTriggers)
         self.assertEqual(self.path.read_text(), SOURCE)
 
+    def test_clockless_report_distinguishes_clock_metrics_from_pin_delay(self):
+        clockless = deepcopy(self.report)
+        clockless['clockless'] = True
+        for key in ('clock_mhz', 'fmax_mhz', 'pulse_slack_ns'):
+            clockless['metrics'][key] = None
+        clockless['metrics'].update(setup_slack_ns=13.5, hold_slack_ns=1.25)
+        clockless['resources']['registers']['used'] = 0
+        clockless['paths'] = [{'from_node': 'SW0', 'to_node': 'LEDR0', 'slack_ns': 13.5}]
+        self.panel.set_report(clockless)
+        self.assertEqual([self.cell(row, 2) for row in (0, 1, 4)], ['N/A'] * 3)
+        self.assertEqual(self.cell(2, 2), '13.5 ns')
+        self.assertEqual(self.cell(3, 2), '1.25 ns')
+        self.assertIn('pin-to-pin max-delay', self.cell(2, 0))
+        self.assertEqual(self.cell(6, 2), '0')
+        self.assertIn('clockless combinational', self.panel.summary.text())
+        self.assertTrue(self.panel.paths.toPlainText().startswith('WORST PIN-TO-PIN PATH'))
+        self.assertIn('Fmax do not', self.panel.paths.toPlainText())
+
     def test_worst_path_is_first_and_building_or_failed_reports_cannot_replace_baseline(self):
         report = deepcopy(self.report)
         report["paths"] = [

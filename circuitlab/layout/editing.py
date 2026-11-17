@@ -71,10 +71,10 @@ def _symbol_bounds(symbol, turns, *, body_only=False):
     part, a, b, _ = symbol
     height = (
         max(0.8, (len(part.package_pins) + 1) // 2 / 2 + 0.2)
-        if part.kind == "H" else 0.9 if part.kind in {"Q", "O", "S"} else 0.45
+        if part.kind == "H" else 0.9 if part.kind in {"Q", "O", "S", "P"} else 0.45
     )
     if body_only and (axis := wire_axis((a, b))) is not None:
-        inset = {"H": 0.55, "O": 1.2, "Q": 0.8, "S": 0.8}.get(
+        inset = {"H": 0.55, "O": 1.2, "Q": 0.8, "S": 0.8, "P": 0.8}.get(
             part.kind, max(0, abs(a[axis] - b[axis]) / 2 - 0.75)
         )
         x_pad, y_pad = (-inset, height) if axis == 0 else (0.45, -inset)

@@ -25,6 +25,7 @@ DIRECT_SOURCE = '''chip HYBRID01(MAX10_CLK1_50, SW0, LEDR0, AUDIO_OUT) {
     LEDR0 = SW0;
     AUDIO_OUT = !SW0;
 }'''
+CLOCKLESS_SOURCE = DIRECT_SOURCE.replace('MAX10_CLK1_50, ', '')
 LEGACY_SOURCE = '''chip HYBRID01(MAX10_CLK1_50, SW0, LEDR0, AUDIO_OUT) {
     MAX10_CLK1_50, SW0 = input;
     LEDR0, AUDIO_OUT = output;
@@ -124,6 +125,26 @@ class FpgaBackendTest(unittest.TestCase):
                 self.built(summary=summary)
                 with self.assertRaises(fpga.FpgaError):
                     fpga.verify_build(self.project)
+
+    def test_clockless_build_verifies_propagation_timing_without_pulse_width(self):
+        self.project = fpga.prepare_project(CLOCKLESS_SOURCE, self.root)
+        summary = "\n".join(f"Type : Slow Model {kind} 'n/a'\nSlack : {slack}\n"
+                            for kind, slack in (("Setup", "8.970"), ("Hold", "3.213")))
+        out = self.built(summary=summary)
+        self.assertEqual(fpga.verify_build(self.project), out / "HYBRID01.sof")
+        # Clockless still requires complete, finite, nonnegative path timing.
+        for invalid in (summary.replace("8.970", "-0.001"), summary.replace("8.970", "nan"),
+                        summary.replace("Hold", "Other"), ""):
+            with self.subTest(summary=invalid), self.assertRaises(fpga.FpgaError):
+                self.built(summary=invalid)
+                fpga.verify_build(self.project)
+
+    def test_clockless_build_still_rejects_unconstrained_paths(self):
+        self.project = fpga.prepare_project(CLOCKLESS_SOURCE, self.root)
+        self.built(timing=GOOD_TIMING.replace("; Unconstrained Input Port Paths ; 0 ; 0 ;",
+                                             "; Unconstrained Input Port Paths ; 1 ; 0 ;"))
+        with self.assertRaisesRegex(fpga.FpgaError, "unconstrained"):
+            fpga.verify_build(self.project)
 
     def test_failed_flow_wrong_device_or_unconstrained_paths_are_rejected(self):
         for flow, timing in ((GOOD_FLOW.replace("Successful", "Failed"), GOOD_TIMING),
@@ -404,7 +425,6 @@ class TenSwitchProfileTest(unittest.TestCase):
         for source in (
             switch_led_source([10]),
             switch_led_source([9]).replace('LEDR9', 'LEDR10'),
-            switch_led_source([9]).replace('MAX10_CLK1_50, ', ''),
             'chip HYBRID01(MAX10_CLK1_50,LEDR0) { MAX10_CLK1_50=input; LEDR0=output; LEDR0=0; }',
             'chip HYBRID01(MAX10_CLK1_50,SW0) { MAX10_CLK1_50,SW0=input; }',
             'chip HYBRID01(MAX10_CLK1_50,SW0,LEDR0,AUDIO_OUT) { MAX10_CLK1_50,SW0,LEDR0=input; AUDIO_OUT=output; AUDIO_OUT=LEDR0; }',
@@ -435,6 +455,36 @@ class TenSwitchProfileTest(unittest.TestCase):
         expected.update({f'LEDR{i}': pin for i, pin in enumerate(LED_PINS)})
         self.assertEqual(self.locations(qsf), expected)
         self.assertIn('get_registers {sw_meta}', sdc)
+
+
+class ClocklessProfileTest(unittest.TestCase):
+    def test_clockless_profile_has_direct_logic_and_no_clock_or_registers(self):
+        hdl, qsf, sdc = fpga.compile_de10_lite(CLOCKLESS_SOURCE)
+        self.assertEqual(hdl.strip(), export_verilog(CLOCKLESS_SOURCE).strip())
+        self.assertNotRegex(hdl, r'\b(reg|always|initial)\b')
+        self.assertNotIn('MAX10_CLK1_50', hdl + qsf + sdc)
+        self.assertNotIn('create_clock', sdc)
+        self.assertNotIn('set_false_path', sdc)
+        self.assertNotIn('SYNCHRONIZER', qsf)
+        self.assertIn('set_max_delay 20.000 -from [get_ports {SW0}] -to [get_ports {LEDR0 AUDIO_OUT}]', sdc)
+        self.assertIn('set_min_delay 0.000', sdc)
+        self.assertEqual(TenSwitchProfileTest.locations(qsf), {'SW0': 'C10', 'LEDR0': 'A8', 'AUDIO_OUT': 'V10'})
+
+    def test_clockless_profile_rejects_storage_and_switch_driven_clock(self):
+        for source in (
+            CLOCKLESS_SOURCE.replace('LEDR0 = SW0;', 'held; LEDR0 = held;'),
+            CLOCKLESS_SOURCE.replace('LEDR0 = SW0;', 'held; clock(SW0,50MHz) { held = !held; } LEDR0 = held;'),
+        ):
+            with self.subTest(source=source), self.assertRaises(fpga.FpgaError):
+                fpga.compile_de10_lite(source)
+
+    def test_clockless_assembly_remains_combinational(self):
+        source = '''chip Invert(a, y) { a = input; y = output; y = !a; }
+        main HYBRID01 { SW9 = input; LEDR9 = output; Invert(SW9, LEDR9); }'''
+        hdl, qsf, sdc = fpga.compile_de10_lite(source)
+        self.assertNotIn('MAX10_CLK1_50', hdl + qsf + sdc)
+        self.assertNotIn('posedge', hdl)
+        self.assertEqual(TenSwitchProfileTest.locations(qsf), {'SW9': 'F15', 'LEDR9': 'B11'})
 
 
 if __name__ == "__main__":

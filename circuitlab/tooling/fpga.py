@@ -48,6 +48,14 @@ def _constraints(ports, synchronizers):
         qsf.append('set_instance_assignment -name CURRENT_STRENGTH_NEW "4MA" -to AUDIO_OUT')
     qsf.extend(f'set_instance_assignment -name CURRENT_STRENGTH_NEW "8MA" -to {pin}'
                for pin in ports if pin in LED_PINS)
+    outputs = " ".join(pin for pin, direction in ports.items() if direction == "output")
+    if "MAX10_CLK1_50" not in ports:
+        inputs = " ".join(pin for pin, direction in ports.items() if direction == "input")
+        # An absolute propagation-delay budget, not a clock or sampling rate.
+        paths = f"-from [get_ports {{{inputs}}}] -to [get_ports {{{outputs}}}]"
+        sdc = ["# Clockless switch logic: 20 ns maximum pin-to-pin delay; no clock is created.",
+               f"set_max_delay 20.000 {paths}", f"set_min_delay 0.000 {paths}"]
+        return "\n".join(qsf) + "\n", "\n".join(sdc) + "\n"
     registers = [register for pair in synchronizers.values() for register in pair]
     for setting in ('PRESERVE_REGISTER ON', 'SYNCHRONIZER_IDENTIFICATION "FORCED IF ASYNCHRONOUS"'):
         qsf.extend(f"set_instance_assignment -name {setting} -to {register}" for register in registers)
@@ -62,7 +70,6 @@ def _constraints(ports, synchronizers):
             "}",
             f"set_false_path -from [get_ports {{{pin}}}] -to $first_stage",
         ])
-    outputs = " ".join(pin for pin, direction in ports.items() if direction == "output")
     sdc.append(f"set_false_path -to [get_ports {{{outputs}}}]")
     return "\n".join(qsf) + "\n", "\n".join(sdc) + "\n"
 
@@ -117,7 +124,8 @@ class FpgaProject:
 def compile_de10_lite(source):
     """Apply board input conditioning without changing board-neutral HDL export.
 
-    Each physical switch gets its own two stages before entering user logic.
+    Declaring MAX10_CLK1_50 adds two stages to each physical switch. Omitting
+    it selects direct, clockless combinational logic instead.
     The original explicit SW0-only synchronizer remains supported.
     """
     modules = compile_chips(source)
@@ -134,13 +142,19 @@ def compile_de10_lite(source):
             raise FpgaError(f"Unsupported DE10-Lite port or direction: {pin}. Use MAX10_CLK1_50 and SW0–SW9 "
                             "as inputs, LEDR0–LEDR9 and optional AUDIO_OUT as outputs.")
     switches = [pin for pin in SWITCH_PINS if pin in directions]
-    if "MAX10_CLK1_50" not in directions or not switches or "output" not in directions.values():
-        raise FpgaError("Declare MAX10_CLK1_50, at least one SW0–SW9 input, and at least one board output.")
+    if not switches or "output" not in directions.values():
+        raise FpgaError("Declare at least one SW0–SW9 input and at least one board output. "
+                        "Add MAX10_CLK1_50 for clocked logic and automatic switch synchronization.")
     for row in (row for row in body if re.match(r"clock\b", row)):
         match = re.fullmatch(r"clock\s*\(\s*MAX10_CLK1_50\s*,\s*([^()]+)\)\s*\{", row)
         if not match or frequency(match[1], 1) != 50_000_000:
             raise FpgaError("All HYBRID01 clock blocks must use MAX10_CLK1_50 at 50MHz to match the board constraints.")
     hdl += "\n"
+    if "MAX10_CLK1_50" not in directions:
+        if re.search(r"\b(?:reg|always|initial)\b", hdl):
+            raise FpgaError("Clockless DE10-Lite chips must be combinational: use wire for computed signals, "
+                            "or declare MAX10_CLK1_50 for stored state and clock blocks.")
+        return hdl, *_constraints(directions, {})
     if _manual_synchronizer(body, hdl):
         if switches != ["SW0"]:
             raise FpgaError("For multiple switches, remove the manual sw_meta/sw_sync declarations and assignments "
@@ -309,9 +323,11 @@ def verify_build(project):
             raise FpgaError("Quartus did not report a successful build for the DE10-Lite device.")
         if ERROR.search(timing + "\n" + flow):
             raise FpgaError("Resolve Quartus errors or critical warnings before programming.")
+        clocked = "create_clock " in canonical_constraints((directory / "HYBRID01.sdc").read_text())
+        required = (" Setup ", " Hold ", " Minimum Pulse Width ") if clocked else (" Setup ", " Hold ")
         sections = re.findall(r"(?m)^Type\s*:\s*(.+)\nSlack\s*:\s*(\S+)", summary)
         if len(sections) != len(re.findall(r"(?m)^Type\s*:", summary)) or not all(
-                any(word in kind for kind, _ in sections) for word in (" Setup ", " Hold ", " Minimum Pulse Width ")):
+                any(word in kind for kind, _ in sections) for word in required):
             raise FpgaError("Quartus timing results are incomplete.")
         slacks = (Decimal(value) for _, value in sections)
         if any(not slack.is_finite() or slack < 0 for slack in slacks):

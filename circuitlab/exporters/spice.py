@@ -2,11 +2,12 @@
 
 import math
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 
 from circuitlab.math.analysis import conflicts
 from circuitlab.language.compiler import compile_circuit
 from circuitlab.model.graph import Circuit, CircuitError, ground_references
+from circuitlab.model.potentiometer import expand_potentiometers
 from circuitlab.math.equations import solve_known
 from circuitlab.math.nonlinear import SWITCH_TRANSITION
 from circuitlab.language.syntax import AC_VOLTAGE, BJT_MODEL_NAME, BJT_TYPES, FREQUENCY
@@ -38,6 +39,7 @@ class SpiceCircuit:
     directive: str
     comments: tuple[str, ...]
     models: tuple[str, ...] = ()
+    potentiometers: dict = field(default_factory=dict)
 
 
 class SpiceNames:
@@ -78,7 +80,9 @@ def spice_netlist(circuit: Circuit) -> str:
     """Serialize the circuit as a standalone text netlist."""
     spice = spice_circuit(circuit)
     lines = ["* Electric Circuits SPICE export", *spice.comments]
-    for part in circuit.components:
+    parts = (leg for part in circuit.components
+             for leg in spice.potentiometers.get(part.name, (part,)) if leg is not None)
+    for part in parts:
         model = spice.parts[part.name]
         p, n = spice.nodes[part.p], spice.nodes[part.n]
         if model.kind in {"X", "S"}:
@@ -144,6 +148,12 @@ def _bjt_models(parts):
 def spice_circuit(circuit: Circuit) -> SpiceCircuit:
     """Normalize values and names before writing a netlist or schematic."""
     circuit.require_values()
+    components, indices = expand_potentiometers(circuit)
+    potentiometers = {
+        name: tuple(components[index] if index is not None else None for index in legs)
+        for name, legs in indices.items()
+    }
+    circuit = replace(circuit, components=components)
     # Both flat and hierarchical LTspice drawings use this same full-graph
     # validation. A constant AC impedance has no general physical SPICE model.
     for part in circuit.components:
@@ -279,7 +289,7 @@ def spice_circuit(circuit: Circuit) -> SpiceCircuit:
         f"Vt={_number(threshold)} Vh=-{SWITCH_TRANSITION})"
         for (on, off, threshold), name in switches.items()
     )
-    return SpiceCircuit(nodes, elements, references, directive, tuple(lines), definitions)
+    return SpiceCircuit(nodes, elements, references, directive, tuple(lines), definitions, potentiometers)
 
 
 def _number(value):

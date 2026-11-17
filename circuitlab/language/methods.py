@@ -35,6 +35,7 @@ from circuitlab.language.syntax import (
     UNITS,
     Binding,
     SourceRow,
+    parse_potentiometer,
     parse_wires,
 )
 
@@ -74,7 +75,7 @@ def _bind_arguments(method, raw, parent):
     """Validate typed arguments and resolve wire arguments in the caller."""
     name, formal, targets = method.name, method.parameters, method.targets
     parts = {}
-    arguments = (argument.strip() for argument in raw.split(","))
+    arguments = (argument.strip() for argument in re.split(r",(?![^()]*\))", raw))
     actual = tuple(parent.values.get(value, value) for value in arguments)
     if len(actual) != len(formal):
         raise CircuitError(f"{name} expects {len(formal)} arguments.")
@@ -85,12 +86,14 @@ def _bind_arguments(method, raw, parent):
             component = PART_ARGUMENT.fullmatch(value)
             if not component:
                 raise CircuitError(
-                    f'{name}: argument "{parameter}" expects a resistor, capacitor, inductor, or AC impedance such as R(1k) or Z(2-j2).'
+                    f'{name}: argument "{parameter}" expects a resistor, capacitor, inductor, AC impedance, or potentiometer such as R(1k), Z(2-j2), or P(10k,25%).'
                 )
             part_name, part_value = component.groups()
             part_value = part_value or ""
             try:
-                if part_value.strip():
+                if part_name[0].upper() == "P":
+                    parse_potentiometer(part_value)
+                elif part_value.strip():
                     scalar(part_value, UNITS[part_name[0].upper()])
             except CircuitError as error:
                 raise CircuitError(

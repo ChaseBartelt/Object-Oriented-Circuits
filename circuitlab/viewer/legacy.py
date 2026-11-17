@@ -41,7 +41,7 @@ from circuitlab.model.graph import Circuit, CircuitError, MethodInstance
 from circuitlab.language.linked import CHIP_LIBRARY, imported_definitions, read_includes
 from circuitlab.exporters.ltspice import export_hierarchy, export_schematic
 from circuitlab.tooling.pins import apply_pin_overrides, circuit_text, pin_comment, pin_entries, read_pins
-from circuitlab.layout.persistence import embed_placement, placement_path, read_pin_overrides, read_placement
+from circuitlab.layout.persistence import embed_placement, placement_path, read_pin_overrides, read_placement, read_logic_placement, layout_payload
 from circuitlab.math.quantities import QUANTITIES
 from circuitlab.math.report import component_labels, pin_rows, result_rows
 from circuitlab.layout.routing import fast_layout
@@ -75,6 +75,7 @@ class CircuitTab:
     wiring: str = "auto"
     mode: int = 0
     pin_overrides: dict | None = None
+    logic: dict | None = None
 
 
 class MainWindow(QMainWindow):
@@ -339,6 +340,7 @@ class MainWindow(QMainWindow):
         if path is not None:
             state.wiring, state.placements = read_placement(path)
             state.pin_overrides = read_pin_overrides(path)
+            state.logic = read_logic_placement(path).get('schematic', {})
         self.documents[editor] = state
         editor.textChanged.connect(lambda: self.source_changed() if editor is self.editor else None)
         editor.document().modificationChanged.connect(lambda: self.update_tab_title(editor))
@@ -353,6 +355,7 @@ class MainWindow(QMainWindow):
         state.path, state.disk_bytes = self.path, self.disk_bytes
         state.placement_dirty = self.placement_dirty
         state.placements = self.schematic.placements()
+        state.logic = self.schematic.logic_placements()
         state.wiring = self.schematic.layout_mode
         state.mode = self.mode.currentIndex()
         state.pin_overrides = dict(self.pin_overrides)
@@ -372,6 +375,7 @@ class MainWindow(QMainWindow):
         self.pins = apply_pin_overrides(read_pins(source), self.pin_overrides)
         self.circuit_text = circuit_text(source)
         self.load_placement(state.wiring, dict(state.placements or {}))
+        self.schematic.load_logic_placements(state.logic or {})
         self.placement_dirty = state.placement_dirty
         with QSignalBlocker(self.mode):
             self.mode.setCurrentIndex(state.mode)
@@ -633,7 +637,8 @@ class MainWindow(QMainWindow):
             self.set_solution(self.solution)
             return
         self.circuit_text = code
-        self.scope.set_circuit(None)
+        if not getattr(getattr(self, "source_tools", None), "internal_refresh", False):
+            self.scope.set_circuit(None)
         self.set_solution(None)
         if self.effective_mode() != self.picker_mode:
             self.refresh_picker()
@@ -651,18 +656,21 @@ class MainWindow(QMainWindow):
         self.refresh_picker()
         self.compile_source()
 
-    def compile_source(self):
+    def compile_source(self, *, preserve_scope=False):
         source = self.editor.toPlainText()
-        self.scope.set_circuit(None)
+        if not preserve_scope:
+            self.scope.set_circuit(None)
         self.set_solution(None)
         self.schematic.clear(preserve_placement=True)
         issues = []
         if not any(row.partition("#")[0].strip() for row in source.splitlines()):
+            self.scope.set_circuit(None)
             self.status.setText("Open a circuit or enter known quantities.")
         elif self.library_preview(source) or (has_chip(source) and not self.includes_files(source)):
             try:
-                self._draw_source(source, "dc")
+                self._draw_source(source, "dc", preserve_scope=preserve_scope)
             except CircuitError as error:
+                self.scope.set_circuit(None)
                 issues = [self.issue(error)]
                 self.status.setText(issues[0].message)
             else:
@@ -679,9 +687,9 @@ class MainWindow(QMainWindow):
             except CircuitError as error:
                 issues = [self.issue(error)]
             try:
-                self._draw_source(source, mode)
+                self._draw_source(source, mode, preserve_scope=preserve_scope)
             except CircuitError:
-                pass
+                self.scope.set_circuit(None)
             if issues:
                 self.status.setText(issues[0].message)
             elif self.solution and self.solution.network:
@@ -693,7 +701,7 @@ class MainWindow(QMainWindow):
                 self.views.setCurrentWidget(self.results)
         self.show_issues(issues)
 
-    def _draw_source(self, source, mode):
+    def _draw_source(self, source, mode, *, preserve_scope=False):
         """Render a compiled graph even when electrical analysis cannot solve it."""
         if has_chip(source) and not self.includes_files(source):
             chips = compile_chips(source)
@@ -717,7 +725,7 @@ class MainWindow(QMainWindow):
                 source += preview
             circuit = self.build_circuit(source, mode, render_only=True)
         self.schematic.draw(circuit, self.pins)
-        self.scope.set_circuit(circuit)
+        self.scope.set_circuit(circuit, preserve_state=preserve_scope)
 
     def render_source(self):
         try:
@@ -947,6 +955,7 @@ class MainWindow(QMainWindow):
             self.pin_overrides = read_pin_overrides(path)
             self.editor.setPlainText(source)
             self.load_placement(*read_placement(path))
+            self.schematic.load_logic_placements(read_logic_placement(path).get('schematic', {}))
             self.editor.document().setModified(False)
             self.update_title()
             self.compile_source()
@@ -1076,11 +1085,16 @@ class MainWindow(QMainWindow):
             elif b"\r" in old:
                 source = source.replace("\n", "\r")
         placements = self.schematic.placements()
-        if (placements or self.pin_overrides or "@ooc-layout-" in source
+        logic = (layout_payload(source) or {}).get('logic', {})
+        logic = dict(logic) if isinstance(logic, dict) else {}
+        if 'schematic' in logic or self.schematic.logic_placements():
+            logic['schematic'] = self.schematic.logic_placements()
+        if (placements or self.schematic.logic_placements() or self.pin_overrides or "@ooc-layout-" in source
                 or placement_path(self.path or path).exists()):
             try:
                 source = embed_placement(source, self.schematic.layout_mode, placements,
-                                         pin_overrides=self.pin_overrides)
+                                         pin_overrides=self.pin_overrides,
+                                         logic_layouts=logic)
             except (ValueError, TypeError) as error:
                 QMessageBox.warning(self, "Save schematic layout", str(error))
                 return False

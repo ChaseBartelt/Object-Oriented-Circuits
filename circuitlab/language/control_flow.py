@@ -40,6 +40,78 @@ MAX_ITERATIONS = 10_000
 MAX_EXPANDED_ROWS = 100_000
 
 
+def expand_digital_loops(rows):
+    """Unroll bounded for loops, leaving signal-dependent if/clock behavior intact."""
+    from circuitlab.language.syntax import Binding
+    if not any(re.match(r"for\s*\(", text) for text, _ in rows):
+        return rows
+    budget = ExpansionBudget()
+    constants = {}
+    for text, line in rows:
+        match = re.fullmatch(r"const\s+(\w+)(?:\s*\[[^]]+\])?\s*=\s*([0-9_]+)", text)
+        if match and len(match[2].replace("_", "").lstrip("0")) <= 19:
+            constants[match[1]] = _Variable("int", int(match[2].replace("_", "")))
+
+    def expand(block, scope, variables=(), depth=0):
+        if depth > 64:
+            raise CircuitError("Digital loops may nest at most 64 levels.")
+        output, index = [], 0
+        while index < len(block):
+            text, line = block[index]
+            row = text, line, Binding()
+            index += 1
+            match = re.fullmatch(r"for\s*\((.*)\)\s*\{", text)
+            if match:
+                pieces = match[1].split(";")
+                if len(pieces) != 3:
+                    raise CircuitError("Use for (i = 0; i < count; i += 1) { ... }.", line)
+                first = _parse_update(pieces[0].strip(), row)
+                update = _parse_update(pieces[2].strip(), row, declarations=False)
+                if first.name != update.name:
+                    raise CircuitError("Update the same loop variable declared by for.", line)
+                local = scope.new_child()
+                first.apply(local, row, declare_missing=True)
+                condition = _Expression(pieces[1], row).parse()
+                start, nesting = index, 1
+                while index < len(block) and nesting:
+                    nesting += int(block[index][0].endswith("{")) - int(block[index][0] == "}")
+                    index += 1
+                if nesting:
+                    raise CircuitError("Close the for loop with }.", line)
+                body = block[start:index - 1]
+                owners = ["for"]
+                for nested, number in body:
+                    if nested == "continue" or (nested == "break" and
+                            next(owner for owner in reversed(owners) if owner in {"for", "switch"}) == "for"):
+                        raise CircuitError("Use static for bounds instead of break/continue in chip loop bodies.", number)
+                    if nested.endswith("{"):
+                        owners.append("switch" if re.match(r"switch\s*\(", nested) else
+                                      "for" if re.match(r"for\s*\(", nested) else "block")
+                    elif nested == "}":
+                        owners.pop()
+                while _evaluate(condition, local, row):
+                    budget.iteration(row)
+                    output.extend(expand(body, local, (*variables, first.name), depth + 1))
+                    update.apply(local, row)
+                continue
+            for variable in variables:
+                text = re.sub(rf"\b{re.escape(variable)}\b", str(scope[variable].value), text)
+            if variables:
+                def index_value(match):
+                    try:
+                        values = [str(_evaluate(_Expression(value, row).parse(), scope, row))
+                                  for value in match[1].split(":")]
+                    except CircuitError:
+                        return match[0]  # The normal selector validator reports dynamic indices.
+                    return "[" + ":".join(values) + "]"
+                text = re.sub(r"\[([^]]+)\]", index_value, text)
+            budget.emitted(row)
+            output.append((text, line))
+        return output
+
+    return expand(rows, ChainMap(constants))
+
+
 def is_control_block(text):
     """Recognize a braced control header without reserving bare method calls."""
     return text.endswith("{") and bool(_HEADER.match(text))

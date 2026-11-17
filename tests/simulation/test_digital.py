@@ -76,6 +76,54 @@ class DigitalSimulationTest(unittest.TestCase):
         self.assertEqual(sim.values["LEDR9"], 1)
         self.assertFalse(any("ooc_sw" in name for name in sim.signals))
 
+    def test_clockless_board_switches_update_directly_without_advancing_time(self):
+        inputs = ",".join(f"SW{i}" for i in range(10))
+        outputs = ",".join(f"LEDR{i}" for i in range(10))
+        source = f"chip HYBRID01({inputs},{outputs}) {{{inputs}=input;{outputs}=output;LEDR[9:0]=SW[9:0];}}"
+        sim = DigitalSimulation(source, "de10-lite")
+        self.assertEqual(sim.inputs, tuple(f"SW{i}" for i in range(10)))
+        self.assertEqual(sim.clocks, ())
+        self.assertIsNone(sim.frequency)
+        self.assertNotIn("register", sim.signal_kinds.values())
+        for index in range(10):
+            sim.set_input(f"SW{index}", 1)
+            self.assertEqual([sim.values[name] for name in sim.outputs], [int(i == index) for i in range(10)])
+            sim.set_input(f"SW{index}", 0)
+            self.assertFalse(any(sim.values[name] for name in sim.outputs))
+        self.assertEqual(sim.cycles, 0)
+        self.assertIn("SW9", sim.dependencies["LEDR9"])
+        self.assertLessEqual(set(sim.dependencies["LEDR9"]), set(sim.inputs))
+
+    def test_clockless_priority_selector_all_switch_combinations_in_both_profiles(self):
+        inputs = ",".join(f"SW{i}" for i in range(10))
+        outputs = ",".join(f"LEDR{i}" for i in range(10))
+        lowest = ":".join(f"SW{i}?{1 << i}" for i in range(8)) + ":0"
+        highest = ":".join(f"SW{i}?{1 << i}" for i in reversed(range(8))) + ":0"
+        source = f"""chip HYBRID01({inputs},{outputs}) {{
+            {inputs}=input; {outputs}=output;
+            requests[8],lowest[8],highest[8],winner[8]=wire;
+            requests=SW[7:0]; lowest={lowest}; highest={highest};
+            winner=SW8?(SW9?highest:lowest):0;
+            LEDR[7:0]=winner;
+            LEDR8=SW8 && (requests!=0);
+            LEDR9=SW8 && ((requests & (requests-1))!=0);
+        }}"""
+        for profile in ("ooc", "de10-lite"):
+            with self.subTest(profile=profile):
+                sim = DigitalSimulation(source, profile)
+                self.assertEqual(sim.clocks, ())
+                self.assertIsNone(sim.frequency)
+                self.assertNotIn("register", sim.signal_kinds.values())
+                for switches in range(1024):
+                    for bit in range(10):
+                        sim.set_input(f"SW{bit}", (switches >> bit) & 1)
+                    requests, enabled, highest_priority = switches & 255, switches & 256, switches & 512
+                    winner = ((1 << (requests.bit_length() - 1)) if highest_priority else requests & -requests) if requests and enabled else 0
+                    expected = winner | (int(bool(enabled and requests)) << 8) | (int(bool(enabled and requests.bit_count() > 1)) << 9)
+                    actual = sum(sim.values[f"LEDR{i}"] << i for i in range(10))
+                    self.assertEqual(actual, expected, (profile, switches))
+                self.assertEqual(sim.cycles, 0)
+
     def test_manual_board_synchronizer_is_not_duplicated(self):
         generic, board = DigitalSimulation(HYBRID), DigitalSimulation(HYBRID, "de10-lite")
         self.assertEqual(generic.signals, board.signals)

@@ -188,6 +188,7 @@ def compile_linked(source, path, mode, *, render_only=False, read_source=None):
             result.components.append(replace(
                 part, name=name, label=f"{path.stem}.{part.label}" if index else part.label,
                 p=net(part.p), n=net(part.n), base=net(part.base),
+                wiper=net(part.wiper),
                 in_plus=net(part.in_plus), in_minus=net(part.in_minus),
             ))
             result.component_files[name] = circuit.component_files.get(part.name, path)

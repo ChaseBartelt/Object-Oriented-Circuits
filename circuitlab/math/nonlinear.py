@@ -1,4 +1,4 @@
-"""Nonlinear NPN and PNP operating points and implicit time steps."""
+"""Implicit time-domain simulation and nonlinear transistor operating points."""
 
 import math
 import warnings
@@ -7,7 +7,9 @@ import numpy as np
 from scipy import linalg
 
 from circuitlab.model.graph import CircuitError, ground_references
-from circuitlab.math.results import Network
+from circuitlab.model.potentiometer import expand_potentiometers
+from circuitlab.math.equations import solve_known
+from circuitlab.math.results import Network, fold_potentiometers
 
 # Generic room-temperature Ebers–Moll parameters.
 SATURATION_CURRENT = 1e-15
@@ -18,6 +20,22 @@ MAX_STEP_HALVINGS = 18
 SWITCH_TRANSITION = 0.05
 
 
+def source_frequency(circuit):
+    """Resolve the shared AC source frequency without assuming a default waveform."""
+    if circuit.mode == "dc":
+        return None
+    if circuit.mode not in {"ac", "mixed"}:
+        raise CircuitError("Run time simulation on a connected DC, AC, or DC + AC circuit.")
+    known = {key: value for key, value in circuit.known.items() if key in {"f", "T", "w"}}
+    values, notes, _ = solve_known("ac", known)
+    if any("conflict" in note.lower() for note in notes):
+        raise CircuitError("Resolve the conflicting AC frequency quantities before running.")
+    if "f" not in values:
+        raise CircuitError("Enter the AC frequency (f, T, or w) before running the oscilloscope.",
+                           code="MissingFrequency")
+    return values["f"]
+
+
 class TimeDomain:
     """Stamp a circuit once and advance its capacitor and inductor state."""
 
@@ -25,21 +43,23 @@ class TimeDomain:
         circuit.require_models()
         circuit.require_values()
         self.circuit = circuit
-        self.parts = circuit.components
+        self.parts, self.potentiometers = expand_potentiometers(circuit)
         self.nodes = circuit.nodes
         self.step = step
         if step is not None and (not math.isfinite(step) or step <= 0):
             raise CircuitError("Enter a positive time step.")
         self.time = 0.0
+        self.phase_offset = 0.0
         if any(part.kind == "Z" for part in self.parts):
             raise CircuitError("Theoretical impedance Z has no time-domain model. "
                                "Use physical R/L/C components for transient or nonlinear simulation.", code="UnsupportedComponent")
-        if not self.parts or circuit.mode != "dc":
-            raise CircuitError("Run time simulation on a circuit with DC sources.")
+        if not self.parts:
+            raise CircuitError("Run time simulation on a connected circuit.")
+        self.frequency = source_frequency(circuit)
         if len({part.name.casefold() for part in self.parts}) != len(self.parts):
             raise CircuitError("Give each component a unique name before simulating.")
         if any(part.kind not in {"R", "C", "L", "V", "I", "O", "Q", "S"} for part in self.parts):
-            raise CircuitError("Use R, C, L, DC sources, ideal op amps, BJTs, or switches in time simulation.")
+            raise CircuitError("Use R, C, L, voltage/current sources, ideal op amps, BJTs, or switches in time simulation.")
         if any(part.kind == "Q" and part.model for part in self.parts):
             raise CircuitError("Named BJT models require SPICE. Omit the model to use the built-in generic transistor.")
         if not any(set(part.terminal_nets) & circuit.grounds for part in self.parts):
@@ -64,6 +84,8 @@ class TimeDomain:
         self.capacitors = {}
         self.inductors = {}
         self.pulses = {}
+        self.ac_voltage = {}
+        self.ac_current = {}
         self.transistors = []
         self.switches = []
         self.direct_current = np.zeros(len(self.parts))
@@ -79,10 +101,19 @@ class TimeDomain:
             if part.kind not in {"Q", "S"} and p == n:
                 raise CircuitError(f"{part.label} needs two distinct nodes.")
             value = part.value
-            if part.kind in {"R", "C", "L", "V", "I"} and (
-                value.imag or not math.isfinite(value.real) or (part.kind in "RCL" and value.real <= 0)
-            ):
+            if part.kind in "RCL" and (value.imag or not math.isfinite(value.real) or value.real <= 0):
                 raise CircuitError(f"{part.label} requires a valid real component value.")
+            source = value.real
+            if part.kind in "VI":
+                if not all(math.isfinite(v) for v in (value.real, value.imag, part.dc.real, part.dc.imag)):
+                    raise CircuitError(f"{part.label} requires finite source values.")
+                if (self.frequency is None and value.imag) or (circuit.mode == "mixed" and part.dc.imag):
+                    raise CircuitError(f"{part.label} requires a real DC value.")
+                if self.frequency is not None:
+                    source = part.dc.real if circuit.mode == "mixed" else 0
+                    peak = math.sqrt(2) * value
+                    if not math.isfinite(peak.real) or not math.isfinite(peak.imag):
+                        raise CircuitError(f"{part.label} peak source value exceeds the numeric range.")
             if part.kind in {"O", "S"}:
                 sense = np.zeros(len(self.nodes))
                 sense[indices[part.in_plus]] += 1
@@ -94,8 +125,10 @@ class TimeDomain:
                 if step and part.kind == "C":
                     self.capacitors[i] = admittance
             elif part.kind == "I":
-                self.target[:len(line)] -= value.real * line
-                self.direct_current[i] = value.real
+                self.target[:len(line)] -= source * line
+                self.direct_current[i] = source
+                if self.frequency is not None and value:
+                    self.ac_current[i] = peak
             elif i in rows:
                 row = rows[i]
                 self.matrix[:len(line), row] = line
@@ -104,7 +137,9 @@ class TimeDomain:
                 else:
                     self.matrix[row, :len(line)] = line
                     if part.kind == "V":
-                        self.target[row] = value.real
+                        self.target[row] = source
+                        if self.frequency is not None and value:
+                            self.ac_voltage[row] = peak
                         if part.pulse is not None:
                             self.pulses[row] = part.pulse
                     elif step:
@@ -139,6 +174,44 @@ class TimeDomain:
         self.state = np.zeros(size)
         self.previous_capacitor_voltage = np.zeros(len(self.parts))
         self.half_step = None
+
+    def same_topology(self, circuit):
+        """Value edits may reorder declarations, but must retain named connections."""
+        def terminals(model):
+            return sorted((part.name, part.kind, part.terminal_nets) for part in model.components)
+        return circuit.grounds == self.circuit.grounds and terminals(circuit) == terminals(self.circuit)
+
+    def reconfigure(self, circuit, step=None):
+        """Restamp values while retaining physical history; call between sample batches.
+
+        Capacitor voltage and inductor current are carried into the new equations.
+        Generated potentiometer short branches may appear or disappear at end stops,
+        so state is transferred by node/component identity rather than array index.
+        """
+        if not self.same_topology(circuit):
+            raise CircuitError("Circuit connections changed. Reset the oscilloscope to run the new circuit.",
+                               code="TopologyChanged")
+        updated = TimeDomain(circuit, self.step if step is None else step)
+        if self.references != updated.references:
+            raise CircuitError("Circuit ground references changed. Reset the oscilloscope.", code="TopologyChanged")
+        updated.time = self.time
+        updated.phase_offset = self.phase_offset
+        if self.frequency is not None and updated.frequency is not None:
+            updated.phase_offset = math.remainder(
+                self.phase_offset + math.tau * (self.frequency - updated.frequency) * self.time, math.tau,
+            )
+        voltages = {self.nodes[index]: self.state[row] for row, index in enumerate(self.unknown)}
+        for row, index in enumerate(updated.unknown):
+            updated.state[row] = voltages[updated.nodes[index]]
+        currents = {(self.parts[index].name, self.parts[index].kind): self.state[len(self.unknown) + row]
+                    for row, index in enumerate(self.voltage_rows)}
+        for row, index in enumerate(updated.voltage_rows):
+            part = updated.parts[index]
+            updated.state[len(updated.unknown) + row] = currents.get((part.name, part.kind), 0.0)
+        capacitors = {self.parts[index].name: self.previous_capacitor_voltage[index] for index in self.capacitors}
+        for index in updated.capacitors:
+            updated.previous_capacitor_voltage[index] = capacitors.get(updated.parts[index].name, 0.0)
+        return updated
 
     def set_initial_voltage(self, capacitor, voltage):
         for i in self.capacitors:
@@ -262,6 +335,7 @@ class TimeDomain:
             self.half_step = TimeDomain(self.circuit, self.step / 2)
         half = self.half_step
         half.time = self.time
+        half.phase_offset = self.phase_offset
         half.target[:] = self.target
         half.state = self.state
         half.previous_capacitor_voltage = self.previous_capacitor_voltage
@@ -274,6 +348,11 @@ class TimeDomain:
 
     def advance_once(self):
         rhs = self.target.copy()
+        phase = self.source_phase(self.time + (self.step or 0))
+        for row, peak in self.ac_voltage.items():
+            rhs[row] += (peak * phase).real
+        for i, peak in self.ac_current.items():
+            rhs[:len(self.unknown)] -= self.incidence[i, self.unknown] * (peak * phase).real
         if self.step is not None:
             for row, pulse in self.pulses.items():
                 rhs[row] = pulse.at(self.time + self.step)
@@ -289,10 +368,18 @@ class TimeDomain:
             self.time += self.step
         return voltage
 
+    def source_phase(self, time):
+        # AC graph values are RMS phasors with the same cosine convention as reports.
+        angle = self.phase_offset + math.tau * self.frequency * time if self.frequency is not None else 0
+        return complex(math.cos(angle), math.sin(angle))
+
     def operating_point(self):
         voltage = self.advance()
         branch_v = self.incidence @ voltage
         currents = self.direct_current + self.conductance * branch_v
+        phase = self.source_phase(self.time)
+        for i, peak in self.ac_current.items():
+            currents[i] += (peak * phase).real
         currents[self.voltage_rows] = self.state[len(self.unknown):]
         power = branch_v * currents
         for i, branch, control in self.switches:
@@ -306,7 +393,8 @@ class TimeDomain:
             currents[i] = collector
             power[i] = branch_v[i] * collector + (voltage[b] - voltage[e]) * base
             self.base_current[self.parts[i].name] = base
-        return Network(
+        network = Network(
             self.nodes, tuple(part.name for part in self.parts), voltage, branch_v, currents,
             power, None, references=self.references, base_current=self.base_current,
         )
+        return fold_potentiometers(network, self.circuit, self.potentiometers)

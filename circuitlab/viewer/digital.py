@@ -1,6 +1,7 @@
 """Interactive ideal digital signals, cycle stepping and bounded waveforms."""
 
 from collections import deque
+from copy import deepcopy
 from math import ceil
 from time import perf_counter
 
@@ -111,6 +112,8 @@ class DigitalSimulator(QWidget):
         super().__init__(parent)
         self.source = ""
         self.simulation = None
+        self.layout_records = {}
+        self._skip_layout_capture = False
         self.input_buttons, self.output_labels = {}, {}
         self.user_profile = False
         self.speed = 1.0
@@ -166,7 +169,7 @@ class DigitalSimulator(QWidget):
         self.port_view = LogicSceneView()
         self.port_view.input_toggled.connect(self.toggle_input)
         self.port_view.signal_probed.connect(self.select_signal)
-        self.port_view.setToolTip("Click inputs to toggle · click chip to open · wheel to zoom · drag blank space to pan")
+        self.port_view.setToolTip("Click inputs to toggle · click chip to open · drag blocks or wires to arrange · Ctrl+Z to undo · wheel to zoom")
         self.table = QTableWidget(0, 3)
         self.table.setHorizontalHeaderLabels(["Signal", "Bits", "Value"])
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -259,7 +262,20 @@ class DigitalSimulator(QWidget):
         self.user_profile = True
         self.set_source(self.source)
 
+    def logic_placements(self):
+        if self.simulation is not None and not self._skip_layout_capture:
+            self.layout_records[self.simulation.profile] = self.port_view.placement()
+        return deepcopy(self.layout_records)
+
+    def load_logic_placements(self, records):
+        """Install one file's saved layouts before compiling its new source."""
+        self.layout_records = deepcopy(records) if isinstance(records, dict) else {}
+        self._skip_layout_capture = True
+
     def _clear(self):
+        if not self._skip_layout_capture:
+            self.logic_placements()
+        self._skip_layout_capture = False
         self.shutdown()
         self.simulation = None
         for grid in (self.input_grid, self.output_grid):
@@ -323,6 +339,7 @@ class DigitalSimulator(QWidget):
             self.output_labels[name] = label
             self.output_grid.addWidget(label, index // 5, index % 5)
         self.port_view.configure(sim)
+        self.port_view.restore_placement(self.layout_records.get(sim.profile, {}))
         self.table.setRowCount(len(sim.signals))
         with QSignalBlocker(self.probe):
             for row, (name, width) in enumerate(sim.signals.items()):
@@ -337,10 +354,13 @@ class DigitalSimulator(QWidget):
         timed = clocked and sim.frequency is not None
         self.run_button.setEnabled(timed)
         self.run_button.setToolTip("Run at the selected fraction of the declared clock rate" if timed else
+                                   "Clockless logic updates immediately when inputs change" if not clocked else
                                    "Declare a clock frequency, e.g. clock(clk, 50MHz), to run in real time")
         self.speed_button.setEnabled(timed)
         self._speed_tooltip()
         self.step_button.setEnabled(clocked)
+        self.step_button.setToolTip("Advance one clock edge" if clocked else
+                                    "Clockless logic has no clock edges to step")
         self.reset_button.setEnabled(True)
         self.probe.setEnabled(True)
         self.all_ports.setEnabled(True)

@@ -31,7 +31,7 @@ def runtime_bundle(package, files):
     }, ensure_ascii=False).encode("utf-8")
 
 
-def vsix_manifest(package):
+def vsix_manifest(package, files):
     root = ET.Element("PackageManifest", Version="2.0.0", xmlns=VSIX_SCHEMA)
     metadata = ET.SubElement(root, "Metadata")
     ET.SubElement(
@@ -62,6 +62,8 @@ def vsix_manifest(package):
         ("Details", "README.md"),
         ("License", "LICENSE"),
     ):
+        if kind == "Details" and path not in files:
+            continue
         ET.SubElement(
             assets,
             "Asset",
@@ -91,7 +93,6 @@ def build(output):
     package = json.loads(package_path.read_text(encoding="utf-8"))
     files = {
         "package.json": package_path,
-        "README.md": EXTENSION / "README.md",
         "LICENSE": REPO / "LICENSE",
         "extension.js": EXTENSION / "extension.js",
         "runtime.js": EXTENSION / "runtime.js",
@@ -103,6 +104,9 @@ def build(output):
         "language-configuration.json": EXTENSION / "language-configuration.json",
         "syntaxes/OOC.json": EXTENSION / "syntaxes/OOC.json",
     }
+    readme = EXTENSION / "README.md"
+    if readme.is_file():
+        files["README.md"] = readme
     for contribution in package["contributes"].get("snippets", ()):
         path = PurePosixPath(contribution["path"])
         if path.parts[0] != "snippets" or ".." in path.parts:
@@ -114,7 +118,7 @@ def build(output):
     output.parent.mkdir(parents=True, exist_ok=True)
     with ZipFile(output, "w", compression=ZIP_DEFLATED) as archive:
         archive.writestr("[Content_Types].xml", content_types())
-        archive.writestr("extension.vsixmanifest", vsix_manifest(package))
+        archive.writestr("extension.vsixmanifest", vsix_manifest(package, files))
         for name, data in files.items():
             archive.writestr(f"extension/{name}", data)
 

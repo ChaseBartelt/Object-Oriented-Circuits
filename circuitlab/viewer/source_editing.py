@@ -1,6 +1,9 @@
 """Source-aware component tools shared by the IDE viewer and optional editor."""
-from dataclasses import asdict, dataclass
+from concurrent.futures import ThreadPoolExecutor
+from cmath import phase
+from dataclasses import asdict, dataclass, replace
 from copy import deepcopy
+from math import degrees
 from uuid import uuid4
 
 from PySide6.QtCore import QTimer, QSignalBlocker, QEventLoop
@@ -10,6 +13,8 @@ from PySide6.QtWidgets import QHBoxLayout, QInputDialog, QMessageBox
 from circuitlab.layout.persistence import pack_layout, embed_placement, strip_placement, layout_payload
 from circuitlab.tooling.source_edits import SourceEdit, edit_value, source_target
 from circuitlab.model.graph import CircuitError
+from circuitlab.math.analysis import analyze
+from circuitlab.math.numbers import format_value
 from circuitlab.viewer.widgets import button, write_bytes
 from circuitlab.viewer.schematic import PlacementUndo
 
@@ -30,6 +35,16 @@ class SourceTools:
         self.history = self.view.undo_history
         self.internal_refresh = False
         self.identity = None
+        self.position_edit = None
+        self.position_generation = 0
+        self.position_future = None
+        self.position_submitted = -1
+        self.position_reopen = None
+        self.position_worker = ThreadPoolExecutor(max_workers=1, thread_name_prefix='potentiometer')
+        window.destroyed.connect(lambda: self.position_worker.shutdown(wait=False, cancel_futures=True))
+        self.position_timer = QTimer(window)
+        self.position_timer.setInterval(80)
+        self.position_timer.timeout.connect(self.preview_position)
         self.view.undo_handler = self.undo
         # Include the editing toolbar, which often keeps focus after a dialog.
         # The legacy text editor is outside this page and keeps its own undo.
@@ -41,6 +56,8 @@ class SourceTools:
             'VS Code did not acknowledge the edit. Update the OOC extension and reopen the viewer; check your code before retrying.'}))
         self.view.source_editing = True
         self.view.value_requested.connect(self.change_value)
+        self.view.potentiometer_requested.connect(self.open_potentiometer)
+        self.view.position_changed.connect(self.adjust_position)
         self.view.optimization_finished.connect(lambda message: window.status.setText(message))
         row = QHBoxLayout()
         row.addStretch()
@@ -63,13 +80,15 @@ class SourceTools:
         QMessageBox.warning(self.window, 'Edit circuit', str(error))
 
     def change_value(self, name):
+        self.cancel_position()
         try:
             circuit, root, source, reader = self.context()
             _, _, _, match = source_target(circuit, name, root, source, reader)
             if 'value' not in match.groupdict():
                 raise ValueError('This value is generated. Edit its parameter or definition in the IDE.')
             part = next(part for part in circuit.components if part.name == name)
-            hint = ' in ohms (e.g. 2-j2 or 4+j4)' if part.kind == 'Z' else ''
+            hint = (' in ohms (e.g. 2-j2 or 4+j4)' if part.kind == 'Z' else
+                    ' as resistance, position (e.g. 10k,25%; position defaults to 50% from low)' if part.kind == 'P' else '')
             previous = (match['value'] or '').strip()
             value, ok = QInputDialog.getText(self.window, 'Edit component value',
                 f'{name} value{hint} (blank = unspecified):\nShared definitions update all their instances.', text=previous)
@@ -77,6 +96,133 @@ class SourceTools:
                 self.apply(edit_value(circuit, name, value, root, source, reader))
         except (ValueError, OSError, CircuitError, StopIteration) as error:
             self.error(error)
+
+    def open_potentiometer(self, name):
+        if self.pending:
+            return
+        self.cancel_position()
+        try:
+            circuit, root, source, reader = self.context()
+            path, before, _, match = source_target(circuit, name, root, source, reader)
+            if 'value' not in match.groupdict():
+                raise ValueError('This position is generated. Edit its parameter or definition in the IDE.')
+            if hasattr(self.window, 'editor') and path != root:
+                raise ValueError('Open this included definition in the editor to change it.')
+            part = next(part for part in circuit.components if part.name == name and part.kind == 'P')
+            # Shared definitions affect all instances on the same source statement.
+            raw = match['name'].casefold()
+            names = {part.name for part in circuit.components if part.kind == 'P'
+                     and circuit.component_lines.get(part.name) == circuit.component_lines.get(name)
+                     and circuit.component_files.get(part.name, root) == circuit.component_files.get(name, root)
+                     and (part.name.casefold() == raw or part.name.casefold().startswith(raw + '_'))}
+            self.position_edit = dict(name=name, circuit=circuit, solution=self.window.solution,
+                                      context=(circuit, root, source, reader), path=path, before=before,
+                                      resistance=(match['value'] or '').split(',', 1)[0].strip(), names=names,
+                                      initial=round(part.position * 100), percent=round(part.position * 100),
+                                      identity=self.current_identity(), drawn=None)
+            self.view.show_position_control(name, part.position)
+        except (ValueError, OSError, CircuitError, StopIteration) as error:
+            self.error(error)
+
+    def set_preview_solution(self, result):
+        if hasattr(self.window, 'editor'):
+            self.window.set_solution(result)
+        else:
+            self.window.session.solution = result
+            self.window.update_results()
+
+    def preview_scope(self, circuit):
+        if self.window.scope.circuit is not circuit:
+            self.window.scope.set_circuit(circuit, preserve_state=True)
+
+    def cancel_position(self, *, restore=True):
+        self.position_generation += 1
+        self.position_timer.stop()
+        edit, self.position_edit = self.position_edit, None
+        if restore and edit and edit['drawn'] is not None:
+            self.set_preview_solution(edit['solution'])
+            if self.view.circuit is not None:
+                self.view.preview_potentiometers(edit['circuit'])
+            self.preview_scope(edit['circuit'])
+        self.view.hide_position_control()
+
+    def adjust_position(self, name, percent, final=False):
+        edit = self.position_edit
+        if not edit or edit['name'] != name or self.pending:
+            return
+        if self.current_identity() != edit['identity']:
+            self.cancel_position(restore=False)
+            return
+        percent = max(0, min(100, int(percent)))
+        if percent != edit['percent']:
+            edit['percent'] = percent
+            self.position_generation += 1
+        if not final:
+            if not self.position_timer.isActive():
+                self.position_timer.start()
+            return
+        self.cancel_position()
+        if percent == edit['initial']:
+            self.open_potentiometer(name)
+            return
+        circuit, root, source, reader = edit['context']
+        try:
+            current = source if edit['path'] == root else reader(edit['path'])
+            if current != edit['before']:
+                raise ValueError('The source changed. Reload before adjusting this potentiometer.')
+            plan = edit_value(circuit, name, f"{edit['resistance']},{percent}%", root, source, reader)
+            self.position_reopen = name
+            self.apply(plan)
+            if not self.pending:
+                self.position_reopen = None
+        except (ValueError, OSError, CircuitError) as error:
+            self.position_reopen = None
+            self.error(error)
+
+    def preview_position(self):
+        edit = self.position_edit
+        if not edit or self.current_identity() != edit['identity']:
+            self.cancel_position(restore=False)
+            return
+        generation = self.position_generation
+        if edit['drawn'] != generation:
+            position = edit['percent'] / 100
+            circuit = edit['circuit']
+            if edit['percent'] != edit['initial']:
+                circuit = replace(circuit, components=[replace(part, position=position) if part.name in edit['names'] else part
+                                                       for part in circuit.components])
+            edit['preview'] = circuit
+            edit['drawn'] = generation
+            self.view.preview_potentiometers(circuit)
+            self.preview_scope(circuit)
+        if self.position_future is not None:
+            owner, future = self.position_future
+            if not future.done():
+                return
+            self.position_future = None
+            try:
+                result = future.result()
+            except (CircuitError, ValueError) as error:
+                if owner == generation:
+                    self.set_preview_solution(None)
+                    self.view.position_reading.setText(str(error))
+                    self.window.status.setText(str(error))
+            else:
+                if owner == generation:
+                    self.set_preview_solution(result)
+                    part = next(part for part in edit['preview'].components if part.name == edit['name'])
+                    network = result.network
+                    if network is not None and part.wiper in network.nodes:
+                        voltage = network.voltage[network.nodes.index(part.wiper)]
+                        reading = ('Wiper: ' + format_value(voltage, 'V') if result.circuit.mode == 'dc' else
+                                   f"Wiper: {format_value(abs(voltage), 'V')} RMS, phase {degrees(phase(voltage)):.3g}°")
+                        self.view.position_reading.setText(reading)
+                        self.window.status.setText(f"{part.name} · {edit['percent']}% · {reading} (preview)")
+        if self.position_future is None and self.position_submitted != generation:
+            self.position_submitted = generation
+            self.position_future = generation, self.position_worker.submit(analyze, edit['preview'])
+        elif self.position_future is None:
+            self.position_timer.stop()
 
     def current_identity(self):
         window = self.window
@@ -90,6 +236,7 @@ class SourceTools:
     def source_changed(self):
         if self.internal_refresh:
             return
+        self.cancel_position(restore=False)
         identity = self.current_identity()
         if identity != self.identity:
             self.history.clear()
@@ -174,9 +321,18 @@ class SourceTools:
                     mode=self.view.layout_mode, offsets=dict(self.view.level_offsets),
                     automatic=self.view.level_layouts,
                     manual=self.view.manual_layouts,
-                    rotations=self.view.rotation_bases))
+                    rotations=self.view.rotation_bases,
+                    logic=self.window.logic_placements() if hasattr(self.window, 'logic_placements')
+                    else {'schematic': self.view.logic_placements()}))
 
     def undo(self):
+        self.cancel_position()
+        if self.pending or any(diagram.press is not None for diagram in self.view.behavior_diagrams.values()):
+            return
+        digital = getattr(self.window, 'digital', None)
+        if digital is not None and digital.port_view.hasFocus():
+            digital.port_view.undo_placement()
+            return
         if self.pending or self.view.drag is not None or not self.history:
             return
         entry = self.history[-1]
@@ -209,7 +365,8 @@ class SourceTools:
             if payload := layout_payload(current):
                 records = {(level, mode): record for level, mode, record in payload['layouts']}
                 after = embed_placement(after, payload['mode'], records,
-                                        pin_overrides=payload.get('pin_overrides'))
+                                        pin_overrides=payload.get('pin_overrides'),
+                                        logic_layouts=payload.get('logic'))
             plan = SourceEdit(plan.path, current, after, plan.description)
         snapshot = None if on_saved else (undo_entry.snapshot if undo_entry else self.snapshot())
         self.operation = plan, snapshot, undo_entry, on_saved
@@ -259,6 +416,7 @@ class SourceTools:
         if result.get('ok'):
             self.complete()
         else:
+            self.position_reopen = None
             self.error(result.get('error', 'VS Code could not apply the source edit.'))
             if callback := self.operation[3]:
                 callback(False)
@@ -285,6 +443,9 @@ class SourceTools:
             self.identity = self.current_identity()
         finally:
             self.internal_refresh = False
+        if name := self.position_reopen:
+            self.position_reopen = None
+            self.open_potentiometer(name)
 
     def refresh(self, snapshot, *, restoring=False):
         window = self.window
@@ -294,11 +455,15 @@ class SourceTools:
             window.session.load(window.path)
             window.session.pin_overrides = pins
         self.view.clear()
+        logic = snapshot.get('logic', {})
+        self.view.load_logic_placements(logic.get('schematic', {}))
+        if hasattr(window, 'digital'):
+            window.digital.load_logic_placements(logic.get('simulation', {}))
         with QSignalBlocker(window.wire_style):
             window.wire_style.setCurrentIndex(window.wire_style.findData(mode))
         self.view.layout_mode = mode
         self.view.placement_records = records
-        window.compile_source()
+        window.compile_source(preserve_scope=True)
         if restoring:
             self.view.level_layouts = snapshot['automatic'].copy()
             self.view.manual_layouts = snapshot['manual'].copy()

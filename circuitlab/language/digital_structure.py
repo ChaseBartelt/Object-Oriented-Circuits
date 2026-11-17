@@ -8,7 +8,8 @@ copied intact and compiled by the digital exporter, never executed here.
 import re
 from dataclasses import dataclass
 
-from circuitlab.language.control_flow import ExpansionBudget, expand_control_flow
+from circuitlab.language.control_flow import ExpansionBudget, expand_control_flow, expand_digital_loops
+from circuitlab.language.digital_switch import expand_switches, normalize_switch_labels
 from circuitlab.language.syntax import CHIP, DIGITAL_MAIN, source_rows
 from circuitlab.model.graph import CircuitError, MethodInstance
 
@@ -50,11 +51,41 @@ def _declarations(rows):
         left = declaration.partition("=")[0].strip()
         name = left.partition("[")[0].strip()
         # Output/wire assignments are behavior, not state declarations.
-        if kinds.get(name) not in {"input", "output", "wire"} and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*(?:\s*\[[^]]+\])?", left):
+        bank = "[" in left and any(re.fullmatch(re.escape(name) + r"\d+", signal) for signal in signals)
+        if not bank and kinds.get(name) not in {"input", "output", "wire"} and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*(?:\s*\[[^]]+\])?", left):
             _state(declaration, (), states, line)
             width, _, vector = states[name]
             signals[name], kinds[name] = width if vector else None, "state"
     return signals, kinds
+
+
+def _normalize_banks(body, signals):
+    """Give numbered pin banks explicit names before instance port renaming."""
+    from circuitlab.exporters.clocked import SELECTOR, selected_bits
+    helpers, aliases, names, output = [], {}, set(signals), []
+    for text, line, origin in body:
+        destination = re.match(r"\s*(\w+\s*\[[^]]+\])\s*=(?!=)", text)
+        def replace(match):
+            if match[1] in signals:
+                return match[0]
+            bits = selected_bits(match[0], signals, line)
+            if len(bits) == 1:
+                return bits[0][0]
+            target = bool(destination and match.start() == destination.start(1))
+            key = tuple(bits), target
+            if key not in aliases:
+                name = f"ooc_bank_{len(aliases)}"
+                while name in names:
+                    name = "ooc_" + name
+                names.add(name)
+                aliases[key] = name
+                helpers.append((f"{name}[{len(bits)}] = wire", line, origin))
+                for bit, (pin, _) in enumerate(bits):
+                    assignment = f"{pin} = {name}[{bit}]" if target else f"{name}[{bit}] = {pin}"
+                    helpers.append((assignment, line, origin))
+            return aliases[key]
+        output.append((SELECTOR.sub(replace, text), line, origin))
+    return helpers + output
 
 
 def _definitions(source):
@@ -91,6 +122,11 @@ def _definitions(source):
             if name in chips:
                 raise CircuitError(f'Chip "{name}" is already defined.', line)
             pins = _pin_list(chip[2], line)
+            origins = {number: origin for _, number, origin in body}
+            body = [(text, number, origins[number]) for text, number in expand_switches(expand_digital_loops(
+                normalize_switch_labels([(text, number) for text, number, _ in body])))]
+            signals, kinds = _declarations(body)
+            body = _normalize_banks(body, signals)
             signals, kinds = _declarations(body)
             declared = {p for p, kind in kinds.items() if kind in {"input", "output"}}
             if declared != set(pins):
@@ -226,6 +262,7 @@ Source text and saved layouts are never rewritten by elaboration.
                 "chip", name, parent, tuple((p, mapping[p]) for p in chip.pins),
                 tuple(row[0] for row in chip.body), line=number,
                 arguments=tuple(zip(actual, (mapping[p] for p in chip.pins))),
+                signal_bindings=tuple(mapping.items()),
             ))
         depth = 0
         for row, source_line, _ in chip.body:
@@ -235,7 +272,7 @@ Source text and saved layouts are never rewritten by elaboration.
             if depth == 0 and CALL.fullmatch(row):
                 instantiate(row, source_line, mapping, own_index, (*ancestors, name))
                 continue
-            if re.match(r"(?:for|while|do)\b", row):
+            if re.match(r"(?:while|do)\b", row):
                 raise CircuitError("Loops generate hardware in main; chip behavior uses if/else and clock/every blocks.", source_line)
             emit(rename(row, mapping), source_line)
             depth += int(row.endswith("{")) - int(row == "}")

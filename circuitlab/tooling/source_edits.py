@@ -5,7 +5,7 @@ from pathlib import Path
 
 from circuitlab.language.compiler import compile_circuit
 from circuitlab.math.numbers import scalar
-from circuitlab.language.syntax import UNITS
+from circuitlab.language.syntax import UNITS, parse_potentiometer
 
 
 @dataclass(frozen=True)
@@ -16,7 +16,7 @@ class SourceEdit:
     description: str
 
 
-PLACED = re.compile(r'(?P<name>[RCLZVI]\w*)(?P<value_clause>\s*\((?P<value>[^()\r\n]*)\))?\s+between\s*\((?P<pins>[^()\r\n]+)\)', re.I)
+PLACED = re.compile(r'(?P<name>[RCLZVIP]\w*)(?P<value_clause>\s*\((?P<value>[^()\r\n]*)\))?\s+between\s*\((?P<pins>[^()\r\n]+)\)', re.I)
 LEGACY = re.compile(r'(?P<name>[RCLZVI]\w*)[ \t]+(?P<a>\S+)[ \t]+(?P<b>\S+)[ \t]+(?P<value>[^;#\r\n]+)', re.I)
 ASSIGN = re.compile(r'(?P<name>[RCLZ]\w*)\s*=\s*(?P<value>[^;#\r\n]*)', re.I)
 CALL = re.compile(r'(?P<name>[A-Za-z_]\w*)\s*\((?P<pins>[^()\r\n]*)\)')
@@ -48,10 +48,13 @@ def source_target(circuit, name, root, source, read_source):
 
 def edit_value(circuit, name, value, root, source, read_source):
     part = next(p for p in circuit.components if p.name == name)
-    if part.kind not in {'R', 'C', 'L', 'Z'}:
-        raise ValueError('Value editing is available for resistors, capacitors, inductors and impedances.')
+    if part.kind not in {'R', 'C', 'L', 'Z', 'P'}:
+        raise ValueError('Value editing is available for resistors, capacitors, inductors, impedances and potentiometers.')
     if value.strip():
-        scalar(value, UNITS[part.kind])
+        if part.kind == 'P':
+            parse_potentiometer(value)
+        else:
+            scalar(value, UNITS[part.kind])
     if any(c in value for c in ';\r\n#{}'):
         raise ValueError('Enter a component value, such as 1k, 100n, 10m, or 2-j2 for an impedance.')
     path, before, offset, match = source_target(circuit, name, root, source, read_source)

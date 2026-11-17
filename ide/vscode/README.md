@@ -20,4 +20,6 @@ Install ide/vscode/dist/ooc-language-<version>.vsix with **Extensions: Install f
 
 Source checkouts watch this local feed. Compatible runtime.js, structure.js and hover-client.js updates can apply live; grammar, registration and bootstrap changes can require reload. Python changes require restarting their running processes. Installed users use **OOC: Check for Updates** for the complete application bundle.
 
-Run tests with node --test ide/vscode/test/*.test.js; set OOC_PYTHON to the project interpreter for Python integration checks. test/extension-host.js additionally checks a real VS Code host.
+Packaging and syntax tests live in tests/tooling. Run them with `python -m unittest discover -s tests/tooling -t .`; use `node --check` on the extension's JavaScript files for syntax checks.
+
+FPGA declarations, signals, constants, bit widths/selectors, clock/timing shortcuts, and operators have distinct syntax scopes. Colors follow your VS Code theme. After installing a grammar update, use **Developer: Reload Window** to load the new highlighting.

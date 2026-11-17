@@ -1,6 +1,7 @@
 """Build OOC and configure a DE10-Lite using Quartus's background tools."""
 
 from pathlib import Path
+import re
 
 from PySide6.QtCore import QProcess, QSettings, QStandardPaths, Qt, QUrl
 from PySide6.QtGui import QDesktopServices, QTextCursor
@@ -31,6 +32,7 @@ class FpgaDialog(QDialog):
         self.ready = False
         self._build_image = None
         self._build_error = ""
+        self._build_clocked = True
         self.operation = None
         self.output = bytearray()
         self.process = QProcess(self)
@@ -41,14 +43,9 @@ class FpgaDialog(QDialog):
         self.setWindowTitle("FPGA — DE10-Lite / HYBRID01")
         self.resize(1020, 800)
         layout = QVBoxLayout(self)
-        description = QLabel(
-            "Write and save OOC in your IDE. Build here, select the board's USB-Blaster, "
-            "then program the FPGA. Quartus runs in the background.\n"
-            "Profile: HYBRID01 · DE10-Lite · 50 MHz · SW0–SW9 synchronized automatically · LED0–LED9 · optional audio on JP1 pin 1. "
-            "Programming lasts until power-off; it does not write flash."
-        )
-        description.setWordWrap(True)
-        layout.addWidget(description)
+        self.description = QLabel()
+        self.description.setWordWrap(True)
+        layout.addWidget(self.description)
         self.source_label = QLabel()
         self.source_label.setTextFormat(Qt.TextFormat.PlainText)
         self.source_label.setWordWrap(True)
@@ -103,6 +100,19 @@ class FpgaDialog(QDialog):
 
     def refresh_source(self):
         path, source = self.current_document()
+        mode = 'Declare MAX10_CLK1_50 for synchronized switches, or omit it for clockless combinational logic.'
+        try:
+            _, _, constraints = fpga.compile_de10_lite(source)
+            mode = ('50 MHz · switch inputs synchronized across two clock edges.'
+                    if re.search(r'(?m)^create_clock\b', constraints) else
+                    'Clockless combinational · switches drive logic directly; no synchronizers.')
+        except (ValueError, CircuitError):
+            pass
+        self.description.setText(
+            "Write and save OOC in your IDE. Build here, select the board's USB-Blaster, "
+            "then program the FPGA. Quartus runs in the background.\n"
+            "DE10-Lite · SW0–SW9 · LEDR0–LEDR9 · optional audio on JP1 pin 1. " + mode + "\n"
+            "Programming lasts until power-off; it does not write flash.")
         self.source_label.setText(f"Source: {path or 'No OOC file loaded'}")
         self.performance.set_source(path, source)
         if self.ready and (path != self.built_path or not self.project.matches_source(source)):
@@ -150,6 +160,8 @@ class FpgaDialog(QDialog):
                 raise ValueError("Open and save your HYBRID01 OOC file in the IDE first.")
             self.tool_bin = self._tools()
             self.project = fpga.prepare_project(source, self.build_dir)
+            constraints = (self.project.directory / 'HYBRID01.sdc').read_text(encoding='utf-8')
+            self._build_clocked = bool(re.search(r'(?m)^create_clock\b', constraints))
             self.built_path = path
             self.log.clear()
             self.report_tabs.setCurrentWidget(self.log)
@@ -289,7 +301,9 @@ class FpgaDialog(QDialog):
         if self._build_error:
             self.status.setText(self._build_error)
         else:
-            message = "Build and timing checks passed. Select a cable, then Program FPGA."
+            message = ("Build and timing checks passed. " if self._build_clocked else
+                       "Clockless build and pin-to-pin delay checks passed. ")
+            message += "Select a cable, then Program FPGA."
             if extraction_error:
                 message += " Detailed performance information is incomplete; see Build log."
             self.status.setText(message)

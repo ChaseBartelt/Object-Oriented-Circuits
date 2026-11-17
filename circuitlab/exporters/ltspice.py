@@ -7,7 +7,7 @@ from itertools import combinations
 
 from circuitlab.model.graph import CircuitError
 from circuitlab.layout.hierarchy import METHOD_PREFIX, hood_levels
-from circuitlab.layout.geometry import BJT_PIN_OFFSET, package_pins, pin_offset, rotate_point, wire_axis
+from circuitlab.layout.geometry import BJT_PIN_OFFSET, package_pins, pin_offset, rotate_point, symbol_pins, wire_axis
 from circuitlab.layout.checks import segments_intersect
 from circuitlab.math.report import component_labels
 from circuitlab.layout.routing import fast_layout
@@ -118,6 +118,7 @@ def export_schematic(circuit, layout):
 
 
 def _export_drawing(layout, spice, *, blocks=None, ports=None, aliases=(), commands=True):
+    layout = _potentiometer_layout(layout, spice)
     options = dict(blocks=blocks or {}, ports=ports or {}, aliases=aliases, commands=commands)
     for scale in ((64, 96, 128) if blocks else (48, 64, 96, 128)):
         try:
@@ -127,6 +128,33 @@ def _export_drawing(layout, spice, *, blocks=None, ports=None, aliases=(), comma
     # Preserve symbol placement if the native pins and the existing tracks
     # cannot coexist on the grid. Flags on the actual pins carry every net.
     return _export_with_pin_labels(layout, spice, options)
+
+
+def _potentiometer_layout(layout, spice):
+    """Use two native resistors and a wiper junction without external symbols."""
+    if not any(part.kind == "P" for part, *_ in layout.symbols):
+        return layout
+    symbols, wires = [], {net: list(edges) for net, edges in layout.wires.items()}
+    rotations = dict(layout.rotations)
+    for part, a, b, top in layout.symbols:
+        if part.kind != "P":
+            symbols.append((part, a, b, top))
+            continue
+        pins = list(symbol_pins(part, a, b, top, grid=layout.pin_grid))
+        # Native pot geometry lists high, wiper, low in electrical pin order.
+        high, wiper, low = (point for _, point in pins)
+        middle = (high[0], (high[1] + low[1]) / 2)
+        turns = rotations.pop(part.name, 0)
+        high, middle, low, wiper = (
+            rotate_point(point, a, b, turns) for point in (high, middle, low, wiper)
+        )
+        wires.setdefault(part.wiper, []).append((middle, wiper))
+        for leg, start, end in zip(spice.potentiometers[part.name], (high, middle), (middle, low)):
+            if leg is None:
+                wires.setdefault(part.wiper, []).append((start, end))
+            else:
+                symbols.append((leg, start, end, top))
+    return replace(layout, symbols=symbols, wires=wires, rotations=rotations)
 
 
 def _export_with_pin_labels(layout, spice, options):

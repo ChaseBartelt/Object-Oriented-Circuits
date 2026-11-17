@@ -1,0 +1,23 @@
+# Clockless eight-input priority selector: one winner, even with many requests.
+# SW0..SW7 request a channel; SW8 enables the chip.
+# SW9 down: lowest numbered request wins. SW9 up: highest wins.
+# LEDR0..LEDR7 light only the winning channel. LEDR8 = valid winner.
+# LEDR9 = multiple requests active. Disabling SW8 turns all LEDs off.
+# Example: SW2 + SW5 + SW8 on -> LEDR2; add SW9 -> LEDR5.
+# Both OOC and DE10-Lite simulation respond without Run or Step.
+# No clock, registers, or switch synchronizers: the FPGA uses combinational logic.
+
+chip HYBRID01(SW0, SW1, SW2, SW3, SW4, SW5, SW6, SW7, SW8, SW9, LEDR0, LEDR1, LEDR2, LEDR3, LEDR4, LEDR5, LEDR6, LEDR7, LEDR8, LEDR9) {
+    SW0, SW1, SW2, SW3, SW4, SW5, SW6, SW7, SW8, SW9 = input;
+    LEDR0, LEDR1, LEDR2, LEDR3, LEDR4, LEDR5, LEDR6, LEDR7, LEDR8, LEDR9 = output;
+    requests[8], lowest[8], highest[8], winner[8] = wire;
+
+    requests = SW[7:0];
+    lowest = SW0 ? 1 : SW1 ? 2 : SW2 ? 4 : SW3 ? 8 : SW4 ? 16 : SW5 ? 32 : SW6 ? 64 : SW7 ? 128 : 0;
+    highest = SW7 ? 128 : SW6 ? 64 : SW5 ? 32 : SW4 ? 16 : SW3 ? 8 : SW2 ? 4 : SW1 ? 2 : SW0 ? 1 : 0;
+    winner = SW8 ? (SW9 ? highest : lowest) : 0;
+
+    LEDR[7:0] = winner;
+    LEDR8 = SW8 && (requests != 0);
+    LEDR9 = SW8 && ((requests & (requests - 1)) != 0);
+}

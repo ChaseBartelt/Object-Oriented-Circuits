@@ -72,6 +72,31 @@ class DigitalViewerTest(unittest.TestCase):
         self.assertEqual([point[0] for point in self.widget.waveform.history], [0, 1, 2])
         self.assertTrue(self.widget.status.isHidden())
 
+    def test_clockless_board_switches_update_without_run_or_step(self):
+        inputs = [f'SW{i}' for i in range(10)]
+        outputs = [f'LEDR{i}' for i in range(10)]
+        source = (f'chip HYBRID01({", ".join(inputs + outputs)}) {{ '
+                  f'{", ".join(inputs)}=input; {", ".join(outputs)}=output; '
+                  + ' '.join(f'{led}={switch};' for switch, led in zip(inputs, outputs)) + '}')
+        self.widget.set_source(source)
+        sim = self.widget.simulation
+        self.assertEqual(self.widget.profile.currentData(), 'de10-lite')
+        self.assertEqual(sim.clocks, ())
+        self.assertIsNone(sim.frequency)
+        self.assertFalse(self.widget.run_button.isEnabled())
+        self.assertFalse(self.widget.step_button.isEnabled())
+        self.assertFalse(self.widget.speed_button.isEnabled())
+        self.assertIn('immediately', self.widget.run_button.toolTip())
+        self.assertFalse(self.widget.waveform.clocked)
+        for switch, led in zip(inputs, outputs):
+            QTest.mouseClick(self.widget.input_buttons[switch], Qt.MouseButton.LeftButton)
+            self.assertEqual(sim.values[led], 1)
+            self.assertEqual(self.widget.port_view.values[led], 1)
+        self.widget.toggle()
+        self.assertFalse(self.widget.timer.isActive())
+        self.assertEqual(sim.cycles, 0)
+        self.assertFalse(any(name.startswith('ooc_sw') for name in sim.signals))
+
     def test_diagram_inputs_toggle_logic_and_outputs_only_probe(self):
         self.show_source(COMBO)
         view = self.widget.port_view

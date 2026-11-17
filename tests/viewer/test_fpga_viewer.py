@@ -121,6 +121,22 @@ class FpgaViewerTest(unittest.TestCase):
         self.assertFalse(self.dialog.program_button.isEnabled())
         self.assertTrue(self.dialog.build_button.isEnabled())
 
+    def test_profile_description_tracks_clockless_and_clocked_source(self):
+        self.assertIn('50 MHz', self.dialog.description.text())
+        self.document[1] = 'chip HYBRID01(SW0, LEDR0) { SW0=input; LEDR0=output; LEDR0=SW0; }'
+        self.dialog.refresh_source()
+        self.assertIn('Clockless combinational', self.dialog.description.text())
+        self.assertNotIn('50 MHz', self.dialog.description.text())
+        self.assertIn('no synchronizers', self.dialog.description.text())
+        self.dialog.build()
+        self.assertFalse(self.dialog._build_clocked)
+        self.assertEqual(self.dialog.operation, 'build')
+        self.dialog.process.complete(code=1)
+        self.document[1] = self.source
+        self.dialog.refresh_source()
+        self.assertIn('50 MHz', self.dialog.description.text())
+        self.assertNotIn('Clockless combinational', self.dialog.description.text())
+
     def test_zero_exit_build_requires_verified_artifacts(self):
         self.dialog.build()
         with patch("circuitlab.tooling.fpga.verify_build", side_effect=fpga.FpgaError("missing fresh image")):

@@ -11,7 +11,7 @@ from circuitlab.layout.checks import mark_crossings, preserves_nets
 from circuitlab.layout.geometry import Layout
 from circuitlab.layout.hierarchy import hood_levels
 from circuitlab.layout.persistence import pack_layout, restore_layout
-from circuitlab.layout.shorten import optimize_layout, straighten, wire_length, clear_of_bodies
+from circuitlab.layout.shorten import compact_spacing, optimize_layout, straighten, wire_length, clear_of_bodies
 from circuitlab.layout.editing import _symbol_bounds, boxes_overlap
 from circuitlab.viewer.schematic import SchematicView
 from circuitlab.exporters.ltspice import export_schematic
@@ -46,6 +46,22 @@ def elevated_part(kind):
         boundary={'a':(-2,0), 'b':(width+2,0)}, pin_grid=.25,
         wires={'a':[((-2,0),(-2,6)),((-2,6),(0,6))],
                'b':[((width,6),(width+2,6)),((width+2,6),(width+2,0))]})
+    return circuit, drawing
+
+
+def spaced_parts():
+    circuit = compile_circuit('R1(1k) between(a,b);\nR2(2k) between(b,0);', render_only=True)
+    drawing = Layout(
+        symbols=[(circuit.components[0], (0,0), (4,0), '+'),
+                 (circuit.components[1], (16,-2), (20,-2), '+')],
+        positions={'R1': (0,0), 'R2': (16,-2)}, rotations={'R2': 1}, pin_grid=.25,
+        wires={'a': [((-1,0),(0,0))], 'b': [((4,0),(18,0))], '0': [((18,-4),(18,-5))]},
+        boundary={'a': (-1,0)}, grounds=[(18,-5)], ground_names={(18,-5): '0'},
+        ground_rotations={(18,-5): 1}, connectors=[('b', (8,0), 'tap', False, False)],
+        labels={'b': (12,0)}, junctions={'b': [(8,0)]},
+        label_offsets={('ground',18,-5): (.5,.25), ('connector',8,0): (-.5,.25),
+                       ('net','b'): (.25,.5), ('part','R2'): (.5,1)},
+    )
     return circuit, drawing
 
 
@@ -180,6 +196,76 @@ class RouteShorteningTest(unittest.TestCase):
         self.assertNotEqual(view.layout.symbols, drawing.symbols)
         view.undo_placement()
         self.assertEqual(view.layout, drawing)
+
+    def test_group_compaction_retains_rotated_parts_ports_and_saved_annotations(self):
+        circuit, drawing = spaced_parts()
+        snapshot = deepcopy(drawing)
+        self.assertTrue(preserves_nets(circuit, drawing))
+        result = compact_spacing(circuit, drawing)
+        self.assertLess(wire_length(result), wire_length(drawing) / 2)
+        self.assertLess(result.positions['R2'][0], drawing.positions['R2'][0])
+        self.assertEqual(result.rotations, drawing.rotations)
+        for (_, a, b, _), (_, old_a, old_b, _) in zip(result.symbols, drawing.symbols):
+            self.assertEqual(tuple(b[i] - a[i] for i in (0,1)),
+                             tuple(old_b[i] - old_a[i] for i in (0,1)))
+        ground, = result.grounds
+        connector = result.connectors[0][1]
+        self.assertEqual(result.ground_rotations, {ground: 1})
+        self.assertEqual(result.ground_names, {ground: '0'})
+        self.assertEqual(result.label_offsets[('ground', *ground)], (.5,.25))
+        self.assertEqual(result.label_offsets[('connector', *connector)], (-.5,.25))
+        self.assertEqual(result.label_offsets[('part', 'R2')], (.5,1))
+        self.assertEqual(result.label_offsets[('net', 'b')], (.25,.5))
+        self.assertEqual(result.junctions['b'], [connector])
+        self.assertTrue(preserves_nets(circuit, result))
+        self.assertTrue(clear_of_bodies([e for edges in result.wires.values() for e in edges], result))
+        for point in [p for _, p in result.pins()] + [p for edges in result.wires.values() for e in edges for p in e]:
+            self.assertTrue(all(abs(v/.25 - round(v/.25)) < 1e-6 for v in point))
+        self.assertEqual(drawing, snapshot)
+        restored = restore_layout(pack_layout(result), circuit, tuple(drawing.boundary))
+        self.assertEqual(pack_layout(restored), pack_layout(result))
+
+    def test_group_movement_only_happens_on_explicit_optimize_and_undo_restores_everything(self):
+        circuit, drawing = spaced_parts()
+        saved = pack_layout(drawing)
+        view = SchematicView()
+        self.addCleanup(view.deleteLater)
+        view.draw(circuit, layout=drawing)
+        self.assertEqual(pack_layout(view.layout), saved)
+        view.optimize_wiring()
+        self.assertLess(wire_length(view.layout), wire_length(drawing) / 2)
+        self.assertNotEqual(view.layout.positions['R2'], drawing.positions['R2'])
+        self.assertEqual(len(view.undo_history), 1)
+        self.assertTrue(preserves_nets(circuit, view.layout))
+        view.undo_placement()
+        self.assertEqual(pack_layout(view.layout), saved)
+
+    def test_compaction_does_not_merge_separate_same_net_ports_on_grid(self):
+        circuit, drawing = spaced_parts()
+        drawing.grounds += [(8,3), (8.25,3)]
+        drawing.ground_rotations.update({(8,3): 2, (8.25,3): 3})
+        drawing.connectors += [('b', (8,2), 'tap', False, False),
+                               ('b', (8.25,2), 'tap', False, False)]
+        drawing.wires['0'].append(((6,3),(10,3)))
+        drawing.wires['b'].append(((6,2),(10,2)))
+        drawing.label_offsets.update({('ground',8,3): (1,0), ('ground',8.25,3): (2,0),
+                                      ('connector',8,2): (3,0), ('connector',8.25,2): (4,0)})
+        self.assertTrue(preserves_nets(circuit, drawing))
+        result = compact_spacing(circuit, drawing)
+        self.assertEqual(len(set(result.grounds)), len(set(drawing.grounds)))
+        self.assertEqual(len({p for _, p, *_ in result.connectors}), len(drawing.connectors))
+        self.assertEqual(sorted(result.ground_rotations.values()), [1,2,3])
+        self.assertEqual(sorted(result.label_offsets.values()), sorted(drawing.label_offsets.values()))
+        self.assertTrue(preserves_nets(circuit, result))
+
+    def test_disconnected_groups_can_compact_without_reducing_wire_length(self):
+        circuit = compile_circuit('R1(1k) between(a,b);\nR2(2k) between(c,d);', render_only=True)
+        drawing = Layout(symbols=[(circuit.components[0], (0,0), (4,0), '+'),
+                                  (circuit.components[1], (20,0), (24,0), '+')], pin_grid=.25)
+        result = compact_spacing(circuit, drawing)
+        self.assertLess(result.symbols[1][1][0], 10)
+        self.assertEqual(wire_length(result), wire_length(drawing))
+        self.assertTrue(preserves_nets(circuit, result))
 
     def test_already_simple_layout_reports_no_change_without_an_undo_entry(self):
         circuit = compile_circuit('R1(1k) between(a,b);', render_only=True)

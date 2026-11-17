@@ -11,8 +11,10 @@
     { "include": "#properties" },
     { "include": "#components" },
     { "include": "#calls" },
+    { "include": "#selectors" },
     { "include": "#numbers" },
     { "include": "#operators" },
+    { "include": "#identifiers" },
     { "include": "#punctuation" }
   ],
   "repository": {
@@ -58,6 +60,13 @@
     "declarations": {
       "patterns": [
         {
+          "match": "\\b(const)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+          "captures": {
+            "1": { "name": "storage.modifier.ooc" },
+            "2": { "name": "constant.other.ooc" }
+          }
+        },
+        {
           "match": "(?i)^\\s*(@Override)\\b",
           "captures": {
             "1": { "name": "storage.type.annotation.ooc" }
@@ -102,7 +111,7 @@
       "patterns": [
         { "name": "storage.type.ooc", "match": "\\bconst\\b" },
         {
-          "begin": "(?i)\\b(?:(else)\\s+)?(if|for|while|clock|every)\\s*(\\()(?=[^#\\r\\n]*\\)\\s*[;{])",
+          "begin": "(?i)\\b(?:(else)\\s+)?(if|for|while|clock|every|switch)\\s*(\\()(?=[^#\\r\\n]*\\)\\s*[;{])",
           "end": "(\\))|(?=#)|$",
           "beginCaptures": {
             "1": { "name": "keyword.control.ooc" },
@@ -122,7 +131,19 @@
           "match": "(?i)\\b(?:else|do)(?=\\s*\\{)"
         },
         {
-          "match": "(?i)(?:^|(?<=[;{}]))\\s*(break|continue)(?=\\s*[;}])",
+          "match": "(?i)(?:^|(?<=[;{}:]))\\s*(break|continue)(?=\\s*[;}])",
+          "captures": {
+            "1": { "name": "keyword.control.ooc" }
+          }
+        },
+        {
+          "match": "(?i)(?:^|(?<=[;{}:]))\\s*(case)(?=\\s+[^;#{}\\r\\n]+:)",
+          "captures": {
+            "1": { "name": "keyword.control.ooc" }
+          }
+        },
+        {
+          "match": "(?i)(?:^|(?<=[;{}:]))\\s*(default)(?=\\s*:)",
           "captures": {
             "1": { "name": "keyword.control.ooc" }
           }
@@ -167,23 +188,34 @@
           "name": "constant.language.boolean.ooc",
           "match": "(?i)\\b(?:true|false)\\b"
         },
+        { "include": "#selectors" },
         { "include": "#numbers" },
+        { "include": "#identifiers" },
         {
           "name": "keyword.operator.ooc",
-          "match": "\\+\\+|--|&&|\\|\\||==|!=|<=|>=|[+*/%\\-]=|[+*/%=!&|^<>-]"
+          "match": "\\+\\+|--|&&|\\|\\||==|!=|<=|>=|[+*/%\\-]=|[+*/%=!?&|^<>-]"
         },
         {
           "name": "punctuation.separator.ooc",
-          "match": "[;,\\[\\]]"
+          "match": "[;,:\\[\\]]"
         }
       ]
     },
     "properties": {
       "patterns": [
         {
-          "match": "(?i)(?:^|(?<=[;{]))\\s*(?:[A-Za-z_][A-Za-z0-9_]*(?:\\$\\{[^}#\\r\\n]+\\}[A-Za-z0-9_]*)*(?:\\s*\\[\\s*[0-9_]+\\s*\\])?\\s*,\\s*)*[A-Za-z_][A-Za-z0-9_]*(?:\\$\\{[^}#\\r\\n]+\\}[A-Za-z0-9_]*)*(?:\\s*\\[\\s*[0-9_]+\\s*\\])?\\s*=\\s*(input|output|wire)(?=\\s*(?:[;}#]|$))",
+          "match": "(?i)(?:^|(?<=[;{]))\\s*((?:[A-Za-z_][A-Za-z0-9_]*(?:\\$\\{[^}#\\r\\n]+\\}[A-Za-z0-9_]*)*(?:\\s*\\[\\s*[0-9_]+\\s*\\])?\\s*,\\s*)*[A-Za-z_][A-Za-z0-9_]*(?:\\$\\{[^}#\\r\\n]+\\}[A-Za-z0-9_]*)*(?:\\s*\\[\\s*[0-9_]+\\s*\\])?)\\s*(=)\\s*(input|output|wire)(?=\\s*(?:[;}#]|$))",
           "captures": {
-            "1": { "name": "storage.modifier.pin-direction.ooc" }
+            "1": {
+              "patterns": [
+                { "include": "#interpolation" },
+                { "include": "#selectors" },
+                { "include": "#identifiers" },
+                { "include": "#punctuation" }
+              ]
+            },
+            "2": { "name": "keyword.operator.assignment.ooc" },
+            "3": { "name": "storage.modifier.pin-direction.ooc" }
           }
         },
         {
@@ -212,7 +244,7 @@
       "patterns": [
         {
           "name": "entity.name.function.component.ooc",
-          "match": "(?i)\\b[RCLZVI][A-Za-z0-9_]*(?=(?:\\$\\{[^}\\r\\n]*\\}[A-Za-z0-9_]*)*(?:\\s*\\([^;#\\r\\n]*\\)\\s+|\\s+)between\\s*\\()"
+          "match": "(?i)\\b[RCLZVIP][A-Za-z0-9_]*(?=(?:\\$\\{[^}\\r\\n]*\\}[A-Za-z0-9_]*)*(?:\\s*\\([^;#\\r\\n]*\\)\\s+|\\s+)between\\s*\\()"
         },
         {
           "match": "(?:^|(?<=[;{]))\\s*([RCLXZVI][A-Za-z0-9_]+)(?=\\s*=\\s*[+\\-−.0-9]|\\s+[A-Za-z0-9_.-]+\\s+[A-Za-z0-9_.-]+\\s+[+\\-−.0-9])",
@@ -245,6 +277,25 @@
           "match": "\\b[A-Za-z_][A-Za-z0-9_]*(?=\\s*\\()"
         }
       ]
+    },
+    "selectors": {
+      "name": "meta.brackets.ooc",
+      "begin": "\\[",
+      "end": "\\]|(?=#)|$",
+      "beginCaptures": {
+        "0": { "name": "punctuation.section.brackets.begin.ooc" }
+      },
+      "endCaptures": {
+        "0": { "name": "punctuation.section.brackets.end.ooc" }
+      },
+      "patterns": [
+        { "include": "#interpolation" },
+        { "include": "#expression" }
+      ]
+    },
+    "identifiers": {
+      "name": "variable.other.readwrite.ooc",
+      "match": "\\b[A-Za-z_][A-Za-z0-9_]*\\b"
     },
     "numbers": {
       "match": "(?<![A-Za-z0-9_.])([+−-]?(?:[0-9]+(?:_[0-9]+)*(?:\\.[0-9]*(?:_[0-9]+)*)?|\\.[0-9]+(?:_[0-9]+)*)(?:[eE][+-]?[0-9]+)?[ij]?)(?:[ \\t]*([pnuµμmkMG]?(?:V(?:rms|pk|pp)?|A(?:rms|pk|pp)?|ohms?|Ω|F|H|Hz|s|W|J|C|VA|var|Nm|rad/s|deg|°)|[pnuµμmkMG]|%))?(?=cos\\s*\\(|[^A-Za-z0-9_.]|$)",

@@ -7,7 +7,7 @@ import unittest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QPoint, Qt
+from PySide6.QtCore import QPoint, QPointF, Qt
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
@@ -180,6 +180,112 @@ class LogicSceneTest(unittest.TestCase):
         self.assertEqual(self.view.edge_items, {})
         self.assertIsNone(self.view.chip_item)
         self.assertEqual(self.view.scene().items(), [])
+
+    def drag(self, point, delta):
+        start = self.view.mapFromScene(point)
+        end = self.view.mapFromScene(point + delta)
+        QTest.mousePress(self.view.viewport(), Qt.MouseButton.LeftButton, pos=start)
+        QTest.mouseMove(self.view.viewport(), end)
+        return end
+
+    def release(self, point):
+        QTest.mouseRelease(self.view.viewport(), Qt.MouseButton.LeftButton, pos=point)
+        self.app.processEvents()
+
+    def test_drag_moves_input_and_wire_live_without_toggling_or_refitting(self):
+        self.configure(COUNTER)
+        self.view.toggle_hood()
+        for _ in range(3):
+            self.sim.step()
+        self.view.set_values(self.sim.values)
+        changes = []
+        self.view.placement_changed.connect(lambda: changes.append(1))
+        item = self.view.input_items['a']
+        before, transform = item.pos(), self.view.transform()
+        endpoint = self.view.geometry.routes['a', 'count'][0]
+        end = self.drag(item.sceneBoundingRect().center(), QPointF(53, 27))
+        self.assertEqual(item.pos() - before, QPointF(50, 30))
+        moved = self.view.geometry.routes['a', 'count'][0]
+        self.assertEqual((moved[0] - endpoint[0], moved[1] - endpoint[1]), (50, 30))
+        self.assertEqual(changes, [])
+        self.release(end)
+        self.assertEqual(changes, [1])
+        self.assertEqual(self.toggles, [])
+        self.assertEqual(self.sim.cycles, 3)
+        self.assertEqual(self.view.transform(), transform)
+        QTest.keyClick(self.view, Qt.Key.Key_Z, Qt.KeyboardModifier.ControlModifier)
+        self.assertEqual(item.pos(), before)
+        self.assertEqual(changes, [1, 1])
+
+    def test_drag_collapsed_chip_keeps_all_port_connections(self):
+        self.configure()
+        before = self.view.chip_item.pos()
+        original = dict(self.view.geometry.routes)
+        end = self.drag(self.view.chip_item.sceneBoundingRect().center(), QPointF(40, 30))
+        self.release(end)
+        self.assertFalse(self.view.expanded)
+        self.assertEqual(self.view.chip_item.pos() - before, QPointF(40, 30))
+        for edge, points in self.view.geometry.routes.items():
+            index = 0 if edge[0] == '__chip__' else -1
+            self.assertEqual(points[index], (original[edge][index][0] + 40, original[edge][index][1] + 30))
+            self.assertEqual(points[-1 if index == 0 else 0], original[edge][-1 if index == 0 else 0])
+
+    def test_wire_drag_changes_route_preserving_endpoints_and_undo(self):
+        self.configure()
+        self.view.toggle_hood()
+        edge = ('a', 'y')
+        before = self.view.geometry.snapshot()
+        points = self.view.geometry.routes[edge]
+        a, b = points[0:2]
+        midpoint = QPointF((a[0] + b[0]) / 2, (a[1] + b[1]) / 2)
+        end = self.drag(midpoint, QPointF(0, 40))
+        self.assertNotEqual(self.view.geometry.routes[edge], points)
+        self.release(end)
+        moved = self.view.geometry.routes[edge]
+        self.assertEqual((moved[0], moved[-1]), (points[0], points[-1]))
+        self.assertEqual(self.probes, [])
+        self.assertTrue(self.view.undo_placement())
+        self.assertEqual(self.view.geometry.snapshot(), before)
+
+    def test_cancel_and_return_to_origin_do_not_dirty_or_toggle(self):
+        self.configure()
+        item = self.view.input_items['a']
+        point = item.sceneBoundingRect().center()
+        before = self.view.geometry.snapshot()
+        changes = []
+        self.view.placement_changed.connect(lambda: changes.append(1))
+        end = self.drag(point, QPointF(30, 30))
+        QTest.keyClick(self.view, Qt.Key.Key_Escape)
+        self.release(end)
+        self.assertEqual(self.view.geometry.snapshot(), before)
+        end = self.drag(point, QPointF(30, 30))
+        origin = self.view.mapFromScene(point)
+        QTest.mouseMove(self.view.viewport(), origin)
+        self.release(origin)
+        self.assertEqual(self.view.geometry.snapshot(), before)
+        self.assertEqual(changes, [])
+        self.assertEqual(self.toggles, [])
+
+    def test_placements_survive_hood_changes_and_explicit_round_trip_only(self):
+        self.configure()
+        end = self.drag(self.view.input_items['a'].sceneBoundingRect().center(), QPointF(40, 20))
+        self.release(end)
+        ports = self.view.geometry.snapshot()
+        self.view.toggle_hood()
+        end = self.drag(self.view.output_items['y'].sceneBoundingRect().center(), QPointF(30, 30))
+        self.release(end)
+        internals = self.view.geometry.snapshot()
+        record = self.view.placement()
+        self.view.toggle_hood()
+        self.assertEqual(self.view.geometry.snapshot(), ports)
+        self.view.toggle_hood()
+        self.assertEqual(self.view.geometry.snapshot(), internals)
+        self.configure()
+        self.assertNotEqual(self.view.geometry.snapshot(), ports)
+        self.view.restore_placement(record)
+        self.assertEqual(self.view.geometry.snapshot(), ports)
+        self.view.toggle_hood()
+        self.assertEqual(self.view.geometry.snapshot(), internals)
 
 
 if __name__ == '__main__':

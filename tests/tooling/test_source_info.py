@@ -35,7 +35,7 @@ class SourceInfoTest(unittest.TestCase):
             with self.subTest(source=source):
                 match = direction.match(source)
                 self.assertIsNotNone(match)
-                self.assertEqual(match[1], expected)
+                self.assertEqual(match[3], expected)
 
     def test_shared_grammar_recognizes_chip_calls_and_expression_tokens(self):
         path = Path(__file__).resolve().parents[2] / 'ide/vscode/syntaxes/OOC.json'
@@ -72,6 +72,22 @@ class SourceInfoTest(unittest.TestCase):
             self.assertEqual(info.wire_at(0, source.index('input')), (1, f'{kind}load', 0, 'input'))
             self.assertEqual(info.wire_at(0, source.index('output')), (1, f'{kind}load', 1, 'output'))
         self.assertIn('unspecified', SourceInfo('Zload between(a,b);').hover_help(0, 1))
+
+    def test_potentiometer_hover_preserves_pin_order_and_other_p_names(self):
+        for clause in ('(10k,25%)', '(200)', ''):
+            source = f'P1{clause} between(high, wiper, low);'
+            info = SourceInfo(source)
+            help_text = info.hover_help(0, 1)
+            self.assertIn('between(high, wiper, low)', help_text)
+            self.assertIn('50% midpoint', help_text)
+            self.assertIn('2.5k ohms from wiper to low', help_text)
+            for index, pin in enumerate(('high', 'wiper', 'low')):
+                self.assertEqual(info.wire_at(0, source.index(pin)), (1, 'P1', index, pin))
+            self.assertIsNone(info.wire_at(0, 1))
+        for source in ('P = 3W;', 'P0 = input;', 'P1 = P0;', '# P1(10k,25%) between(a,b,c);'):
+            self.assertEqual(SourceInfo(source).hover_help(0, source.index('P')), '')
+        declared = SourceInfo('circuit Pot(a,b) { }\nPot(a,b);')
+        self.assertIn('Call this circuit', declared.hover_help(1, 1))
 
     def test_clock_and_timer_headers_are_not_electrical_wire_connections(self):
         for source, token, help_text in (

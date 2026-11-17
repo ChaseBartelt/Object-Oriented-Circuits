@@ -16,6 +16,7 @@ from circuitlab.layout.persistence import pack_layout, restore_layout
 from circuitlab.math.report import component_labels
 from circuitlab.layout.routing import connected_layout, fast_layout, schematic_layout
 from circuitlab.layout.editing import ground_attachment, move_ground
+from circuitlab.layout.grid import align_layout
 from circuitlab.layout.wire_edit import clean_point
 from circuitlab.layout.wiring import labeled, signal_flow
 
@@ -487,6 +488,13 @@ class SchematicWiring(unittest.TestCase):
         drawing = schematic_layout(circuit, component_labels(circuit), "auto")
         self.assertFalse(drawing.connectors)
         self.assertTrue(preserves_nets(circuit, drawing))
+        aligned = align_layout(circuit, drawing)
+        self.assertIsNotNone(aligned)
+        points = [p for _, p in aligned.pins()]
+        points += [p for edges in aligned.wires.values() for edge in edges for p in edge]
+        self.assertTrue(all(abs(value * 4 - round(value * 4)) < 1e-7
+                            for point in points for value in point))
+        self.assertLessEqual(max(p[0] for p in points) - min(p[0] for p in points), 21)
         self.assertTrue(
             all(a[0] == b[0] for part, a, b, _ in drawing.symbols if part.is_source)
         )

@@ -59,7 +59,10 @@ class FastPlan:
             op = node[0]
             if op == "literal":
                 return _Expr(op, (node[1],), node[2])
-            if op in {"name", "bit"}:
+            if op == "concat":
+                pieces = tuple(bind(part, names, depth + 1) for part in node[1])
+                return _Expr(op, pieces, sum(piece.width for piece in pieces))
+            if op in {"name", "bit", "slice"}:
                 name = names[node[1]]
                 if name not in cache:
                     if name in drivers:
@@ -70,6 +73,8 @@ class FastPlan:
                     else:
                         cache[name] = _Expr("signal", (slots[name],), widths[name])
                 expr = cache[name]
+                if op == "slice":
+                    return _Expr("slice", (expr, node[3]), node[2] - node[3] + 1)
                 return _Expr("bit", (expr, node[2]), 1) if op == "bit" else expr
             left = bind(node[1], names, depth + 1)
             if op == "!":
@@ -84,6 +89,8 @@ class FastPlan:
             result = []
             for row in rows:
                 if row[0] == "write":
+                    if len(row) != 3:
+                        raise PlanLimit  # Partial NBA writes retain exact source ordering in the interpreter.
                     name = names[row[1]]
                     result.append(("write", slots[name], bind(row[2], names), widths[name]))
                 else:
@@ -107,6 +114,13 @@ class FastPlan:
             mask = (1 << width) - 1
             if op == "literal":
                 result = args[0], 0, horizon
+            elif op == "concat":
+                value, bound = 0, horizon
+                for piece in args:
+                    current, slope, span = evaluate(piece, deltas, horizon, high, memo)
+                    value = (value << piece.width) | current
+                    bound = min(bound, 1 if slope else span)
+                result = value, 0, bound
             elif op == "signal":
                 slot = args[0]
                 value = int(high) if slot in self.clock_slots else values[slot]
@@ -123,9 +137,9 @@ class FastPlan:
                     value, branch_slope, branch_bound = evaluate(
                         args[1] if left else args[2], deltas, horizon, high, memo)
                     result = value & mask, branch_slope, min(bound, branch_bound)
-                elif op == "bit":
+                elif op in {"bit", "slice"}:
                     block = 1 << args[1]
-                    value = (left // block) & 1
+                    value = (left // block) & mask
                     if slope > 0:
                         bound = min(bound, (block - 1 - left % block) // slope + 1)
                     elif slope < 0:

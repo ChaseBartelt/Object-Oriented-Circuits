@@ -6,7 +6,7 @@ from PySide6.QtCore import QSettings, QSignalBlocker, Qt, QUrl
 from PySide6.QtGui import QColor, QDesktopServices, QKeySequence
 from PySide6.QtWidgets import (
     QComboBox, QDialog, QFileDialog, QHBoxLayout, QInputDialog, QLabel,
-    QListWidget, QListWidgetItem, QMainWindow, QMessageBox, QTabWidget,
+    QListWidget, QListWidgetItem, QMainWindow, QMessageBox, QSplitter, QTabWidget,
     QVBoxLayout, QWidget,
 )
 
@@ -15,7 +15,7 @@ from circuitlab.language.linked import CHIP_LIBRARY
 from circuitlab.language.syntax import has_chip
 from circuitlab.layout.devices import DeviceLayouts
 from circuitlab.layout.persistence import (
-    read_pin_overrides, read_placement, embed_placement,
+    read_pin_overrides, read_placement, read_logic_placement, embed_placement,
 )
 from circuitlab.math.report import pin_rows, result_rows
 from circuitlab.model.graph import CircuitError
@@ -65,11 +65,11 @@ class ViewerWindow(QMainWindow):
         panel.addWidget(self.views, 1)
         self.views.addTab(self._create_schematic_page(), "Schematic")
         self.results = Results()
-        self.scope = Oscilloscope()
-        self.results.layout().insertWidget(0, self.scope)
         self.views.addTab(self.results, "Results")
         self.digital = DigitalSimulator()
         self.digital.values_changed.connect(self.update_logic_colors)
+        self.schematic.logic_input_requested.connect(self.digital.toggle_input)
+        self.digital.port_view.placement_changed.connect(self.placement_changed)
         self.digital_tab = self.views.addTab(self.digital, "Logic simulation")
         self.views.setTabVisible(self.digital_tab, False)
         self.issues = QListWidget()
@@ -154,7 +154,15 @@ class ViewerWindow(QMainWindow):
         controls.addStretch()
         canvas.addLayout(controls)
         self.source_tools = SourceTools(self, canvas)
-        canvas.addWidget(self.schematic)
+        self.scope = Oscilloscope(compact=True)
+        self.schematic_splitter = QSplitter(Qt.Orientation.Horizontal)
+        self.schematic_splitter.setChildrenCollapsible(False)
+        self.schematic_splitter.addWidget(self.schematic)
+        self.schematic_splitter.addWidget(self.scope)
+        self.schematic_splitter.setStretchFactor(0, 3)
+        self.schematic_splitter.setStretchFactor(1, 1)
+        self.schematic_splitter.setSizes([750, 330])
+        canvas.addWidget(self.schematic_splitter, 1)
         return page
 
     def _create_menus(self):
@@ -169,6 +177,10 @@ class ViewerWindow(QMainWindow):
         files.addSeparator()
         files.addAction("&Quit", self.close, QKeySequence.StandardKey.Quit)
         view = self.menuBar().addMenu("&View")
+        self.scope_action = view.addAction("Oscilloscope")
+        self.scope_action.setCheckable(True)
+        self.scope_action.setChecked(True)
+        self.scope_action.toggled.connect(self.scope.set_panel_visible)
         view.addAction("Chip Library…", self.show_chip_library)
         view.addAction("Gate Layouts…", lambda: self.edit_gate_layouts())
         view.addAction("Chip & Circuit Layouts…", lambda: self.edit_device_layouts())
@@ -184,7 +196,8 @@ class ViewerWindow(QMainWindow):
             return False
         if not self.confirm_edits():
             return False
-        if not self.open_path(filename, show_errors=activate):
+        preserve_scope = not activate and Path(filename).resolve() == self.path
+        if not self.open_path(filename, show_errors=activate, preserve_scope=preserve_scope):
             return False
         if activate:
             if self.isMinimized():
@@ -197,7 +210,7 @@ class ViewerWindow(QMainWindow):
     def refresh_from_editor(self, filename):
         return self.open_from_editor(filename, activate=False)
 
-    def open_path(self, filename, *, show_errors=True):
+    def open_path(self, filename, *, show_errors=True, preserve_scope=False):
         """Load an accepted file; callers confirm dirty layout before calling."""
         try:
             self.session.load(filename)
@@ -209,8 +222,11 @@ class ViewerWindow(QMainWindow):
         self.session.pin_overrides = read_pin_overrides(self.path)
         mode, records = read_placement(self.path)
         self.load_placement(mode, records)
+        logic = read_logic_placement(self.path)
+        self.schematic.load_logic_placements(logic.get('schematic', {}))
+        self.digital.load_logic_placements(logic.get('simulation', {}))
         self.update_title()
-        self.compile_source()
+        self.compile_source(preserve_scope=preserve_scope)
         return True
 
     def pick_file(self):
@@ -243,17 +259,20 @@ class ViewerWindow(QMainWindow):
         dialog.exec()
         dialog.deleteLater()
 
-    def compile_source(self):
+    def compile_source(self, *, preserve_scope=False):
         show_logic = self.views.currentWidget() is self.digital
         if getattr(self, "fpga_window", None):
             self.fpga_window.refresh_source()
-        self.scope.set_circuit(None)
+        if not preserve_scope:
+            self.scope.set_circuit(None)
         self.schematic.clear(preserve_placement=True)
         self.session.compile(self.mode.currentData())
         self.update_results()
         if self.session.drawing is not None:
             self.schematic.draw(self.session.drawing, self.pins)
-            self.scope.set_circuit(self.session.drawing)
+            self.scope.set_circuit(self.session.drawing, preserve_state=preserve_scope)
+        elif preserve_scope:
+            self.scope.set_circuit(None)
         self.update_digital()
         self.pin_button.setChecked(False)
         self.schematic.set_pin_tool(False)
@@ -308,6 +327,7 @@ class ViewerWindow(QMainWindow):
         # Samples are taken between complete cycles. Leave clock wires neutral
         # instead of presenting their sampled low phase as a constant logic 0.
         sim = self.digital.simulation
+        self.schematic.set_logic_simulation(sim, values)
         clocks = sim.clocks if sim else ()
         self.schematic.set_logic_values({name: value for name, value in values.items()
                                          if name not in clocks and (sim is None or sim.signals.get(name) == 1)})
@@ -429,6 +449,10 @@ class ViewerWindow(QMainWindow):
         self.placement_dirty = True
         self.update_title()
 
+    def logic_placements(self):
+        return {'schematic': self.schematic.logic_placements(),
+                'simulation': self.digital.logic_placements()}
+
     def update_title(self):
         name = self.path.name if self.path else "OOC Viewer"
         self.setWindowTitle(f"{name}[*] — Electric Circuits")
@@ -445,7 +469,8 @@ class ViewerWindow(QMainWindow):
         try:
             before = self.path.read_bytes().decode('utf-8-sig')
             after = embed_placement(before, self.schematic.layout_mode,
-                                    self.schematic.placements(), pin_overrides=self.session.pin_overrides)
+                                    self.schematic.placements(), pin_overrides=self.session.pin_overrides,
+                                    logic_layouts=self.logic_placements())
             plan = SourceEdit(self.path, before, after, 'Save schematic layout')
             if not self.source_tools.write_and_wait(plan):
                 return False

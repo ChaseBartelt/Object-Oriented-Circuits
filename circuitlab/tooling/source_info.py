@@ -181,6 +181,15 @@ class SourceInfo:
                         "Omit the value parentheses for an unspecified schematic block; fill in a value before numerical analysis. "
                         "Use physical R/L/C parts for DC, transient simulation, or SPICE export."
                     )
+                if name.upper().startswith("P") and re.match(r"\s*(?:\([^()]*\)\s*)?between\s*\(", code[match.end():], re.I):
+                    return (
+                        f"{name}(resistance, position) between(high, wiper, low)\n"
+                        "Three-terminal linear potentiometer. Resistance is the total resistance in ohms. "
+                        "Position is measured from low: 0% connects the wiper to low, and 100% to high. "
+                        "For example, 10k,25% gives 2.5k ohms from wiper to low and 7.5k ohms from high to wiper. "
+                        "Omit position for the 50% midpoint. Omit the value parentheses for an unspecified schematic part. "
+                        "Right-click the rendered part and choose Edit value to change resistance and position together."
+                    )
                 if TRANS_CALL.fullmatch(name) and re.match(r"\s*\(", code[match.end():]):
                     return (
                         f"{name}(base, collector, emitter, npn or pnp, [model])\n"

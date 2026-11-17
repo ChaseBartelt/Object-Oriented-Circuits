@@ -158,7 +158,7 @@ def diagnostics(source, result):
         if node == "0" or node in inputs:
             continue
         incident = [
-            p for p in parts if node in (p.p, p.n) or (p.kind == "Q" and node == p.base)
+            p for p in parts if node in p.terminal_nets
         ]
         neighbors = {pin for p in incident for pin in (p.p, p.n)} - {node}
         if (
@@ -374,13 +374,14 @@ def add_probes(result, network, ac, backend):
             if kind == "I":
                 reading = (
                     f"Measured current through {target}",
-                    "I = I_branch",
+                    "I = I_high (into high terminal)" if c.components[i].kind == "P" else "I = I_branch",
                     network.branch_current[i],
                     "A",
                     ac,
                 )
             else:
-                equation = "P = Re(V x conj(I))" if ac else "P = V x I"
+                equation = ("P = P_high_leg + P_low_leg" if c.components[i].kind == "P" else
+                            "P = Re(V x conj(I))" if ac else "P = V x I")
                 reading = (
                     f"Measured power of {target}",
                     equation,

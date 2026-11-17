@@ -201,7 +201,7 @@ def signal_flow(circuit):
             place(stage.amp.p, depth + 1)
         if leaf_rows == start:
             leaf_rows += 1
-        coordinates[node] = (depth, -(start + leaf_rows - 1) * 4.1)
+        coordinates[node] = (depth, -(start + leaf_rows - 1) * 3.4)
 
     # A cycle cannot be reachable from this root because every amp has one feed.
     place(source.p, 0)
@@ -209,13 +209,13 @@ def signal_flow(circuit):
         return None
 
     layout = Layout()
-    shunt_spacing = 4.3
-    stage_pitch = 15 + shunt_spacing * (
+    shunt_spacing = 3.5
+    stage_pitch = 11.25 + shunt_spacing * (
         max(len(stage.shunts) for group in children.values() for stage in group) - 1
     )
 
     def feed_x(depth):
-        return 3 + (depth - 1) * stage_pitch
+        return 1.75 + (depth - 1) * stage_pitch
 
     def symbol(part, positive, a, b, top="+"):
         if part.p != positive:
@@ -224,8 +224,8 @@ def signal_flow(circuit):
         layout.positions[part.name] = a
 
     def shunt(part, node, x, y, return_net):
-        symbol(part, node, (x, y), (x, y - 3.2))
-        ground_at(layout, (x, y - 3.2), return_net)
+        symbol(part, node, (x, y), (x, y - 2.75))
+        ground_at(layout, (x, y - 2.75), return_net)
 
     def caption(net, anchor):
         if "." not in net and not net.startswith("@"):
@@ -233,7 +233,7 @@ def signal_flow(circuit):
 
     source_y = coordinates[source.p][1]
     if len(children[source.p]) > 1:
-        source_y = max(coordinates[stage.amp.p][1] for stage in children[source.p]) + 3.2
+        source_y = max(coordinates[stage.amp.p][1] for stage in children[source.p]) + 2.75
     shunt(source, source.p, 0, source_y, ground)
     caption(source.p, (0, source_y))
     outputs = {source.p: (0, source_y)}
@@ -243,9 +243,9 @@ def signal_flow(circuit):
             depth, y = coordinates[amp.p]
             x = feed_x(depth)
             tap = amp.in_plus
-            first = x + 4
+            first = x + 3.5
             symbol(stage.feed, stage.input, (x, y), (first, y))
-            ground_y = y - 3.2
+            ground_y = y - 2.75
             positions = [first + i * shunt_spacing for i in range(len(stage.shunts))]
             for (_, part), xx in zip(stage.shunts, positions):
                 symbol(part, tap, (xx, y), (xx, ground_y))
@@ -266,21 +266,21 @@ def signal_flow(circuit):
                 layout,
                 tap,
                 (last, y),
-                (last + 1, y),
-                (last + 1, y - 0.35),
-                (last + 2, y - 0.35),
+                (last + 0.5, y),
+                (last + 0.5, y - 0.35),
+                (last + 1.25, y - 0.35),
             )
-            symbol(amp, amp.p, (last + 2, y), (last + 6.3, y), "-")
-            output = (last + 7.2, y)
+            symbol(amp, amp.p, (last + 1.25, y), (last + 5.55, y), "-")
+            output = (last + 6.2, y)
             add_wire(
                 layout,
                 amp.p,
-                (last + 6.3, y),
+                (last + 5.55, y),
                 output,
-                (output[0], y + 2.6),
-                (last + 1.5, y + 2.6),
-                (last + 1.5, y + 0.35),
-                (last + 2, y + 0.35),
+                (output[0], y + 1.8),
+                (last + 0.75, y + 1.8),
+                (last + 0.75, y + 0.35),
+                (last + 1.25, y + 0.35),
             )
             layout.junctions.setdefault(amp.p, []).append(output)
             outputs[amp.p] = output
@@ -310,14 +310,14 @@ def signal_flow(circuit):
         elif node in loads:
             feed, load, output, return_net = loads[node]
             if feed:
-                add_wire(layout, node, (x, y), (x + 3.4, y))
-                caption(node, (x + 1.1, y))
-                symbol(feed, node, (x + 3.4, y), (x + 7.4, y))
-                x += 7.4
+                add_wire(layout, node, (x, y), (x + 1.25, y))
+                caption(node, (x + 0.45, y))
+                symbol(feed, node, (x + 1.25, y), (x + 4.75, y))
+                x += 4.75
             shunt(load, output, x, y, return_net)
-            add_wire(layout, output, (x, y), (x + 2, y))
+            add_wire(layout, output, (x, y), (x + 1, y))
             layout.junctions.setdefault(output, []).append((x, y))
-            caption(output, (x + 2, y))
+            caption(output, (x + 1, y))
         else:
             add_wire(layout, node, (x, y), (x + 1.5, y))
             caption(node, (x + 1.5, y))

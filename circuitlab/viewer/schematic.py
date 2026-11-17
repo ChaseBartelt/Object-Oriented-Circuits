@@ -2,6 +2,7 @@
 
 import math
 import re
+from hashlib import sha256
 from collections import Counter, defaultdict, deque
 from dataclasses import dataclass, replace
 
@@ -11,16 +12,25 @@ from PySide6.QtWidgets import (
     QGraphicsScene,
     QGraphicsSimpleTextItem,
     QGraphicsView,
+    QFrame,
+    QHBoxLayout,
+    QLabel,
     QMenu,
     QRubberBand,
+    QSlider,
+    QToolButton,
+    QVBoxLayout,
 )
 
 from circuitlab.layout.hierarchy import METHOD_PREFIX, hood_levels
-from circuitlab.layout.geometry import BJT_PIN_OFFSET, package_pins, pin_offset, rotate_point
+from circuitlab.layout.geometry import BJT_PIN_OFFSET, POT_PIN_OFFSET, package_pins, pin_offset, rotate_point
 from circuitlab.layout.grid import align_layout
 from circuitlab.layout.shorten import optimize_layout, wire_length
 from circuitlab.layout.persistence import pack_layout, restore_layout
 from circuitlab.math.report import component_labels
+from circuitlab.model.graph import CircuitError
+from circuitlab.viewer.behavior_diagram import BehaviorDiagram
+from circuitlab.viewer.behavior_scope import chip_diagram_model
 from circuitlab.layout.routing import fast_layout, schematic_layout
 from circuitlab.layout.editing import ground_attachment, ground_wire_alignments, move_boundary, move_connector, move_ground, move_symbol, move_symbols, selection_ends, move_wire, split_wire, symbol_terminal_offsets, symbol_wire_alignments
 from circuitlab.layout.wiring import labeled
@@ -82,6 +92,7 @@ class PlacementUndo:
     entries: list
     offsets: dict
     records: dict | None = None
+    behavior: dict | None = None
 
 
 class SchematicView(QGraphicsView):
@@ -93,12 +104,15 @@ class SchematicView(QGraphicsView):
     pin_removed = Signal(str)
     move_refused = Signal()
     value_requested = Signal(str)
+    potentiometer_requested = Signal(str)
+    position_changed = Signal(str, int, bool)
     history_cleared = Signal()
     optimization_finished = Signal(str)
     placement_changed = Signal()
     gate_layout_requested = Signal(str, int)
     device_layout_requested = Signal(str)
     package_edit_requested = Signal(int)
+    logic_input_requested = Signal(str)
 
     def __init__(self, gate_layouts=None):
         super().__init__()
@@ -117,6 +131,11 @@ class SchematicView(QGraphicsView):
         self.highlight = None
         self.trace_nets = set()
         self.logic_values = {}
+        self.logic_simulation = None
+        self.logic_sample = {}
+        self.behavior_models = {}
+        self.behavior_diagrams = {}
+        self.behavior_placements = {}
         self.paths = {}
         self.net_items = defaultdict(list)
         self.anchors = {}
@@ -125,6 +144,38 @@ class SchematicView(QGraphicsView):
         self.label_offsets = {}
         self.place_pin = False
         self.source_editing = False
+        self.position_name = None
+        self.position_panel = QFrame(self.viewport())
+        self.position_panel.setObjectName('potentiometerControl')
+        self.position_panel.setStyleSheet('QFrame#potentiometerControl { background: #333; border: 1px solid #888; border-radius: 5px; } QLabel { color: #f2f2f2; background: transparent; } QSlider { background: transparent; } QToolButton { color: #f2f2f2; background: #444; border: 0; }')
+        self.position_label = QLabel()
+        self.position_reading = QLabel('Drag to preview; release to update code.')
+        self.position_reading.setWordWrap(True)
+        self.position_slider = QSlider(Qt.Orientation.Horizontal)
+        self.position_slider.setRange(0, 100)
+        self.position_slider.setAccessibleName('Potentiometer position from low (%)')
+        close = QToolButton()
+        close.setText('×')
+        close.setToolTip('Close position control')
+        heading = QHBoxLayout()
+        heading.addWidget(self.position_label)
+        heading.addStretch()
+        heading.addWidget(close)
+        panel = QVBoxLayout(self.position_panel)
+        panel.setContentsMargins(8, 6, 8, 6)
+        panel.addLayout(heading)
+        panel.addWidget(self.position_slider)
+        panel.addWidget(self.position_reading)
+        self.position_panel.setFixedWidth(285)
+        self.position_panel.hide()
+        self.position_commit = QTimer(self)
+        self.position_commit.setSingleShot(True)
+        self.position_commit.setInterval(300)
+        self.position_commit.timeout.connect(self.finish_position)
+        self.position_slider.sliderPressed.connect(self.position_commit.stop)
+        self.position_slider.valueChanged.connect(self.preview_position)
+        self.position_slider.sliderReleased.connect(self.finish_position)
+        close.clicked.connect(self.close_position_control)
         self.circuit = None
         self.layout = None
         self.layout_mode = "auto"
@@ -201,8 +252,14 @@ class SchematicView(QGraphicsView):
         }}
 
     def clear(self, *, preserve_placement=False):
+        self.hide_position_control()
         self.placement_records = self.placements() if preserve_placement else {}
+        if not preserve_placement:
+            self.behavior_placements.clear()
         self.logic_values.clear()
+        self.logic_simulation = None
+        self.logic_sample.clear()
+        self.behavior_models.clear()
         self._clear_scene()
         self.circuit = None
         self.layout = None
@@ -227,7 +284,8 @@ class SchematicView(QGraphicsView):
             self.drag = None
         self.scene().clear()
         for items in (self.selection_items, self.paths, self.net_items, self.anchors,
-                      self.pin_items, self.captions, self.packages, self.levels, self.level_offsets):
+                      self.pin_items, self.captions, self.packages, self.levels, self.level_offsets,
+                      self.behavior_diagrams):
             items.clear()
         self.highlight = None
 
@@ -331,6 +389,63 @@ class SchematicView(QGraphicsView):
             self.highlight_net(selected)
         for net in self.trace_nets:
             self.paint_highlight(net, True)
+        self.anchor_position_control()
+
+    def show_position_control(self, name, position):
+        self.position_commit.stop()
+        self.position_name = name
+        self.position_slider.blockSignals(True)
+        self.position_slider.setValue(round(position * 100))
+        self.position_slider.blockSignals(False)
+        self.position_label.setText(f'{name} · {self.position_slider.value()}% from low')
+        self.position_reading.setText('Drag to preview; release to update code.')
+        self.position_panel.adjustSize()
+        self.position_panel.show()
+        self.position_panel.raise_()
+        self.anchor_position_control()
+
+    def anchor_position_control(self):
+        if not self.position_name or self.position_panel.isHidden():
+            return
+        item = next((item for item in self.scene().items()
+                     if item.data(0) == 'component' and item.data(1) == self.position_name), None)
+        if item is None:
+            self.hide_position_control()
+            return
+        anchor = self.mapFromScene(item.sceneBoundingRect().bottomRight()) + QPoint(12, 12)
+        self.position_panel.move(max(0, min(anchor.x(), self.viewport().width() - self.position_panel.width())),
+                                 max(0, min(anchor.y(), self.viewport().height() - self.position_panel.height())))
+
+    def preview_position(self, percent):
+        if self.position_name:
+            self.position_label.setText(f'{self.position_name} · {percent}% from low')
+            self.position_changed.emit(self.position_name, percent, False)
+            if not self.position_slider.isSliderDown():
+                self.position_commit.start()
+
+    def finish_position(self):
+        self.position_commit.stop()
+        if self.position_name:
+            self.position_changed.emit(self.position_name, self.position_slider.value(), True)
+
+    def hide_position_control(self):
+        self.position_commit.stop()
+        self.position_panel.hide()
+        self.position_name = None
+
+    def close_position_control(self):
+        self.finish_position()
+        self.hide_position_control()
+
+    def preview_potentiometers(self, circuit):
+        """Refresh value glyphs using the current geometry, including expanded packages."""
+        parts = {part.name: part for part in circuit.components}
+        self.circuit = circuit
+        for layouts in (self.level_layouts, self.manual_layouts):
+            for key, layout in layouts.items():
+                layouts[key] = replace(layout, symbols=[(parts.get(part.name, part), a, b, top)
+                                                       for part, a, b, top in layout.symbols])
+        self._redraw(self.mapToScene(self.viewport().rect().center()), selected=self.highlight)
 
     def mapped(self, position):
         if self.symbol_turn is not None:
@@ -392,7 +507,11 @@ class SchematicView(QGraphicsView):
                 prefix = "U" if part.kind == "O" else part.kind
                 name = [f"{prefix}#{counts[part.kind]}", *name[1:]]
             pos, alignment = self.symbol(part, a, b, top)
-            first, second = self.mapped(a), self.mapped(b)
+            if part.kind == "P":
+                height = pin_offset(POT_PIN_OFFSET, self.pin_grid)
+                first, second = self.mapped((a[0], a[1] - height)), self.mapped((b[0], b[1] + height))
+            else:
+                first, second = self.mapped(a), self.mapped(b)
             bounds = QRectF(first, second).normalized().adjusted(-8, -14, 8, 14)
             handle = scene.addRect(
                 bounds, QPen(Qt.PenStyle.NoPen), QBrush(QColor(0, 0, 0, 0))
@@ -402,10 +521,11 @@ class SchematicView(QGraphicsView):
             if turns:
                 start, end = (rotate_point(pin, a, b, turns) for pin in (a, b))
                 x, y = (start[0] + end[0]) / 2, (start[1] + end[1]) / 2
+                padding = pin_offset(POT_PIN_OFFSET, self.pin_grid) + 0.25
                 if start[0] == end[0]:
-                    pos, alignment = (x - 0.61, y), "right"
+                    pos, alignment = (x - (padding if part.kind == "P" else 0.61), y), "right"
                 else:
-                    pos, alignment = (x, y + 0.65), "center"
+                    pos, alignment = (x, y + (padding if part.kind == "P" else 0.65)), "center"
             self.symbol_turn = None
             component_captions.append((name, pos, ("component", part.name), alignment))
         for pos in layout.grounds:
@@ -557,7 +677,8 @@ class SchematicView(QGraphicsView):
             if part.name not in names:
                 continue
             turns = layout.rotations.get(part.name, 0)
-            height = max(0.8, (len(part.package_pins) + 1) // 2 / 2 + 0.4) if part.kind == "H" else 0.8
+            height = (max(0.8, (len(part.package_pins) + 1) // 2 / 2 + 0.4) if part.kind == "H"
+                      else pin_offset(POT_PIN_OFFSET, layout.pin_grid) if part.kind == "P" else 0.8)
             corners = ((min(a[0], b[0]), min(a[1], b[1]) - height),
                        (max(a[0], b[0]), max(a[1], b[1]) + height))
             first, second = (point(rotate_point(c, a, b, turns)) + offset for c in corners)
@@ -683,8 +804,9 @@ class SchematicView(QGraphicsView):
         header.setPos(left + 12, top + 8)
         header.setToolTip(f"Close {part.label}")
         if body:
-            text = self.label(list(body), (0, 0), INK, alignment="left below")
-            text.setPos(left + 12, top + 35)
+            contents = self._paint_behavior(name)
+            contents_top = max(top + 35, self.offset.y() + local.bottom() + SCALE * .8) if circuit.components else top + 35
+            contents.setPos(left + 12, contents_top)
         pin_names = defaultdict(list)
         for pin, net in part.package_pins:
             pin_names[net].append(pin)
@@ -697,10 +819,18 @@ class SchematicView(QGraphicsView):
             local.height() + margins * 2.5,
         )
         if body:
-            area.setWidth(max(area.width(), text.boundingRect().width() + 24))
-            area.setHeight(48 + text.boundingRect().height())
+            area.setWidth(max(area.width(), contents.boundingRect().width() + 24))
+            area.setHeight(max(area.height(), contents.pos().y() - top + contents.boundingRect().height() + 12))
         border = scene.addRect(area, self.pen(QColor("#97aebf")), QBrush(QColor(246, 249, 251, 90)))
         border.setZValue(-2)
+        if body and isinstance(contents, BehaviorDiagram):
+            def resize_details():
+                border.setRect(area.united(contents.sceneBoundingRect().adjusted(-12, -12, 12, 12)))
+                self.fitted = False
+                visible = self.mapToScene(self.viewport().rect()).boundingRect()
+                self.setSceneRect(self.sceneRect().united(border.rect()).united(visible))
+            contents.geometry_changed.connect(resize_details)
+            border.setRect(area.united(contents.sceneBoundingRect().adjusted(-12, -12, 12, 12)))
         leader = QPainterPath(QPointF(package.center().x(), package.bottom()))
         edge = package.right() + 8
         leader.lineTo(edge, package.bottom() + 9)
@@ -710,6 +840,68 @@ class SchematicView(QGraphicsView):
         pen.setStyle(Qt.PenStyle.DashLine)
         scene.addPath(leader, pen).setZValue(-1)
         self.offset = QPointF()
+
+    def _paint_behavior(self, name):
+        """Show compiled functional blocks, leaving source code in the IDE."""
+        if name not in self.behavior_models:
+            try:
+                index = int(name.removeprefix(METHOD_PREFIX))
+                self.behavior_models[name] = chip_diagram_model(self.circuit, index, self.logic_simulation)
+            except (CircuitError, ValueError) as error:
+                self.behavior_models[name] = str(error)
+        model = self.behavior_models[name]
+        if isinstance(model, str):
+            item = self.scene().addSimpleText('Functional diagram unavailable; inspect the simulator diagnostic.')
+            item.setToolTip(model)
+            return item
+        model, bindings = model
+        diagram = BehaviorDiagram(model)
+        if record := self.behavior_placements.get(self._behavior_key(name)):
+            diagram.restore_placement(record)
+        diagram.set_values({local: self.logic_sample[live] for local, live in bindings.items()
+                            if live in self.logic_sample})
+        diagram.signal_probed.connect(lambda local: self.probed.emit('node', bindings.get(local, local)))
+        diagram.input_toggled.connect(lambda local: self._toggle_logic_input(bindings.get(local, local)))
+        diagram.placement_changed.connect(lambda before, after: self._behavior_changed(name, before, after))
+        self.scene().addItem(diagram)
+        self.behavior_diagrams[name] = diagram
+        return diagram
+
+    def _behavior_key(self, name):
+        method = self.circuit.instances[int(name.removeprefix(METHOD_PREFIX))]
+        identity = sha256(repr((method.name, method.pins, method.signal_bindings)).encode()).hexdigest()[:16]
+        return f'{getattr(self.logic_simulation, "profile", "ooc")}:{method.name}:{identity}'
+
+    def logic_placements(self):
+        return dict(self.behavior_placements)
+
+    def load_logic_placements(self, records):
+        self.behavior_placements = {key: value for key, value in records.items()
+                                    if isinstance(key, str) and isinstance(value, dict)} if isinstance(records, dict) else {}
+
+    def _behavior_changed(self, name, before, after):
+        self.undo_history.append(PlacementUndo(self.layout_mode, [], dict(self.level_offsets),
+                                               behavior=dict(self.behavior_placements)))
+        self.behavior_placements[self._behavior_key(name)] = after
+        self.placement_changed.emit()
+
+    def _toggle_logic_input(self, name):
+        if self.logic_simulation is not None and name in self.logic_simulation.inputs:
+            self.logic_input_requested.emit(name)
+        else:
+            self.probed.emit('node', name)
+
+    def set_logic_simulation(self, simulation, values):
+        changed = simulation is not self.logic_simulation
+        self.logic_simulation = simulation
+        self.logic_sample = dict(values)
+        if changed:
+            self.behavior_models.clear()
+            if self.behavior_diagrams:
+                self._redraw(self.mapToScene(self.viewport().rect().center()))
+        for name, diagram in self.behavior_diagrams.items():
+            _, bindings = self.behavior_models[name]
+            diagram.set_values({local: values[live] for local, live in bindings.items() if live in values})
 
     def toggle_package(self, name):
         if self.detail_root is not None and name.startswith(METHOD_PREFIX):
@@ -821,6 +1013,8 @@ class SchematicView(QGraphicsView):
         if self.drag is not None:
             return
         self.layout_mode = entry.mode
+        if entry.behavior is not None:
+            self.behavior_placements = entry.behavior.copy()
         if entry.records is not None:
             self.placement_records = entry.records.copy()
         for key, layout, rotation in entry.entries:
@@ -932,6 +1126,7 @@ class SchematicView(QGraphicsView):
         ):
             self.fitted = False
             self.scale(factor, factor)
+            self.anchor_position_control()
 
     def wheelEvent(self, event):
         self.zoom(1.22 if event.angleDelta().y() > 0 else 1 / 1.22)
@@ -1064,6 +1259,8 @@ class SchematicView(QGraphicsView):
             return (x + 2.15, y + 0.77), "center"
         if part.kind == "Q":
             return self.transistor_symbol(part, a, b)
+        if part.kind == "P":
+            return self.potentiometer_symbol(part, a, b)
         if part.kind == "S":
             x, y = a
             right = b[0]
@@ -1144,6 +1341,30 @@ class SchematicView(QGraphicsView):
             return (x, y + 0.42), "center"
         return (x - 0.61, y), "right"
 
+    def potentiometer_symbol(self, part, a, b):
+        x, y = a
+        center = x + (b[0] - x) * 0.38
+        offset = pin_offset(POT_PIN_OFFSET, self.pin_grid)
+        body = [
+            (center + (0 if i in (0, 9) else 0.2 if i % 2 else -0.2), y + 0.6 - 1.2 * i / 9)
+            for i in range(10)
+        ]
+        self.lines([(x, y + offset), (center, y + offset), body[0]])
+        self.lines(body)
+        self.lines([body[-1], (center, y - offset), (x, y - offset)])
+        # The tap moves along the resistive track; its external terminal stays fixed.
+        at = (1 - part.position) * 9
+        index = min(int(at), 8)
+        fraction = at - index
+        tip = tuple(start + (end - start) * fraction for start, end in zip(body[index], body[index + 1]))
+        tail = center + 1.1, y
+        self.lines([b, tail, tip])
+        length = math.dist(tip, tail)
+        dx, dy = ((end - start) / length for start, end in zip(tip, tail))
+        self.lines([(tip[0] + .25 * dx + .12 * dy, tip[1] + .25 * dy - .12 * dx),
+                    tip, (tip[0] + .25 * dx - .12 * dy, tip[1] + .25 * dy + .12 * dx)])
+        return ((a[0] + b[0]) / 2, y + offset + 0.2), "center"
+
     def transistor_symbol(self, part, a, b):
         x, y = a
 
@@ -1200,6 +1421,10 @@ class SchematicView(QGraphicsView):
         return None
 
     def mousePressEvent(self, event):
+        if isinstance(self.itemAt(event.position().toPoint()), BehaviorDiagram):
+            self.setFocus(Qt.FocusReason.MouseFocusReason)
+            super().mousePressEvent(event)
+            return
         if event.button() == Qt.MouseButton.LeftButton:
             self.setFocus(Qt.FocusReason.MouseFocusReason)
             pos = event.position().toPoint()
@@ -1561,6 +1786,10 @@ class SchematicView(QGraphicsView):
                 self.probed.emit("pin" if drag.kind == "pin" else "node", drag.name)
             else:
                 self.probed.emit(drag.kind, drag.name)
+                if self.source_editing and drag.kind == 'component':
+                    part = next((part for part in self.circuit.components if part.name == drag.name), None)
+                    if part and part.kind == 'P':
+                        self.potentiometer_requested.emit(drag.name)
         else:
             if drag.control:
                 self.selection_key = drag.key
@@ -1609,8 +1838,10 @@ class SchematicView(QGraphicsView):
                     menu = QMenu(self)
                     if self.source_editing and kind == 'component':
                         part = next((p for p in self.circuit.components if p.name == name), None)
-                        if part and part.kind in {'R', 'C', 'L', 'Z'}:
+                        if part and part.kind in {'R', 'C', 'L', 'Z', 'P'}:
                             menu.addAction('Edit value…', lambda: self.value_requested.emit(name))
+                        if part and part.kind == 'P':
+                            menu.addAction('Adjust position…', lambda: self.potentiometer_requested.emit(name))
                     if kind == "hood" and name.startswith(METHOD_PREFIX):
                         instance = self.circuit.instances[int(name.removeprefix(METHOD_PREFIX))]
                         if instance.builtin_gate:

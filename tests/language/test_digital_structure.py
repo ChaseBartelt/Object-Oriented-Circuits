@@ -119,6 +119,42 @@ main {
         sim.step()
         self.assertEqual(sim.values["y"], 1)
         self.assertEqual(sim.values["Counter_1_c"], 0)
+        instances = []
+        assemble_digital(source, instances=instances)
+        self.assertEqual(dict(instances[0].signal_bindings), {
+            "clk": "clk", "y": "y", "c": "ooc_Counter_1_c",
+        })
+        self.assertEqual(sim.values[dict(instances[0].signal_bindings)["c"]], 1)
+
+    def test_nested_signal_bindings_preserve_state_and_parent_wire_aliases(self):
+        source = """chip Count(clk,enable,data) {
+            clk,enable=input; data[4]=output; value[4]; const STEP[4]=1;
+            clock(clk,10Hz){if(enable){value+=STEP;}} data=value;
+        }
+        chip Pair(clk,a,b,x,y) {
+            clk,a,b=input; x[4],y[4]=output; mid[4]=wire;
+            Count(clk,a,mid); Count(clk,b,y); x=mid;
+        }
+        main {clk,a,b=input; first[4],second[4]=output; Pair(clk,a,b,first,second);}
+        """
+        session = CircuitSession(source=source)
+        session.compile()
+        self.assertFalse(session.issues)
+        parent, first, second = session.drawing.instances
+        parent_names, first_names, second_names = (
+            dict(instance.signal_bindings) for instance in (parent, first, second)
+        )
+        self.assertEqual((first.parent, second.parent), (0, 0))
+        self.assertEqual(first_names["data"], parent_names["mid"])
+        self.assertEqual(second_names["data"], parent_names["y"])
+        self.assertEqual(set(first_names), {"clk", "enable", "data", "value", "STEP"})
+        self.assertNotEqual(first_names["value"], second_names["value"])
+        sim = DigitalSimulation(source)
+        sim.set_input("a", 1)
+        sim.advance(3)
+        self.assertEqual((sim.values[first_names["value"]], sim.values[second_names["value"]]), (3, 0))
+        self.assertEqual((sim.values[first_names["data"]], sim.values[second_names["data"]]), (3, 0))
+        self.assertEqual(sim.values[first_names["STEP"]], 1)
 
     def test_digital_ports_are_detected_with_only_vector_declarations(self):
         source = "chip Copy(a,y){a[8]=input;y[8]=output;y=a;} main{a[8]=input;y[8]=output;Copy(a,y);}"

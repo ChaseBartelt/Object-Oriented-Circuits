@@ -61,6 +61,13 @@ def pin_rows(result, pins):
             indices = {part_name: i for i, part_name in enumerate(network.names)}
             for part in result.circuit.components:
                 part_name = (part.label or part.name).replace("_", " ")
+                if part.kind == "P":
+                    for terminal, net, amps in zip(("high", "wiper", "low"), part.terminal_nets,
+                                                   network.terminal_current[part.name]):
+                        if node == net:
+                            add(f"{tag}{part_name} {terminal} current", f"Into {terminal}",
+                                format_value(amps, "A", ac))
+                    continue
                 if part.kind == "Q" and part.name in network.base_current:
                     collector = network.branch_current[indices[part.name]]
                     base = network.base_current[part.name]
@@ -189,6 +196,10 @@ def result_rows(result):
         )
         for p in c.components:
             name = p.label or p.name
+            if p.kind == "P":
+                add(name + " total resistance", "R_high + R_low", p.value, "ohm", provided=True)
+                add(name + " position", "Fraction from low to high", 100 * p.position, "%", provided=True)
+                continue
             if p.kind == "Q":
                 add(name + " model", "Generic Ebers–Moll", p.transistor_type.upper(), provided=True)
                 continue
@@ -235,6 +246,12 @@ def result_rows(result):
             network.branch_power,
         ):
             name = prefix + (p.label if c.grouped else p.name)
+            if p.kind == "P":
+                add(name + " high-low voltage" + basis, "V(high) - V(low)", v, "V", is_ac)
+                for terminal, amps in zip(("high", "wiper", "low"), network.terminal_current[p.name]):
+                    add(name + f" {terminal} current" + basis, f"Into {terminal}", amps, "A", is_ac)
+                add(name + " power", "P_high_leg + P_low_leg", power.real, "W")
+                continue
             if p.kind == "Q":
                 base = network.base_current[p.name]
                 add(name + " collector-emitter voltage", "V(C) − V(E)", v, "V")
@@ -383,6 +400,10 @@ def component_labels(circuit):
                 label.append(p.model)
             continue
         unit = UNITS[p.kind]
+        if p.kind == "P":
+            label.append((format_value(p.value, "ohm") if p.value is not None else "? Ω")
+                         + f" · {100 * p.position:g}%")
+            continue
         if p.value is None:
             if p.kind != "Z":
                 label.append("? " + ("Ω" if unit == "ohm" else unit))

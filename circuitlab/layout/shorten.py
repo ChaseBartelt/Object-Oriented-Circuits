@@ -7,6 +7,7 @@ from statistics import median_low
 
 from circuitlab.layout.checks import mark_crossings, preserves_nets, segments_intersect
 from circuitlab.layout.editing import _symbol_bounds, move_symbol
+from circuitlab.layout.grid import align_layout
 from circuitlab.layout.wire_edit import route_anchors, wire_graph, replace_route, terminal_run
 
 
@@ -165,8 +166,16 @@ def _move_candidates(drawing, symbol, grid):
             yield delta
 
 
-def _improves(circuit, before, after, *, moved=None, grid=0):
-    if wire_length(after) >= wire_length(before) - 1e-8:
+def _span(layout):
+    points = [point for symbol in layout.symbols
+              for point in _symbol_bounds(symbol, layout.rotations.get(symbol[0].name, 0))]
+    points += [point for edges in layout.wires.values() for edge in edges for point in edge]
+    return sum(max(p[axis] for p in points) - min(p[axis] for p in points) for axis in (0, 1)) if points else 0
+
+
+def _improves(circuit, before, after, *, moved=None, grid=0, compact=False):
+    change = wire_length(after) - wire_length(before)
+    if change >= -1e-8 and not (compact and change <= 1e-8 and _span(after) < _span(before) - 1e-8):
         return False
     old_edges = {frozenset(edge) for edges in before.wires.values() for edge in edges}
     changed = [edge for edges in after.wires.values() for edge in edges
@@ -175,6 +184,13 @@ def _improves(circuit, before, after, *, moved=None, grid=0):
     if grid and any(abs(v / grid - round(v / grid)) > 1e-6
                     for edge in changed for point in edge for v in point):
         return False
+    if compact:
+        # Whole groups move, so also check unchanged wires and standalone ports
+        # against their new bodies, not only the coordinates that were rewritten.
+        changed = [edge for edges in after.wires.values() for edge in edges]
+        changed += [(pin, pin) for _, pin in after.pins()]
+        changed += [(p, p) for p in after.grounds + list(after.boundary.values())]
+        changed += [(p, p) for _, p, *_ in after.connectors]
     if not clear_of_bodies(changed, after):
         return False
     if moved is not None:
@@ -187,6 +203,90 @@ def _improves(circuit, before, after, *, moved=None, grid=0):
         if not clear_of_bodies(edges, body):
             return False
     return preserves_nets(circuit, after)
+
+
+def _close_gap(layout, axis, low, high, amount, grid):
+    """Translate whole symbol groups and compress only the wiring between them."""
+    def point(position):
+        value = position[axis]
+        if value >= high:
+            value -= amount
+        elif value > low:
+            value -= amount * (value - low) / (high - low)
+            if grid:
+                value = round(value / grid) * grid
+        return tuple(round(value, 8) if index == axis else coordinate
+                     for index, coordinate in enumerate(position))
+
+    ports = set(layout.grounds) | set(layout.boundary.values())
+    ports.update(at for _, at, *_ in layout.connectors)
+    if len({point(at) for at in ports}) != len(ports):
+        # Grid rounding must not merge separately placed ports or overwrite
+        # their coordinate-keyed captions and ground orientations.
+        return None
+
+    symbols = []
+    for part, a, b, top in layout.symbols:
+        # Stored endpoints precede rotation; translate them together to retain
+        # the symbol's size and every pin's offset from its physical center.
+        shift = amount if (a[axis] + b[axis]) / 2 >= high else 0
+        def moved(position):
+            return tuple(round(value - shift, 8) if index == axis else value
+                         for index, value in enumerate(position))
+        symbols.append((part, moved(a), moved(b), top))
+    wires = {}
+    for net, edges in layout.wires.items():
+        moved_edges = [(point(a), point(b)) for a, b in edges]
+        wires[net] = [(a, b) for a, b in moved_edges if a != b]
+    result = replace(
+        layout, symbols=symbols, positions={part.name: a for part, a, _, _ in symbols}, wires=wires,
+        junctions={net: list(map(point, dots)) for net, dots in layout.junctions.items()},
+        labels={net: point(at) for net, at in layout.labels.items()},
+        grounds=list(map(point, layout.grounds)),
+        ground_names={point(at): net for at, net in layout.ground_names.items()},
+        ground_rotations={point(at): angle for at, angle in layout.ground_rotations.items()},
+        connectors=[(net, point(at), *caption) for net, at, *caption in layout.connectors],
+        boundary={net: point(at) for net, at in layout.boundary.items()},
+        label_offsets={(key[0], *point(key[1:])) if key[0] in {'ground', 'connector'} else key: offset
+                       for key, offset in layout.label_offsets.items()},
+        crossings={},
+    )
+    mark_crossings(result)
+    return result
+
+
+def compact_spacing(circuit, drawing, *, budget=36, grid=.25, grid_safe=False):
+    """Close empty rows/columns together without resizing or reordering parts."""
+    if len(drawing.symbols) < 2:
+        return drawing
+    for axis in (0, 1):
+        intervals = sorted(
+            (min(a[axis], b[axis]), max(a[axis], b[axis]))
+            for symbol in drawing.symbols
+            for a, b in [_symbol_bounds(symbol, drawing.rotations.get(symbol[0].name, 0))]
+        )
+        gaps = []
+        end = intervals[0][1]
+        for low, high in intervals[1:]:
+            if low - end > 1 + grid:
+                gaps.append((end, low))
+            end = max(end, high)
+        attempts = 0
+        # Closing a later gap leaves all earlier gap coordinates unchanged.
+        for low, high in reversed(gaps):
+            maximum = math.floor((high - low - 1) / grid) * grid
+            amounts = dict.fromkeys(math.floor(maximum * fraction / grid) * grid for fraction in (1, .5, .25))
+            for amount in amounts:
+                if amount < grid or attempts >= budget // 2:
+                    break
+                attempts += 1
+                trial = _close_gap(drawing, axis, low, high, amount, drawing.pin_grid)
+                if trial is not None and _improves(circuit, drawing, trial, grid=drawing.pin_grid, compact=True):
+                    if grid_safe and not trial.pin_grid and align_layout(circuit, trial) is None:
+                        continue
+                    drawing = trial
+                    break
+    return drawing
 
 
 def reposition(circuit, drawing, *, budget=36, grid=0.25):
@@ -216,6 +316,13 @@ def reposition(circuit, drawing, *, budget=36, grid=0.25):
 def optimize_layout(circuit, original, *, flip_budget=4, move_parts=False, grid=0.25):
     """Keep all edits optional, deterministic, bounded and electrically checked."""
     drawing = straighten(circuit, original, simplify=move_parts)
+    if move_parts:
+        compacted = compact_spacing(circuit, drawing, grid=grid)
+        if len(drawing.symbols) > 12 and _span(compacted) < .9 * _span(drawing):
+            # A large group move already supplies the useful improvement; keep
+            # the synchronous viewer action out of a full per-part search.
+            return reposition(circuit, compacted, budget=8, grid=grid)
+        drawing = compacted
     # Try the most heavily wired passive components first. Sources and devices
     # with directional behavior are never flipped by this pass.
     candidates = sorted((s for s in drawing.symbols if s[0].kind in {'R','C','L','X'}),

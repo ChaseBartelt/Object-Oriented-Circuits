@@ -4,11 +4,11 @@ import re
 from dataclasses import dataclass, field
 
 from circuitlab.model.graph import CircuitError
-from circuitlab.math.numbers import NUMBER
+from circuitlab.math.numbers import NUMBER, real, scalar
 
 FREQUENCY = {"f", "T", "w"}
 AC_VOLTAGE = {"V", "Vmag", "Vpk", "Vpp"}
-UNITS = dict(R="ohm", C="F", L="H", X="ohm", Z="ohm", V="V", I="A")
+UNITS = dict(R="ohm", C="F", L="H", X="ohm", Z="ohm", P="ohm", V="V", I="A")
 SECTION = re.compile(
     r"(series|parallel|circuit|gate|chip)\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:\(([^()]*)\)\s*)?\{",
     re.I,
@@ -49,7 +49,7 @@ WIRE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_. \t-]*")
 ASSIGNMENT = re.compile(r"([A-Za-z][A-Za-z0-9_]*)\s*=\s*(.*)")
 PIN_DIRECTION = re.compile(r"[\w, \t\[\]]+\s*=\s*(input|output)", re.I)
 PARAMETER_TARGET = re.compile(r"[RCLXZVI][A-Za-z0-9_]*", re.I)
-PART_ARGUMENT = re.compile(r"([RCLZ][A-Za-z0-9_]*)(?:\s*\(([^()]*)\))?", re.I)
+PART_ARGUMENT = re.compile(r"([RCLZP][A-Za-z0-9_]*)(?:\s*\(([^()]*)\))?", re.I)
 PART_PLACEMENT = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)\s+between\s*\(([^()]*)\)", re.I)
 PLACEMENT = re.compile(
     r"([A-Za-z][A-Za-z0-9_]*)\s*\(((?:[^()]|\([^()]*\))*)\)\s+between\s*\(([^()]*)\)", re.I
@@ -198,3 +198,17 @@ def parse_wires(raw: str, count: int | None = None) -> tuple[str, ...]:
     ):
         raise CircuitError(f"Use {count or 'valid'} wire names.")
     return values
+
+
+def parse_potentiometer(raw):
+    """Parse total resistance and position measured from the low end (default 50%)."""
+    fields = raw.split(",")
+    if len(fields) not in (1, 2):
+        raise CircuitError("Use P1(total resistance, position%) between(high, wiper, low).")
+    value = real(scalar(fields[0], "ohm")) if fields[0].strip() else None
+    if value is not None and value <= 0:
+        raise CircuitError("A potentiometer needs a positive total resistance.")
+    position = real(scalar(fields[1])) if len(fields) == 2 else 0.5
+    if not 0 <= position <= 1:
+        raise CircuitError("Use a potentiometer position from 0% to 100% (or a fraction from 0 to 1).")
+    return value, position

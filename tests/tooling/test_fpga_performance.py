@@ -71,6 +71,24 @@ class FpgaPerformanceTest(unittest.TestCase):
         self.assertEqual(result["verification_error"], "Timing failed")
         self.assertEqual(result["resources"]["logic_elements"]["used"], 111)
 
+    def test_clockless_report_keeps_propagation_slack_without_inventing_frequency(self):
+        self.project = fpga.prepare_project(SOURCE.replace('MAX10_CLK1_50, ', ''), self.temp.name)
+        out = self.project.directory / 'build/output_files'
+        out.mkdir()
+        (out / 'HYBRID01.fit.summary').write_text('Total registers : 0\nTotal pins : 2 / 360\n')
+        (out / 'HYBRID01.sta.summary').write_text(
+            "Type : Slow Model Setup 'n/a'\nSlack : 8.970\nType : Fast Model Hold 'n/a'\nSlack : 3.213\n")
+        (out / 'HYBRID01.sta.rpt').write_text('; No clocks defined in design ;\n')
+        result = self.report(verified=True)
+        self.assertTrue(result['clockless'])
+        self.assertTrue(result['verified'])
+        self.assertEqual(result['resources']['registers']['used'], 0)
+        self.assertEqual(result['metrics']['setup_slack_ns'], 8.970)
+        self.assertEqual(result['metrics']['hold_slack_ns'], 3.213)
+        for metric in ('clock_mhz', 'fmax_mhz', 'pulse_slack_ns'):
+            self.assertIsNone(result['metrics'][metric])
+        self.assertTrue(any('Clockless combinational' in note for note in result['notes']))
+
     def test_missing_reports_and_nonfinite_numbers_are_unknown(self):
         (self.out / "HYBRID01.fit.summary").unlink()
         (self.out / "HYBRID01.sta.summary").write_text("Type : Slow Model Setup 'clk'\nSlack : nan\n")

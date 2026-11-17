@@ -48,7 +48,7 @@ class Pulse:
 
 @dataclass(frozen=True)
 class Component:
-    """An oriented branch, an ideal op amp, or a bipolar transistor."""
+    """An electrical part with its oriented terminals and model parameters."""
 
     name: str
     kind: str
@@ -69,6 +69,8 @@ class Component:
     threshold: float = 0.0
     off_resistance: float = 0.0
     pulse: Pulse | None = None
+    wiper: str = ""
+    position: float = 0.5
 
     @property
     def is_source(self):
@@ -80,6 +82,8 @@ class Component:
             return tuple(net for _, net in self.package_pins)
         if self.kind == "Q":
             return self.base, self.p, self.n
+        if self.kind == "P":
+            return self.p, self.wiper, self.n
         if self.kind in {"O", "S"}:
             return self.in_plus, self.in_minus, self.p, self.n
         return self.p, self.n
@@ -118,6 +122,7 @@ class MethodInstance:
     path: object = None
     model_available: bool = True
     builtin_gate: bool = False
+    signal_bindings: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass
@@ -183,6 +188,7 @@ class Circuit:
             (e.in_plus for e in self.components if e.kind in {"O", "S"}),
             (e.in_minus for e in self.components if e.kind in {"O", "S"}),
             (e.base for e in self.components if e.kind == "Q"),
+            (e.wiper for e in self.components if e.kind == "P"),
             (net for e in self.components if e.kind == "H" for net in e.terminal_nets),
         )
         return tuple(dict.fromkeys(nets))
