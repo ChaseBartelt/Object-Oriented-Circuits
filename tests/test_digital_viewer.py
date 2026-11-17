@@ -2,6 +2,7 @@
 
 import os
 from pathlib import Path
+from time import perf_counter
 import unittest
 from unittest.mock import patch
 
@@ -219,26 +220,159 @@ class DigitalViewerTest(unittest.TestCase):
         self.assertEqual(self.widget.profile.currentData(), 'ooc')
         self.assertEqual(self.widget.simulation.values['SW0'], 0)
 
-    def test_run_pause_and_step_are_bounded_and_retain_simulated_timing(self):
+    def test_run_matches_elapsed_time_at_all_four_speed_settings(self):
+        base = perf_counter() + 60
+        with patch('circuitlab.viewer.digital.perf_counter', return_value=base) as clock:
+            for percent, expected in ((25, 2), (50, 4), (75, 6), (100, 8)):
+                with self.subTest(percent=percent):
+                    self.widget.set_source(COUNTER)
+                    self.widget.set_input('a', 1)
+                    action = next(action for action in self.widget.speed_actions.actions()
+                                  if action.data() == percent)
+                    action.trigger()
+                    self.assertEqual(self.widget.speed_button.text(), f'Speed: {percent}%')
+                    clock.return_value = base
+                    self.widget.toggle()
+                    clock.return_value = base + 1
+                    self.widget.advance()
+                    self.assertEqual(self.widget.simulation.cycles, expected)
+                    self.assertEqual(self.widget.simulation.values['count'], expected % 8)
+                    self.assertTrue(self.widget.pace_label.isHidden())
+                    self.widget.shutdown()
+
+    def test_low_frequency_accumulates_fractional_cycles_between_timer_ticks(self):
         self.widget.set_source(COUNTER)
         self.widget.set_input('a', 1)
-        self.widget.toggle()
-        self.assertTrue(self.widget.timer.isActive())
-        self.assertEqual(self.widget.run_button.text(), 'Pause')
-        self.widget.advance()
-        cycles = self.widget.simulation.cycles
-        self.assertGreater(cycles, 0)
-        self.assertLessEqual(cycles, 128)
-        self.assertEqual(self.widget.simulation.frequency, 8)
+        base = perf_counter() + 60
+        with patch('circuitlab.viewer.digital.perf_counter', return_value=base) as clock:
+            self.widget.toggle()
+            for tick in range(1, 9):
+                clock.return_value = base + tick * .033
+                self.widget.advance()
+                self.assertEqual(self.widget.simulation.cycles, int(tick * .033 * 8))
+        self.assertEqual(self.widget.simulation.cycles, 2)
+        self.assertEqual(self.widget.simulation.values['count'], 2)
+
+    def test_partial_slow_clock_period_does_not_claim_backend_is_behind(self):
+        self.widget.set_source(COUNTER)
+        self.widget.set_speed(25)
+        base = perf_counter() + 60
+        with patch('circuitlab.viewer.digital.perf_counter', return_value=base) as clock:
+            self.widget.toggle()
+            clock.return_value = base + .25  # Half a cycle at the selected 2 cycles/s.
+            self.widget.advance()
+            self.assertEqual(self.widget.simulation.cycles, 0)
+            self.assertTrue(self.widget.pace_label.isHidden())
+
+    def test_speed_change_preserves_prior_elapsed_time_state_and_history(self):
+        self.widget.set_source(COUNTER)
+        self.widget.set_input('a', 1)
+        history = list(self.widget.waveform.history)
+        base = perf_counter() + 60
+        with patch('circuitlab.viewer.digital.perf_counter', return_value=base) as clock:
+            self.widget.toggle()
+            clock.return_value = base + .5
+            self.widget.set_speed(50)
+            self.assertEqual(self.widget.simulation.cycles, 0)
+            self.assertEqual(list(self.widget.waveform.history), history)
+            self.assertEqual(self.widget.simulation.values['a'], 1)
+            clock.return_value = base + 1
+            self.widget.advance()
+            self.assertEqual(self.widget.simulation.cycles, 6)  # 4 at 100%, then 2 at 50%.
+            self.assertEqual(self.widget.simulation.values['count'], 6)
+            self.assertEqual(self.widget.waveform.history[-1][0], 6)
+            self.assertTrue(self.widget.timer.isActive())
+            self.assertEqual(self.widget.source, COUNTER)
+
+    def test_pause_excludes_paused_time_and_step_and_reset_are_exact(self):
+        self.widget.set_source(COUNTER)
+        self.widget.set_input('a', 1)
+        base = perf_counter() + 60
+        with patch('circuitlab.viewer.digital.perf_counter', return_value=base) as clock:
+            self.widget.toggle()
+            self.assertEqual(self.widget.run_button.text(), 'Pause')
+            clock.return_value = base + .5
+            self.widget.toggle()
+            self.assertEqual(self.widget.simulation.cycles, 4)
+            self.assertFalse(self.widget.timer.isActive())
+            clock.return_value = base + 100
+            self.widget.advance()
+            self.assertEqual(self.widget.simulation.cycles, 4)
+            self.widget.toggle()
+            clock.return_value = base + 100.5
+            self.widget.advance()
+            self.assertEqual(self.widget.simulation.cycles, 8)
+            self.widget.step()
+            self.assertEqual(self.widget.simulation.cycles, 9)
+        self.assertFalse(self.widget.timer.isActive())
+        self.assertEqual(self.widget.simulation.values['count'], 1)
+        self.widget.reset()
+        self.assertEqual(self.widget.simulation.cycles, 0)
+        self.assertEqual(self.widget.simulation.values['count'], 0)
+        self.assertEqual(self.widget.simulation.values['a'], 0)
+        self.assertEqual(len(self.widget.waveform.history), 1)
+        self.assertFalse(self.widget.timer.isActive())
         self.assertTrue(self.widget.status.isHidden())
+
+    def test_pause_preserves_partial_cycle(self):
+        self.widget.set_source(COUNTER)
+        base = perf_counter() + 60
+        with patch('circuitlab.viewer.digital.perf_counter', return_value=base) as clock:
+            self.widget.toggle()
+            clock.return_value = base + .0625  # Half an 8 Hz cycle.
+            self.widget.toggle()
+            self.assertEqual(self.widget.simulation.cycles, 0)
+            clock.return_value = base + 10
+            self.widget.toggle()
+            clock.return_value = base + 10.0625
+            self.widget.advance()
+            self.assertEqual(self.widget.simulation.cycles, 1)
+
+    def test_running_input_changes_take_effect_after_due_old_input_cycles(self):
+        self.widget.set_source(COUNTER)
+        base = perf_counter() + 60
+        with patch('circuitlab.viewer.digital.perf_counter', return_value=base) as clock:
+            self.widget.toggle()
+            clock.return_value = base + .5
+            self.widget.set_input('a', 1)
+            self.assertEqual(self.widget.simulation.cycles, 4)
+            self.assertEqual(self.widget.simulation.values['count'], 0)
+            clock.return_value = base + 1
+            self.widget.advance()
+            self.assertEqual(self.widget.simulation.cycles, 8)
+            self.assertEqual(self.widget.simulation.values['count'], 4)
+
+    def test_clock_without_frequency_allows_step_but_not_realtime_run(self):
+        self.widget.set_source(COUNTER.replace('clock(clk,8Hz)', 'clock(clk)'))
+        self.assertIsNotNone(self.widget.simulation)
+        self.assertIsNone(self.widget.simulation.frequency)
+        self.assertFalse(self.widget.run_button.isEnabled())
+        self.assertFalse(self.widget.speed_button.isEnabled())
+        self.assertTrue(self.widget.step_button.isEnabled())
         self.widget.toggle()
         self.assertFalse(self.widget.timer.isActive())
-        self.widget.advance()
-        self.assertEqual(self.widget.simulation.cycles, cycles)
         self.widget.step()
-        self.assertEqual(self.widget.simulation.cycles, cycles + 1)
-        self.assertFalse(self.widget.timer.isActive())
-        self.assertTrue(self.widget.status.isHidden())
+        self.assertEqual(self.widget.simulation.cycles, 1)
+
+    def test_slow_backend_has_bounded_work_and_honest_lag_indicator(self):
+        self.widget.set_source(COUNTER)
+        base = perf_counter() + 60
+        with patch('circuitlab.viewer.digital.perf_counter', return_value=base) as clock:
+            self.widget.toggle()
+            clock.return_value = base + .25
+            with patch.object(self.widget.simulation, 'advance', return_value=0) as advance:
+                self.widget.advance()
+                advance.assert_called_once()
+                args, kwargs = advance.call_args
+                self.assertEqual(args[0], 2)
+                self.assertAlmostEqual(kwargs['deadline'], base + .258)
+            self.assertEqual(self.widget.simulation.cycles, 0)
+            self.assertFalse(self.widget.pace_label.isHidden())
+            self.assertEqual(self.widget.pace_label.text(), 'Behind target')
+            self.assertIn('0.25 s', self.widget.pace_label.toolTip())
+            self.widget.advance()
+            self.assertEqual(self.widget.simulation.cycles, 2)
+            self.assertTrue(self.widget.pace_label.isHidden())
 
     def test_probe_history_limit_and_paint(self):
         self.widget.set_source(COUNTER)

@@ -8,7 +8,7 @@ from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen, QPolygonF
 from PySide6.QtWidgets import QGraphicsObject, QGraphicsPathItem, QGraphicsScene, QGraphicsView
 
 
-HIGH, LOW = "#55d991", "#718096"
+HIGH, LOW = "#55d991", "#999999"
 NODE_WIDTH, NODE_HEIGHT, COLUMN, ROW = 180, 58, 244, 82
 MAX_NODES, MAX_EDGES = 120, 400
 
@@ -78,11 +78,11 @@ class _Node(QGraphicsObject):
     def paint(self, painter, option, widget=None):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         color = QColor(HIGH if self.value else LOW)
-        painter.setPen(QPen(color if self.kind != "chip" else QColor("#7ba6cf"), 1.8))
-        painter.setBrush(QColor("#213247" if self.kind == "chip" else "#182432"))
+        painter.setPen(QPen(color if self.kind != "chip" else QColor("#888888"), 1.8))
+        painter.setBrush(QColor("#343434" if self.kind == "chip" else "#282828"))
         painter.drawRoundedRect(self.boundingRect().adjusted(1, 1, -1, -1), 7, 7)
         if self.kind == "chip":
-            painter.setPen(QColor("#e6edf4"))
+            painter.setPen(QColor("#f2f2f2"))
             painter.drawText(self.boundingRect().adjusted(9, 4, -9, -4),
                              Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap,
                              self.caption)
@@ -90,13 +90,13 @@ class _Node(QGraphicsObject):
         painter.setBrush(color)
         if self.kind == "input":
             painter.drawRoundedRect(QRectF(11, 13, 30, 15), 7, 7)
-            painter.setBrush(QColor("#0f1822"))
+            painter.setBrush(QColor("#191919"))
             painter.drawEllipse(QPointF(33 if self.value else 19, 20), 5, 5)
         elif self.kind == "output":
             painter.drawEllipse(QPointF(23, 20), 8, 8)
         else:
             painter.drawRect(QRectF(16, 14, 13, 13))
-        painter.setPen(QColor("#e6edf4"))
+        painter.setPen(QColor("#f2f2f2"))
         label = painter.fontMetrics().elidedText(self.name, Qt.TextElideMode.ElideMiddle, NODE_WIDTH - 55)
         painter.drawText(QRectF(48, 6, NODE_WIDTH - 55, 25), Qt.AlignmentFlag.AlignVCenter, label)
         value = "—" if self.value is None else str(self.value) if self.width == 1 else f"0x{self.value:X}"
@@ -165,7 +165,7 @@ class LogicSceneView(QGraphicsView):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setScene(QGraphicsScene(self))
-        self.setBackgroundBrush(QColor("#111923"))
+        self.setBackgroundBrush(QColor("#191919"))
         self.setRenderHint(QPainter.RenderHint.Antialiasing)
         self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
         self.setResizeAnchor(QGraphicsView.ViewportAnchor.AnchorViewCenter)
@@ -237,7 +237,7 @@ class LogicSceneView(QGraphicsView):
         if len(self.inputs) + len(self.outputs) > MAX_NODES:
             self.notice = f"Port view exceeds {MAX_NODES} nodes; use the signal table and probes."
             title = scene.addText(self.notice)
-            title.setDefaultTextColor(QColor("#e6edf4"))
+            title.setDefaultTextColor(QColor("#f2f2f2"))
             self.fit()
             return
         names = [name for name in sim.signals if name not in sim.clocks]
@@ -249,7 +249,7 @@ class LogicSceneView(QGraphicsView):
             self.notice = f"Internals contain {len(names)} signals / {len(edges)} connections; view limit is {MAX_NODES} / {MAX_EDGES}. Use probes."
         if self.notice or self.expanded:
             title = scene.addText(self.notice or "Signal dependencies · crossing lines do not join")
-            title.setDefaultTextColor(QColor("#aabacf"))
+            title.setDefaultTextColor(QColor("#bbbbbb"))
             title.setPos(0, -55)
         if self.expanded:
             positions = _layers(names, edges)

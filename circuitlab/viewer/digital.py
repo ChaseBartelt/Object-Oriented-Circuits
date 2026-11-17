@@ -1,13 +1,14 @@
 """Interactive ideal digital signals, cycle stepping and bounded waveforms."""
 
 from collections import deque
+from math import ceil
 from time import perf_counter
 
 from PySide6.QtCore import QPointF, QRectF, QSignalBlocker, QTimer, Qt, Signal
-from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen
+from PySide6.QtGui import QActionGroup, QColor, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (
     QAbstractItemView, QCheckBox, QComboBox, QGridLayout, QGroupBox, QHBoxLayout,
-    QHeaderView, QLabel, QPushButton, QScrollArea, QSplitter, QTableWidget,
+    QHeaderView, QLabel, QMenu, QPushButton, QScrollArea, QSplitter, QTableWidget,
     QTableWidgetItem, QTabWidget, QToolButton, QVBoxLayout, QWidget,
 )
 
@@ -17,7 +18,7 @@ from circuitlab.viewer.logic_scene import LogicSceneView
 
 
 HIGH = "#55d991"
-LOW = "#6c819b"
+LOW = "#999999"
 TRACE_COLORS = ("#55d991", "#6fc5ff", "#ffcf70", "#d7a2ff")
 
 
@@ -49,7 +50,8 @@ class DigitalWaveform(QWidget):
         point = (cycle if self.clocked else self.event_index,
                  {name: values[name] for name in self.traces})
         # Preserve the first and latest point of a plateau, plus every observed
-        # transition. We still evaluate every clock cycle; only storage shrinks.
+        # transition. During Run, fast-changing buses are sampled; Step always
+        # records the complete settled state of the next cycle.
         if len(self.history) >= 2 and self.history[-1][1] == point[1] == self.history[-2][1]:
             self.history[-1] = point
         else:
@@ -58,9 +60,9 @@ class DigitalWaveform(QWidget):
 
     def paintEvent(self, event):
         painter = QPainter(self)
-        painter.fillRect(self.rect(), QColor("#111923"))
+        painter.fillRect(self.rect(), QColor("#191919"))
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.setPen(QColor("#cbd5e1"))
+        painter.setPen(QColor("#f2f2f2"))
         if not self.history:
             painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, "No digital signal data")
             return
@@ -72,9 +74,9 @@ class DigitalWaveform(QWidget):
             value = self.history[-1][1][name]
             label = f"{name}  {display_value(value, self.widths[name])}"
             label = painter.fontMetrics().elidedText(label, Qt.TextElideMode.ElideRight, left - 12)
-            painter.setPen(QColor("#cbd5e1"))
+            painter.setPen(QColor("#f2f2f2"))
             painter.drawText(QRectF(6, top, left - 12, 26), Qt.AlignmentFlag.AlignVCenter, label)
-            painter.setPen(QColor("#29384a"))
+            painter.setPen(QColor("#393939"))
             painter.drawLine(QPointF(left, top + 26), QPointF(right, top + 26))
             path = QPainterPath()
             previous_y = None
@@ -91,7 +93,7 @@ class DigitalWaveform(QWidget):
             path.lineTo(right, previous_y)
             painter.setPen(QPen(QColor(TRACE_COLORS[row % len(TRACE_COLORS)]), 1.8))
             painter.drawPath(path)
-        painter.setPen(QColor("#9daec1"))
+        painter.setPen(QColor("#bbbbbb"))
         bottom = 38 * len(self.traces) + 36
         axis = "Cycle" if self.clocked else "Event"
         painter.drawText(QPointF(left, bottom), f"{axis} {first:,}")
@@ -110,6 +112,9 @@ class DigitalSimulator(QWidget):
         self.simulation = None
         self.input_buttons, self.output_labels = {}, {}
         self.user_profile = False
+        self.speed = 1.0
+        self._last_tick = None
+        self._target_cycle = 0.0
         self.timer = QTimer(self)
         self.timer.setInterval(33)
         self.timer.timeout.connect(self.advance)
@@ -129,6 +134,21 @@ class DigitalSimulator(QWidget):
         self.reset_button.clicked.connect(self.reset)
         for control in (self.run_button, self.step_button, self.reset_button):
             toolbar.addWidget(control)
+        self.speed_button = QPushButton("Speed: 100%")
+        speed_menu = QMenu(self.speed_button)
+        self.speed_actions = QActionGroup(speed_menu)
+        for percent in (25, 50, 75, 100):
+            action = speed_menu.addAction(f"{percent}%")
+            action.setCheckable(True)
+            action.setData(percent)
+            action.setChecked(percent == 100)
+            self.speed_actions.addAction(action)
+        self.speed_actions.triggered.connect(lambda action: self.set_speed(action.data()))
+        self.speed_button.setMenu(speed_menu)
+        toolbar.addWidget(self.speed_button)
+        self.pace_label = QLabel()
+        self.pace_label.hide()
+        toolbar.addWidget(self.pace_label)
         layout.addLayout(toolbar)
         self.status = QLabel()
         self.status.setWordWrap(True)
@@ -175,6 +195,9 @@ class DigitalSimulator(QWidget):
         self.all_ports.toggled.connect(self._configure_traces)
         probes.addWidget(self.all_ports)
         self.history_label = QLabel("512 points · plateaus compressed")
+        self.history_label.setToolTip(
+            "Run keeps a bounded, sampled history. Fast buses may change between samples; "
+            "use Step to inspect consecutive cycles. Simulation state is not decimated.")
         probes.addWidget(self.history_label)
         wave_layout.addLayout(probes)
         self.waveform = DigitalWaveform()
@@ -230,8 +253,9 @@ class DigitalSimulator(QWidget):
         self.port_view.configure(None)
         self.waveform.configure((), {})
         self.history_label.setText("512 points · plateaus compressed")
-        for control in (self.run_button, self.step_button, self.reset_button, self.probe, self.all_ports):
+        for control in (self.run_button, self.step_button, self.reset_button, self.probe, self.all_ports, self.speed_button):
             control.setEnabled(False)
+        self._target_cycle = 0.0
         self.status.clear()
         self.status.hide()
         self.values_changed.emit({})
@@ -286,7 +310,12 @@ class DigitalSimulator(QWidget):
             if sim.outputs:
                 self.probe.setCurrentText(sim.outputs[0])
         clocked = bool(sim.clocks)
-        self.run_button.setEnabled(clocked)
+        timed = clocked and sim.frequency is not None
+        self.run_button.setEnabled(timed)
+        self.run_button.setToolTip("Run at the selected fraction of the declared clock rate" if timed else
+                                   "Declare a clock frequency, e.g. clock(clk, 50MHz), to run in real time")
+        self.speed_button.setEnabled(timed)
+        self._speed_tooltip()
         self.step_button.setEnabled(clocked)
         self.reset_button.setEnabled(True)
         self.probe.setEnabled(True)
@@ -321,7 +350,7 @@ class DigitalSimulator(QWidget):
         if self.waveform.history:
             axis = "Cycles" if sim.clocks else "Events"
             first, last = self.waveform.history[0][0], self.waveform.history[-1][0]
-            self.history_label.setText(f"{axis} {first:,}–{last:,} · dependencies included")
+            self.history_label.setText(f"{axis} {first:,}–{last:,} · sampled")
         for name, control in self.input_buttons.items():
             with QSignalBlocker(control):
                 control.setChecked(bool(sim.values[name]))
@@ -342,6 +371,12 @@ class DigitalSimulator(QWidget):
     def set_input(self, name, value):
         if self.simulation is None:
             return
+        # Advance due old-input work within the UI budget. If the design is
+        # behind, the click applies at the displayed simulation cycle.
+        if self.timer.isActive():
+            self.advance()
+            if self.simulation is None:
+                return
         try:
             self.simulation.set_input(name, value)
             self._refresh(sample=True)
@@ -354,28 +389,68 @@ class DigitalSimulator(QWidget):
             return
         try:
             self.simulation.step()
+            self._target_cycle = self.simulation.cycles
             self._refresh(sample=True)
         except (CircuitError, ValueError) as error:
             self._failure(error)
 
     def toggle(self):
         if self.timer.isActive():
+            self.advance()
             self.shutdown()
-        elif self.simulation is not None and self.simulation.clocks:
+        elif self.simulation is not None and self.simulation.clocks and self.simulation.frequency:
+            self._last_tick = perf_counter()
+            # Keep a partial clock period, but never charge paused wall time.
+            self._target_cycle = self.simulation.cycles + self._target_cycle % 1
             self.timer.start()
             self.run_button.setText("Pause")
         self._refresh()
 
+    def _accrue_time(self, now):
+        if self._last_tick is not None:
+            self._target_cycle += max(0.0, now - self._last_tick) * self.simulation.frequency * self.speed
+        self._last_tick = now
+
+    def _speed_tooltip(self):
+        rate = self.simulation.frequency if self.simulation else None
+        self.speed_button.setToolTip(
+            f"Target: {rate * self.speed:,.0f} cycles/s ({self.speed:.0%} of {rate:,.0f} Hz). "
+            "If this computer cannot keep up, Behind target appears; simulated cycles are never discarded."
+            if rate else "Requires a declared clock frequency")
+
+    def set_speed(self, percent):
+        if percent not in (25, 50, 75, 100):
+            raise ValueError("Speed must be 25, 50, 75 or 100 percent")
+        if self.timer.isActive():
+            self._accrue_time(perf_counter())
+        self.speed = percent / 100
+        self.speed_button.setText(f"Speed: {percent}%")
+        for action in self.speed_actions.actions():
+            action.setChecked(action.data() == percent)
+        self._speed_tooltip()
+
     def advance(self):
         if self.simulation is None or not self.timer.isActive():
             return
-        deadline = perf_counter() + .008
+        now = perf_counter()
+        self._accrue_time(now)
+        sim = self.simulation
+        due = max(0, int(self._target_cycle + 1e-7) - sim.cycles)
         try:
-            for _ in range(128):
-                self.simulation.step()
-                self.waveform.sample(self.simulation.cycles, self.simulation.values)
-                if perf_counter() >= deadline:
-                    break
+            if due:
+                sim.advance(due, traces=self.waveform.traces, sample=self.waveform.sample,
+                            sample_every=max(1, ceil(due / 128)), deadline=now + .008)
+            overdue = max(0, int(self._target_cycle + 1e-7) - sim.cycles)
+            lag = overdue / (sim.frequency * self.speed)
+            if lag > .1:
+                self.pace_label.setText("Behind target")
+                self.pace_label.setToolTip(
+                    f"Simulation is {lag:.2f} s behind the selected pace. "
+                    "This circuit exceeds the current software throughput. Input clicks apply at the displayed "
+                    "simulation cycle; use Pause and Step for precise input timing.")
+                self.pace_label.show()
+            elif lag < .02:
+                self.pace_label.hide()
             self._refresh()
         except (CircuitError, ValueError) as error:
             self._failure(error)
@@ -386,12 +461,15 @@ class DigitalSimulator(QWidget):
             return
         try:
             self.simulation.reset()
+            self._target_cycle = 0.0
             self._configure_traces()
         except (CircuitError, ValueError) as error:
             self._failure(error)
 
     def shutdown(self):
         self.timer.stop()
+        self._last_tick = None
+        self.pace_label.hide()
         self.run_button.setText("Run")
 
     def closeEvent(self, event):

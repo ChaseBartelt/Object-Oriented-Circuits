@@ -317,6 +317,125 @@ class DigitalSimulationTest(unittest.TestCase):
         self.assertEqual(len(crowded.signal_expressions["count"]), 500)
         self.assertTrue(crowded.signal_expressions["count"].endswith("…"))
 
+    def test_batch_hybrid_full_second_and_exact_blink_edges(self):
+        sim = DigitalSimulation(HYBRID)
+        samples = []
+        with patch.object(sim, "step", wraps=sim.step) as ordinary:
+            done = sim.advance(50_000_000, traces=("LEDR0", "AUDIO_OUT"),
+                               sample=lambda cycle, values: samples.append((cycle, dict(values))),
+                               sample_every=390625)
+        self.assertEqual(done, 50_000_000)
+        self.assertLess(ordinary.call_count, 2000)  # Proven interval skips, not 50M Python steps.
+        self.assertEqual(sim.values["phase"], (50_000_000 * 37796) & 0xffffffff)
+        edges, last = [], 0
+        for cycle, values in samples:
+            if values["LEDR0"] != last:
+                edges.append(cycle)
+                last = values["LEDR0"]
+            self.assertEqual(values["AUDIO_OUT"], ((cycle * 37796) >> 31) & 1)
+        self.assertEqual(edges, [25_000_000, 50_000_000])
+        self.assertEqual(sim.values["LEDR0"], 0)
+
+    def test_batch_matches_reference_with_switch_changes_and_two_stage_sync(self):
+        for source, profile in ((HYBRID, "ooc"), (TEN_SWITCHES, "de10-lite")):
+            with self.subTest(profile=profile):
+                fast, reference = DigitalSimulation(source, profile), DigitalSimulation(source, profile)
+                for value, cycles in ((1, 1), (1, 2), (0, 3), (1, 117321), (0, 237)):
+                    fast.set_input("SW0", value)
+                    reference.set_input("SW0", value)
+                    fast.advance(cycles)
+                    for _ in range(cycles):
+                        reference.step()
+                    self.assertEqual(fast.values, reference.values)
+                    self.assertEqual(fast.cycles, reference.cycles)
+                fast.reset()
+                reference.reset()
+                self.assertEqual(fast.values, reference.values)
+
+    def test_batch_unsigned_wrap_guards_nba_and_fallback_match_reference(self):
+        bodies = [
+            "count += 3; other = count;",
+            "count = count - 3; other = count + 1;",
+            "if (count < 9) { count += 3; } else { count = 0; } other += 1;",
+            "if (count <= 9) { count += 3; } else { count = 0; }",
+            "if (count > 3) { count = count - 2; } else { count = 14; }",
+            "if (count >= 3) { count = count - 2; } else { count = 14; }",
+            "if (count == 9) { count = 0; } else { count += 3; }",
+            "if (count != 9) { count += 3; } else { count = 0; }",
+            "if (count) { count = count - 1; } else { count = 12; }",
+            "if (!count) { count = 12; } else { count = count - 1; }",
+            "if (count[2]) { other += 2; } count += 1;",
+            "if (count < 5 && other != 8) { other += 1; } count += 1;",
+            "other = (count + 1) + 16; count += 1;",
+            "count += other; other += 1;",
+            "count = (count + 1) ^ other; other += 1;",
+            "every(300ms) { count += 1; } every(500ms) { other += 1; }",
+            "count += 1; if (count == 3) { count = 7; } count += 2;",
+            "if (clk) { count += 1; } other = clk;",
+        ]
+        for body in bodies:
+            with self.subTest(body=body):
+                source = ("chip Batch(clk,y) { clk = input; y = output; count[4] = 13; "
+                          "other[8]; clock(clk,10Hz) { " + body + " } y = count[3]; }")
+                fast, reference = DigitalSimulation(source), DigitalSimulation(source)
+                for count in (1, 2, 7, 103, 1024):
+                    fast.advance(count)
+                    for _ in range(count):
+                        reference.step()
+                    self.assertEqual(fast.values, reference.values)
+
+    def test_batch_sampled_edges_have_same_cycles_as_reference(self):
+        source = '''chip Sample(clk, y) { clk = input; y = output; phase[8];
+            clock(clk, 1kHz) { phase += 3; } y = phase[7]; }'''
+        fast, reference = DigitalSimulation(source), DigitalSimulation(source)
+        actual, expected = [], []
+        last = 0
+        def record(cycle, values):
+            nonlocal last
+            if last != values["y"]:
+                actual.append((cycle, values["y"]))
+                last = values["y"]
+        fast.advance(2000, traces=("y", "phase"), sample=record, sample_every=233)
+        last = 0
+        for _ in range(2000):
+            reference.step()
+            if last != reference.values["y"]:
+                expected.append((reference.cycles, reference.values["y"]))
+                last = reference.values["y"]
+        self.assertEqual(actual, expected)
+
+    def test_batch_driver_assignment_truncation_is_preserved(self):
+        # A deliberately generated HDL fixture exercises a narrow intermediate;
+        # the OOC front end may reject vector-to-port assignments itself.
+        hdl = '''module Narrow (input wire clk, output wire y);
+            reg [7:0] count = 8'd0; reg [7:0] held = 8'd0;
+            wire short = count;
+            assign y = held[0];
+            always @(posedge clk) begin
+              count <= count + 8'd1;
+              if (short) begin held <= held + 8'd1; end
+            end
+            endmodule'''
+        with patch("circuitlab.math.digital.compile_chips", return_value=[("Narrow", (), (), hdl)]):
+            fast, reference = DigitalSimulation("fixture"), DigitalSimulation("fixture")
+        fast.advance(1001)
+        for _ in range(1001):
+            reference.step()
+        self.assertEqual(fast.values, reference.values)
+
+    def test_batch_budget_and_arguments(self):
+        sim = DigitalSimulation(HYBRID)
+        self.assertEqual(sim.advance(0), 0)
+        self.assertEqual(sim.advance(100, deadline=0), 0)
+        self.assertEqual(sim.cycles, 0)
+        for value in (-1, 0.5):
+            with self.assertRaises(CircuitError):
+                sim.advance(value)
+        with self.assertRaises(CircuitError):
+            sim.advance(1, sample_every=0)
+        with patch("circuitlab.math.digital.perf_counter", side_effect=[0, 10]):
+            self.assertEqual(sim.advance(100, sample=lambda *_: None, sample_every=3, deadline=1), 3)
+
 
 if __name__ == "__main__":
     unittest.main()

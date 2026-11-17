@@ -7,6 +7,7 @@ from pathlib import Path
 import subprocess
 import sys
 from tempfile import TemporaryDirectory
+from time import perf_counter
 import unittest
 from unittest.mock import patch
 
@@ -484,12 +485,14 @@ window.close()
         digital.probe.setCurrentText('counter')
         self.assertIn('counter', digital.waveform.traces)
         self.assertEqual(digital.waveform.history[-1][1]['counter'], 1)
-        digital.toggle()
-        self.assertTrue(digital.timer.isActive())
-        digital.advance()
-        digital.toggle()
+        with patch('circuitlab.viewer.digital.perf_counter', return_value=perf_counter() + 60) as clock:
+            digital.toggle()
+            self.assertTrue(digital.timer.isActive())
+            clock.return_value += .01
+            digital.advance()
+            digital.toggle()
         self.assertFalse(digital.timer.isActive())
-        self.assertGreater(digital.simulation.cycles, 1)
+        self.assertEqual(digital.simulation.cycles, 11)  # One step plus 10 ms at 1 kHz.
         self.assertEqual(self.path.read_bytes(), original_disk)
         self.assertEqual(self.window.session.source, source)
         self.assertEqual(pack_layout(schematic.layout), original_layout)

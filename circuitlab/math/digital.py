@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from graphlib import CycleError, TopologicalSorter
 import operator
 import re
+from time import perf_counter
 
 from circuitlab.exporters.clocked import PRECEDENCE, frequency
 from circuitlab.exporters.verilog import compile_chips
@@ -379,6 +380,8 @@ class DigitalSimulation:
             owners.update(targets)
             edges.append(compiled)
         self._edges = edges
+        from circuitlab.math.digital_fast import FastPlan
+        self._fast_plan = FastPlan(blocks, drivers, widths, self._slots, self.clocks, visible)
 
         def visible_reads(name, seen):
             if name in visible:
@@ -495,3 +498,48 @@ class DigitalSimulation:
         self.cycles += 1
         self._publish()
         return self.values
+
+    def advance(self, cycles, *, traces=(), sample=None, deadline=None, sample_every=1):
+        """Advance exact state, stopping at a wall-time budget if supplied.
+
+        Simple counters/accumulators skip only mathematically proven intervals.
+        Other logic runs the ordinary per-cycle interpreter. Single-bit traces
+        bound skipped intervals at their transitions; vector traces are sampled
+        at most ``sample_every`` cycles apart. Samples before/after each interval
+        preserve the edge positions of those observed single-bit signals.
+        """
+        if not isinstance(cycles, int) or cycles < 0:
+            raise _error("advance requires a nonnegative integer cycle count.")
+        if not isinstance(sample_every, int) or sample_every < 1:
+            raise _error("sample interval must be a positive integer.")
+        start = self.cycles
+        target = start + cycles
+        while self.cycles < target:
+            if deadline is not None and perf_counter() >= deadline:
+                break
+            limit = target - self.cycles
+            if sample is not None:
+                limit = min(limit, sample_every)
+            plan = self._fast_plan.span(self._values, limit, traces) if limit > 1 else None
+            if plan is None or plan[0] == 1:
+                self.step()
+                if sample is not None:
+                    sample(self.cycles, self.values)
+                continue
+            count, increments = plan
+
+            def move(amount):
+                for slot, (delta, mask) in increments.items():
+                    self._values[slot] = (self._values[slot] + delta * amount) & mask
+                self.cycles += amount
+                self._settle()
+                self._publish()
+
+            if sample is not None:
+                move(count - 1)
+                sample(self.cycles, self.values)
+                move(1)
+                sample(self.cycles, self.values)
+            else:
+                move(count)
+        return self.cycles - start
