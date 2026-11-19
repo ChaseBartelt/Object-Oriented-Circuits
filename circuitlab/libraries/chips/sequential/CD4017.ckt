@@ -4,7 +4,7 @@
 
 include("../shared/flipFlop.ckt");
 
-chip CD4017(q5, q1, q0, q2, q6, q7, q3, gnd, q8, q4, q9, carry, clk_inhibit, clk, reset, vdd) {
+chip CD4017(q5, q1, q0, q2, q6, q7, q3, gnd, q8, q4, q9, carry, clk_inhibit, clk, reset, vdd) {  # External ports retain package order; internal instances share only their explicitly bound nets.
     not(vdd, gnd, reset, reset_n);
     not(vdd, gnd, clk_inhibit, enabled);
     and(vdd, (enabled, clk), count_clock);

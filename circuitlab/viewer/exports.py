@@ -1,4 +1,7 @@
 """File dialogs and safe companion-file writes shared by viewer shells."""
+# Serialize the accepted circuit before asking for a destination or writing companion files.
+# A hierarchy export may need several files; keep their geometry and names consistent while
+# protecting a differing existing shared block from an unintended overwrite.
 
 from pathlib import Path
 
@@ -11,6 +14,8 @@ from circuitlab.tooling.session import issue_for
 from circuitlab.viewer.widgets import write_bytes
 
 
+# Recover collapsed child layouts from saved placement records, not a fresh automatic
+# layout that would discard edits merely because the package is closed.
 def hierarchy_layouts(schematic):
     """Recover edited child geometry even while its package is collapsed.
 
@@ -62,6 +67,8 @@ def write_companions(parent, path, files, title):
     return all(write_bytes(parent, target, data, title) for target, data in pending)
 
 
+# Generate all output before committing it, then protect differing existing companion files.
+# An export error should leave the original circuit and previously saved files intact.
 def export_file(parent, generate, title, suffix, file_filter, *,
                 next_step="Open it in LTspice and click Run.", companions=None):
     """Serialize first, then save without overwriting differing shared blocks."""

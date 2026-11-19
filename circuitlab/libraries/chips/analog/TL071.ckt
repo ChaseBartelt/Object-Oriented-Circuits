@@ -2,6 +2,6 @@
 # Ideal op-amp channels. Supply, rail limits, offset and bandwidth are omitted.
 # Datasheet: https://www.ti.com/lit/ds/symlink/tl071.pdf
 
-chip TL071(offset1, minus, plus, vminus, offset2, out, vplus, nc) {
-    op1(plus, minus, out);
+chip TL071(offset1, minus, plus, vminus, offset2, out, vplus, nc) {  # Keep the package pin order while the internal parts define the modeled signal behavior.
+    op1(plus, minus, out);  # Ideal amplifier: the feedback connections determine this channel's behavior.
 }

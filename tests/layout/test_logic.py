@@ -1,4 +1,6 @@
 """Digital diagram placement changes geometry while retaining every endpoint."""
+# Move digital blocks and route bends while treating source/target endpoints as invariants.
+# Serialized geometry should restore those same connections rather than rebuild the logic.
 
 import json
 import unittest

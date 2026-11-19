@@ -1,4 +1,7 @@
 """Align a whole existing drawing without altering its electrical graph."""
+# Grid alignment changes geometry as one explicit operation, not the electrical model.
+# Rounded terminals and wires must still preserve all original connections; otherwise the
+# candidate is rejected instead of forcing nearby distinct nets onto one grid point.
 
 import math
 from collections import defaultdict
@@ -9,6 +12,8 @@ from circuitlab.layout.editing import move_ground
 from circuitlab.layout.wire_edit import clean_point, replace_route, route_anchors, wire_graph
 
 
+# Build and validate a complete aligned candidate before changing the displayed layout.
+# This lets the viewer keep one undo step for an operation affecting many terminals.
 def align_layout(circuit, original, step=0.25):
     """Return a connected grid layout, or None if rounding would join distinct nets.
 

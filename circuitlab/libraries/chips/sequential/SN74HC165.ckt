@@ -4,7 +4,7 @@
 
 include("../shared/flipFlop.ckt");
 
-chip SN74HC165(load_n, clk, e, f, g, h, qh_n, gnd, qh, serial_in, a, b, c, d, clk_inhibit, vcc) {
+chip SN74HC165(load_n, clk, e, f, g, h, qh_n, gnd, qh, serial_in, a, b, c, d, clk_inhibit, vcc) {  # External ports retain package order; internal instances share only their explicitly bound nets.
     or(vcc, gnd, clk, clk_inhibit, shift_clk);
     not(vcc, gnd, a, a_n);
     or(vcc, gnd, load_n, a_n, preset_a_n);

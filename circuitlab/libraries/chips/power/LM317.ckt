@@ -2,15 +2,15 @@
 # Ideal series regulator with a 1.25 V reference and approximately 2 V dropout. No current or thermal limits.
 # Datasheet: https://www.ti.com/lit/ds/symlink/lm317.pdf
 
-chip LM317(adj, out, vin) {
+chip LM317(adj, out, vin) {  # External ports retain package order; internal instances share only their explicitly bound nets.
     VRef(1.25) between(target, adj);
     VHeadroom(2) between(vin, limit);
     VHigh(5) between(high, adj);
-    switch1(limit, target, high, select, 0, 100, 1G);
-    switch2(target, limit, high, limited, 0, 100, 1G);
+    switch1(limit, target, high, select, 0, 100, 1G);  # The first two nodes control the contact between the third and fourth nodes.
+    switch2(target, limit, high, limited, 0, 100, 1G);  # The first two nodes control the contact between the third and fourth nodes.
     RPull1(100k) between(select, adj);
     RPull2(100k) between(limited, adj);
-    switch3(select, adj, target, command, 2.5, 100, 1G);
-    switch4(limited, adj, limit, command, 2.5, 100, 1G);
-    op1(command, out, out);
+    switch3(select, adj, target, command, 2.5, 100, 1G);  # The first two nodes control the contact between the third and fourth nodes.
+    switch4(limited, adj, limit, command, 2.5, 100, 1G);  # The first two nodes control the contact between the third and fourth nodes.
+    op1(command, out, out);  # Ideal amplifier: the feedback connections determine this channel's behavior.
 }

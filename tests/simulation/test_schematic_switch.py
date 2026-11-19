@@ -1,4 +1,6 @@
 """Switch states affect DC/AC networks and preserve live stored energy."""
+# Open/closed contact resistance must affect DC and AC consistently.
+# Changing switch state during a compatible time run must retain capacitor/inductor history.
 
 import unittest
 

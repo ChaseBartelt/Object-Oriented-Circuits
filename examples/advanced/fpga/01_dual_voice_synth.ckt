@@ -9,11 +9,11 @@
 # Frequencies have 32-bit DDS rounding (resolution 50MHz / 2^32).
 # Board mode synchronizes switches automatically. No analog audio/DAC model.
 
-chip Voice(clk, low, high, reset_phase, tone) {
+chip Voice(clk, low, high, reset_phase, tone) {  # Independent phase accumulators turn selected frequencies into two mixed digital voices.
     clk, low, high, reset_phase = input;
     tone = output;
     phase[32];
-    clock(clk, 50MHz) {
+    clock(clk, 50MHz) {  # Rising-edge updates in this block read the pre-edge state.
         if (reset_phase) { phase = 0; }
         else if (high) {
             if (low) { phase += 440Hz; }
@@ -32,7 +32,7 @@ chip Mixer(clk, a, b, low, high, tremolo, mute, audio, gate_light, beat) {
     mixed = wire;
     gate_state;
     heartbeat;
-    clock(clk, 50MHz) {
+    clock(clk, 50MHz) {  # Rising-edge updates in this block read the pre-edge state.
         every(125ms) { gate_state = !gate_state; }
         every(500ms) { heartbeat = !heartbeat; }
     }
@@ -53,7 +53,7 @@ chip Tap(signal_in, signal_out) {
     signal_out = signal_in;
 }
 
-main HYBRID01 {
+main HYBRID01 {  # Assemble the declared parts and chips using the named connections below.
     MAX10_CLK1_50, SW0, SW1, SW2, SW3, SW4, SW5, SW6, SW7, SW9 = input;
     AUDIO_OUT = output;
     for (int i = 0; i < 10; i++) { LEDR${i} = output; }

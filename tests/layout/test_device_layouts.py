@@ -1,4 +1,6 @@
 """Library-wide layout editing, independent defaults and geometry reuse."""
+# Preview real library declarations and rebind their saved geometry to other instances.
+# Shared defaults, nested drafts, and user drag/undo behavior must not change device wiring.
 
 import os
 from dataclasses import replace
@@ -26,10 +28,12 @@ from circuitlab.viewer.schematic import SchematicView, point
 
 
 class DeviceLayoutsTest(unittest.TestCase):
+    # Qt permits one QApplication per process; reuse it across this test class.
     @classmethod
     def setUpClass(cls):
         cls.app = QApplication.instance() or QApplication([])
 
+    # Give this case private files so disk edits cannot leak into another test case.
     def setUp(self):
         self.temp = TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)

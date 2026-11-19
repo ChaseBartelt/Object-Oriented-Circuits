@@ -19,7 +19,7 @@
 # The board profile supplies switch synchronizers, not mechanical debounce.
 # Hardware-untested educational example; no external dependencies.
 
-chip HYBRID01(MAX10_CLK1_50, SW0, SW1, SW2, SW3, SW4, SW9, LEDR0, LEDR1, LEDR2, LEDR3, LEDR4, LEDR5, LEDR6, LEDR7, LEDR8, LEDR9) {
+chip HYBRID01(MAX10_CLK1_50, SW0, SW1, SW2, SW3, SW4, SW9, LEDR0, LEDR1, LEDR2, LEDR3, LEDR4, LEDR5, LEDR6, LEDR7, LEDR8, LEDR9) {  # Clocked state selects a pattern step while output expressions display the current stored state.
     MAX10_CLK1_50, SW0, SW1, SW2, SW3, SW4, SW9 = input;
     LEDR0, LEDR1, LEDR2, LEDR3, LEDR4, LEDR5, LEDR6, LEDR7, LEDR8, LEDR9 = output;
 
@@ -31,7 +31,7 @@ chip HYBRID01(MAX10_CLK1_50, SW0, SW1, SW2, SW3, SW4, SW9, LEDR0, LEDR1, LEDR2, 
     bounce_position[3] = wire;
     chase_mode, bounce_mode, gray_mode = wire;
 
-    clock(MAX10_CLK1_50, 50MHz) {
+    clock(MAX10_CLK1_50, 50MHz) {  # Rising-edge updates in this block read the pre-edge state.
         every(50ms) {
             if (SW9) {
                 position = 0;

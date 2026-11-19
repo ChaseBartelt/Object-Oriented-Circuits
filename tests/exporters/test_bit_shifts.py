@@ -1,4 +1,6 @@
 """Unsigned bus operations agree across lowering, stepping and event skipping."""
+# Compare lowered expressions, ordinary cycle stepping, and accelerated stepping on the same
+# unsigned widths so an optimization cannot hide a truncation, precedence, or wraparound error.
 
 import unittest
 

@@ -1,6 +1,6 @@
 # Regenerative differential stage. Thresholds depend on supply and loading.
 include("differential.ckt");
-circuit oocSchmittInvert(vcc, gnd, a, y) {
+circuit oocSchmittInvert(vcc, gnd, a, y) {  # Each invocation receives private internal nets while its declared ports bind to the caller.
     RHigh(10k) between(vcc, ref);
     RLow(10k) between(ref, gnd);
     RFeedback(47k) between(y, ref);

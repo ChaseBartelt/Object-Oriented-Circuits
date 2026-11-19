@@ -1,4 +1,6 @@
 """Regression tests for the LTspice netlist produced from circuit source."""
+# Check exported names, model terminals, source polarity, and scoped ground identities.
+# A file that parses as SPICE is insufficient if it silently changes the electrical graph.
 
 import unittest
 from math import tau

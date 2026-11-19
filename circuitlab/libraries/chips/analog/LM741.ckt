@@ -2,10 +2,10 @@
 # Ideal op-amp channels. Supply, rail limits, offset and bandwidth are omitted.
 # Datasheet: https://www.ti.com/lit/ds/symlink/lm741.pdf
 
-chip LM741(offset1, minus, plus, vminus, offset2, out, vplus, nc) {
-    op1(plus, minus, out);
+chip LM741(offset1, minus, plus, vminus, offset2, out, vplus, nc) {  # Keep the package pin order while the internal parts define the modeled signal behavior.
+    op1(plus, minus, out);  # Ideal amplifier: the feedback connections determine this channel's behavior.
 }
 
-chip uA741(offset1, minus, plus, vminus, offset2, out, vplus, nc) {
+chip uA741(offset1, minus, plus, vminus, offset2, out, vplus, nc) {  # Keep the package pin order while the internal parts define the modeled signal behavior.
     LM741(offset1, minus, plus, vminus, offset2, out, vplus, nc);
 }

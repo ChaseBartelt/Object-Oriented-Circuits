@@ -1,4 +1,6 @@
 """Editor recognition remains useful without importing a graphical editor."""
+# Use incomplete and Unicode-containing documents to verify tolerant editor recognition.
+# UTF-16 positions, included signatures, and method names must resolve without constructing Qt.
 
 from pathlib import Path
 import json

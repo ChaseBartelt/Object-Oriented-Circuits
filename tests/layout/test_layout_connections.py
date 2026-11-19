@@ -1,4 +1,6 @@
 """Split grounds and reconnect labeled islands without changing electrical nets."""
+# Visible islands may reconnect only within the exact same electrical net.
+# Splitting and joining wires must handle ground symbols and labels without grounding a sense node.
 
 from copy import deepcopy
 from dataclasses import replace

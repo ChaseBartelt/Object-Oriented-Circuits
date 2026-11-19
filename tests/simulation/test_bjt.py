@@ -1,4 +1,6 @@
 """Exercise BJT blocks through compilation, drawing, and SPICE export."""
+# Exercise transistor polarity, terminals, and exported models through public compiler paths.
+# Oscillator cases check that the native time-domain model advances through switching edges.
 
 import unittest
 from pathlib import Path

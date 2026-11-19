@@ -1,4 +1,6 @@
 """IDE reload requests update a live Qt window without revealing the code panel."""
+# Send real bridge requests into a viewer while keeping source and placement ownership clear.
+# Background saves must synchronize without raising windows or discarding dirty state.
 
 import io
 import json
@@ -19,10 +21,12 @@ from circuitlab.viewer.window import ViewerWindow
 
 
 class EditorBridgeTest(unittest.TestCase):
+    # Qt permits one QApplication per process; reuse it across this test class.
     @classmethod
     def setUpClass(cls):
         cls.app = QApplication.instance() or QApplication([])
 
+    # Give this case private files so disk edits cannot leak into another test case.
     def setUp(self):
         self.directory = TemporaryDirectory()
         self.path = Path(self.directory.name) / "circuit with spaces.ckt"

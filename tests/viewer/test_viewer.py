@@ -1,4 +1,7 @@
 """Exercise the independent viewer and its presentation-only persistence."""
+# Exercise the IDE-first shell with its real source transaction and persistence machinery.
+# Dirty values/layouts, file changes, and included definitions must retain ownership through
+# acknowledgement, Discard, failed opens, and asynchronous refreshes.
 
 from dataclasses import replace
 import json
@@ -28,10 +31,12 @@ DIVIDER = "V1(5) between(supply, 0);\nR1(1k) between(supply, out);\nR2(1k) betwe
 
 
 class ViewerTest(unittest.TestCase):
+    # Qt permits one QApplication per process; reuse it across this test class.
     @classmethod
     def setUpClass(cls):
         cls.app = QApplication.instance() or QApplication([])
 
+    # Give this case private files so disk edits cannot leak into another test case.
     def setUp(self):
         self.directory = TemporaryDirectory()
         self.path = Path(self.directory.name) / "viewer circuit.ckt"

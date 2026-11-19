@@ -1,4 +1,4 @@
-circuit oocMux2(vcc, gnd, select, a, b, y) {
+circuit oocMux2(vcc, gnd, select, a, b, y) {  # Each invocation receives private internal nets while its declared ports bind to the caller.
     not(vcc, gnd, select, select_n);
     nand(vcc, gnd, a, select_n, a_n);
     nand(vcc, gnd, b, select, b_n);

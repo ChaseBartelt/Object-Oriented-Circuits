@@ -1,3 +1,5 @@
+% Run the original MATLAB implementation to create an independent historical regression oracle.
+% Solve and render errors are captured separately, and complex values are serialized explicitly.
 function captureReference(legacyRoot, casePath, resultPath)
 % Capture resolved topology and numerical results from the original MATLAB app.
 addpath(legacyRoot);
@@ -7,6 +9,7 @@ template = struct('id','','mode','','error','','renderError','','known',[],'calc
     'positions',[],'paths',[],'probeValues',[],'legacyMeasurement',[], ...
     'equations',[],'rowLabels',{{}});
 results = repmat(template,1,numel(cases));
+% Keep one result record for every requested case, including cases that intentionally fail.
 for i = 1:numel(cases)
     item = cases(i);
     out = template;
@@ -36,6 +39,7 @@ for i = 1:numel(cases)
     catch failure
         out.error = failure.identifier;
     end
+    % Capture geometry independently of numeric success; a circuit may render while its solve fails.
     if item.render
         try
             rendering = ec.solveInput(mode,source,true);
@@ -51,12 +55,14 @@ for i = 1:numel(cases)
     end
     results(i) = out;
 end
+% Write the complete reference data only after all cases have been collected.
 file = fopen(resultPath,'w','n','UTF-8');
 cleanup = onCleanup(@() fclose(file));
 fprintf(file,'%s\n',jsonencode(results,PrettyPrint=true));
 fprintf('REFERENCE CAPTURED: %d cases\n',numel(results));
 end
 
+% JSON has no complex scalar type, so retain real and imaginary parts as a pair.
 function values = packValues(raw)
 values = struct();
 for name = string(fieldnames(raw)).'
@@ -65,10 +71,13 @@ for name = string(fieldnames(raw)).'
 end
 end
 
+% Flatten values consistently and keep a separate real/imaginary column for each entry.
 function array = packArray(values)
 array = [real(values(:)),imag(values(:))];
 end
 
+% Preserve component ordering and terminal names so topology comparisons remain independent
+% of how later Python code chooses to implement its solver.
 function parts = packBranches(elements)
 parts = repmat(struct('name','','kind','','p','','n','','plus','','minus','','value',[]),1,numel(elements));
 for i = 1:numel(elements)
@@ -78,6 +87,7 @@ for i = 1:numel(elements)
 end
 end
 
+% Capture solved node/branch arrays and optional port equivalents using the same pair encoding.
 function out = packNetwork(network)
 out = [];
 if isempty(network), return; end

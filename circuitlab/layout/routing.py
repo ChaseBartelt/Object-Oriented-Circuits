@@ -1,4 +1,7 @@
 """Place and route arbitrary circuit graphs with orthogonal wire channels."""
+# General routing assigns components to cells and connects pins through shared net tracks.
+# Candidate cost chooses among electrically valid drawings; optimization can shorten a route
+# but cannot justify missing contacts, shorts between nets, or wires through component bodies.
 
 import math
 from itertools import islice
@@ -30,6 +33,8 @@ LANE_PITCH = 0.46
 TRACK_PITCH = 0.96
 
 
+# Try readable topology-specific views, then general routing, and validate the chosen
+# geometry against the original electrical net identities.
 def schematic_layout(circuit, labels, mode):
     """Choose a layout and check that its visible connections preserve the graph."""
     if mode == "labeled":
@@ -135,6 +140,8 @@ def _orders(parts, pins, grounds):
         yield order
 
 
+# Use column gutters to reach shared horizontal tracks, keeping terminal identities
+# attached to their own nets even when several routes cross visually.
 def _channel_layout(
     circuit, labels, pins, flipped, reversed_parts, cells, separated, local,
     *, tight=False, rotate=False, source_offsets=None, source_flips=(), regular=False,
@@ -540,6 +547,8 @@ def _placement_trials(circuit, pins, runs, order):
         yield [*sources, *(i for block in moved for i in block)]
 
 
+# Search multiple placements instead of committing the first valid route; refine only
+# within bounded work so large designs remain usable.
 def connected_layout(circuit, labels, *, simplify=False):
     """Search several placements and refine the best with local block moves."""
     parts = circuit.components
@@ -641,6 +650,8 @@ def connected_layout(circuit, labels, *, simplify=False):
     return labeled(circuit, labels)
 
 
+# Propose shorter tracks and nearby component moves, accepting only complete valid
+# layouts rather than optimizing wire length at the expense of connectivity.
 def _compact_channels(
     circuit, labels, pins, flipped, reversed_parts, cells, separated, local,
     drawing, units, feedback,

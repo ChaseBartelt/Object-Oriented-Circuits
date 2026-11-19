@@ -1,4 +1,6 @@
 """Check that LTspice's symbol pins connect to the original circuit nets."""
+# Read the exported symbol/wire connectivity independently of its visual appearance.
+# Every physical terminal must retain its original net through rotation and hierarchy export.
 
 import unittest
 from pathlib import Path

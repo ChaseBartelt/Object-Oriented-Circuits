@@ -1,4 +1,6 @@
 """Historical MATLAB wire placement retained for reference comparisons."""
+# This route is a historical comparison path for captured MATLAB behavior.
+# Keep its coordinate conventions isolated from the newer interactive routing algorithms.
 
 import math
 from collections import defaultdict

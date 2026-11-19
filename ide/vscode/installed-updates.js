@@ -1,3 +1,7 @@
+// Installed-runtime discovery and extension synchronization share the installer's integrity
+// metadata.
+// An available release is offered explicitly; partial/corrupt artifacts never become an editor
+// update.
 // Complete installed application updates; local development keeps its existing feed.
 const { execFile } = require("node:child_process");
 const fs = require("node:fs/promises");
@@ -18,6 +22,7 @@ function invoke(installation, command, version) {
     }));
 }
 
+// Validate bounded file content against its recorded digest before parsing or installing it.
 async function verified(file, checksum, limit) {
     if (!/^[a-f0-9]{64}$/.test(checksum || "")) throw new Error("Invalid installed extension checksum.");
     const info = await fs.stat(file);
@@ -27,6 +32,8 @@ async function verified(file, checksum, limit) {
     return data;
 }
 
+// Serialize checks and synchronize the bundled editor integration before offering an application
+// update. Recheck disposal/trust after asynchronous boundaries before applying results.
 function installedUpdater(vscode, context, getInstallation, output, applyRuntime, run = invoke) {
     let busy = false, disposed = false, lastCheck = 0;
     let extensionVersion = context.extension.packageJSON.version;

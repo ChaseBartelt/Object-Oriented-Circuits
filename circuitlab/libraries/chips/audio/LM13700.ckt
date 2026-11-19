@@ -2,6 +2,6 @@
 # Pinout only. Current-controlled transconductance and buffers need a model.
 # Datasheet: https://www.ti.com/lit/ds/symlink/lm13700.pdf
 
-chip LM13700(bias1, diode1, plus1, minus1, ota_out1, vminus, buffer_in1, buffer_out1, buffer_out2, buffer_in2, vplus, ota_out2, minus2, plus2, diode2, bias2) {
-    model = unavailable;
+chip LM13700(bias1, diode1, plus1, minus1, ota_out1, vminus, buffer_in1, buffer_out1, buffer_out2, buffer_in2, vplus, ota_out2, minus2, plus2, diode2, bias2) {  # Package pinout only: numerical behavior requires an additional model.
+    model = unavailable;  # Allow a schematic preview while refusing a numerical solve without a model.
 }

@@ -1,4 +1,7 @@
 """IDE-first schematic/results window; source editing belongs to the IDE."""
+# The IDE-first shell owns a session and presentation state rather than a source text widget.
+# Render/solve results, layout comments, and value edits must follow the same accepted source
+# revision; background refreshes must not steal focus or discard unacknowledged edits.
 
 from pathlib import Path
 
@@ -207,6 +210,8 @@ class ViewerWindow(QMainWindow):
             self.activateWindow()
         return True
 
+    # Treat background reload as synchronization, not a user request to raise the window
+    # or discard pending source/value edits.
     def refresh_from_editor(self, filename):
         return self.open_from_editor(filename, activate=False)
 
@@ -259,6 +264,7 @@ class ViewerWindow(QMainWindow):
         dialog.exec()
         dialog.deleteLater()
 
+    # Refresh session results and diagnostics from the current accepted source revision.
     def compile_source(self, *, preserve_scope=False):
         show_logic = self.views.currentWidget() is self.digital
         if getattr(self, "fpga_window", None):
@@ -314,6 +320,8 @@ class ViewerWindow(QMainWindow):
         self.status.setText("Schematic rendered.")
         return True
 
+    # Digital software runtime state is separate from an analog chip's electrical model preview;
+    # switching source kinds must clear values that no longer belong to the current circuit.
     def update_digital(self):
         """Keep the digital runtime separate from electrical model previews."""
         try:
@@ -458,6 +466,8 @@ class ViewerWindow(QMainWindow):
         self.setWindowTitle(f"{name}[*] — Electric Circuits")
         self.setWindowModified(self.placement_dirty)
 
+    # Read the latest source before embedding presentation metadata. In IDE mode, retain dirty
+    # state until the checked edit is acknowledged instead of overwriting the editor's text.
     def save(self):
         """Save layout comments against the latest source, through the IDE when attached."""
         if self.path is None:
@@ -560,6 +570,8 @@ class ViewerWindow(QMainWindow):
                 self.status.setText(" ".join((self.status.text(), *notes)))
         return exported
 
+    # Respect outstanding edit transactions and stop live simulation work before releasing
+    # the window and its scene objects.
     def closeEvent(self, event):
         if getattr(self, "fpga_window", None) and self.fpga_window.busy:
             self.status.setText("Wait for the FPGA operation to finish before closing the viewer.")

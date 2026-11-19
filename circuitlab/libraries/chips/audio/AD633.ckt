@@ -2,6 +2,6 @@
 # Pinout only. Multiplier and summing stage need a behavioral model.
 # Datasheet: https://www.analog.com/media/en/technical-documentation/data-sheets/AD633.pdf
 
-chip AD633(x1, x2, y1, y2, vminus, z, w, vplus) {
-    model = unavailable;
+chip AD633(x1, x2, y1, y2, vminus, z, w, vplus) {  # Package pinout only: numerical behavior requires an additional model.
+    model = unavailable;  # Allow a schematic preview while refusing a numerical solve without a model.
 }

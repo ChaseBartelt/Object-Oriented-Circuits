@@ -1,4 +1,7 @@
 """Independent shared layouts for bundled chips and their internal circuits."""
+# Shared device templates are keyed by actual chip declarations, not include-only alias files.
+# A preview uses distinct ports so reusing its coordinates cannot silently merge unrelated
+# terminals when the template is rebound to a live circuit instance.
 
 import json
 from dataclasses import dataclass, replace
@@ -37,6 +40,7 @@ class LibraryDevice:
         return f'include("@chips/{self.file}");\nmain {{ {self.name}({", ".join(self.arguments)}); }}'
 
 
+# Count actual chip declarations so short include-only aliases do not duplicate devices.
 def library_devices():
     """Read real declarations; include-only alias files are not extra devices."""
     return tuple(
@@ -47,6 +51,7 @@ def library_devices():
     )
 
 
+# Give exposed signal pins distinct nets to make accidental template shorts detectable.
 def device_preview(device):
     """Instantiate distinct signal ports, retaining nested package identities."""
     circuit = compile_circuit(device.example, render_only=True)

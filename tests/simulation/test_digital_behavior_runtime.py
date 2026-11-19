@@ -1,4 +1,6 @@
 """Exercise behavioral buses and selectors through the compiler and live viewer."""
+# Follow generated buses and selectors into the live runtime so diagram grouping cannot
+# mask an incorrect bit binding, independent state slot, or clocked update.
 
 import os
 import unittest
@@ -147,6 +149,7 @@ class BehavioralRuntimeTest(unittest.TestCase):
 
 
 class BehavioralViewerTest(unittest.TestCase):
+    # Qt permits one QApplication per process; reuse it across this test class.
     @classmethod
     def setUpClass(cls):
         cls.app = QApplication.instance() or QApplication([])

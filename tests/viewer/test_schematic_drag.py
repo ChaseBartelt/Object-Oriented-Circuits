@@ -1,4 +1,7 @@
 """Regressions for predictable grid movement without changing electrical nets."""
+# Pointer movement proposes snapped valid geometry without changing the circuit graph.
+# Invalid candidates, hidden grids, and expanded packages must recover predictably and remain
+# undoable.
 
 import os
 import unittest
@@ -23,6 +26,7 @@ from circuitlab.viewer.snapping import grid_step
 
 
 class SchematicDragTest(unittest.TestCase):
+    # Qt permits one QApplication per process; reuse it across this test class.
     @classmethod
     def setUpClass(cls):
         cls.app = QApplication.instance() or QApplication([])

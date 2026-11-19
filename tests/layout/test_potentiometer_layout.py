@@ -1,4 +1,6 @@
 """Native potentiometer pins survive routing, rotation and saved placements."""
+# All three potentiometer terminals must survive automatic routing and saved-layout restore.
+# The wiper position changes its glyph/value, while rotations move every contact consistently.
 
 from dataclasses import replace
 import unittest

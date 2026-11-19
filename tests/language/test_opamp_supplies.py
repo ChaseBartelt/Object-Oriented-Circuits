@@ -1,4 +1,6 @@
 """Optional ideal-opamp supply pins are visible without changing signal math."""
+# Optional supply terminals describe wiring without introducing rail clipping or artificial
+# floating numerical nodes into the ideal three-signal-pin amplifier model.
 
 import unittest
 

@@ -4,6 +4,9 @@ Source remains authoritative for electrical connections. A session can build a
 render graph even when its operating point cannot be solved. Geometry and user
 interface state belong to the caller, not to the electrical graph.
 """
+# The accepted source revision owns compilation results, diagnostics, and a separate drawing.
+# Changing source invalidates derived data immediately; a renderable package may still be
+# shown when its numerical model or operating point is unavailable.
 
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -62,6 +65,8 @@ class CircuitSession:
         self.set_source(source)
         self.pin_overrides = {}
 
+    # A new source revision invalidates both the numeric solution and the drawing immediately;
+    # later compilation must not accidentally present results from the previous document.
     def set_source(self, source):
         """Invalidate old results immediately when source is replaced."""
         self.source = source
@@ -107,6 +112,8 @@ class CircuitSession:
             return f"\nmain {{ {name}({pins}); }}\n"
         return None
 
+    # Choose a digital package preview or an electrical drawing independently of numerical
+    # analysis, so a missing analog model does not hide a useful pinout.
     def render(self, mode="auto"):
         """Produce the electrical or digital package view without solving it."""
         source = self.source
@@ -132,6 +139,8 @@ class CircuitSession:
             self.drawing = self.build_circuit(mode, render_only=True, source=source + (preview or ""))
         return self.drawing
 
+    # Try solving and rendering as separate operations. Keep useful geometry when solving fails,
+    # and avoid reporting a missing drawing as an error for quantity-only calculations.
     def compile(self, mode="auto", *, solve=True):
         """Refresh diagnostics, solution and drawing for the current source.
 

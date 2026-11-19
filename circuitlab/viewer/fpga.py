@@ -1,4 +1,7 @@
 """Build OOC and configure a DE10-Lite using Quartus's background tools."""
+# The dialog sequences asynchronous build, report, chain-scan, and programming processes.
+# A successful report or cached image is not sufficient to enable programming: the verified
+# build must still match the current source and selected hardware when the user requests it.
 
 from pathlib import Path
 import re
@@ -17,6 +20,8 @@ from circuitlab.viewer.fpga_performance import PerformancePanel
 from circuitlab.viewer.widgets import button
 
 
+# Only one external process sequence runs at a time. Source changes invalidate the image
+# while asynchronous results are in flight, preventing an older build from becoming current.
 class FpgaDialog(QDialog):
     """One process at a time; programming requires an explicit button click."""
 

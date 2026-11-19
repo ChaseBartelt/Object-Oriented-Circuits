@@ -1,4 +1,6 @@
 """Width-bearing expression declarations infer wires without redefining state."""
+# Distinguish a computed wire declaration from a stored literal initializer or an indexed
+# assignment, including nested instances and errors reported on the original source line.
 
 import unittest
 

@@ -1,10 +1,13 @@
 """Launch the IDE viewer or optional source editor."""
+# Choose the lightweight IDE viewer or the optional source editor at startup.
+# Qt and window classes are loaded inside main so importing the package does not open a GUI.
 
 import argparse
 import sys
 import json
 
 
+# Use the stdin bridge only for IDE-controlled windows; standalone files use the editor shell.
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("file", nargs="?", help="Circuit source file")

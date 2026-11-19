@@ -1,4 +1,7 @@
 """Checked source changes requested by the schematic editor."""
+# Schematic edits are plans containing before/after source, not immediate unchecked writes.
+# Locate one unambiguous original statement, validate the edited circuit, then let the caller
+# commit it through its existing file/IDE acknowledgement and undo machinery.
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -22,6 +25,8 @@ ASSIGN = re.compile(r'(?P<name>[RCLZS]\w*)\s*=\s*(?P<value>[^;#\r\n]*)', re.I)
 CALL = re.compile(r'(?P<name>[A-Za-z_]\w*)\s*\((?P<pins>[^()\r\n]*)\)')
 
 
+# Source lines and instance names identify the original declaration. Reject ambiguous
+# generated statements rather than editing a nearby component with a similar name.
 def source_target(circuit, name, root, source, read_source):
     """Find one explicit statement; never guess a generated gate/loop body."""
     line, path = circuit.component_lines.get(name), circuit.component_files.get(name, root)
@@ -46,6 +51,8 @@ def source_target(circuit, name, root, source, read_source):
     return path, text, offset, matches[0]
 
 
+# Replace only the value span, then recompile the proposed source with its include reader.
+# The returned plan remains reversible and has not written a file yet.
 def edit_value(circuit, name, value, root, source, read_source):
     part = next(p for p in circuit.components if p.name == name)
     if part.kind not in {'R', 'C', 'L', 'Z', 'P'}:
@@ -82,6 +89,8 @@ def edit_value(circuit, name, value, root, source, read_source):
     return SourceEdit(path, before, after, f'Change {match["name"]} value')
 
 
+# Canonicalize the selected state while preserving terminal names, surrounding whitespace,
+# and comments; shared-definition edits continue to affect all of that definition's instances.
 def edit_switch(circuit, name, closed, root, source, read_source):
     """Change one manual switch state without changing its connections."""
     part = next(p for p in circuit.components if p.name == name)

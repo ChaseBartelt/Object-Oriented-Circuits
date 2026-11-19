@@ -1,4 +1,6 @@
 """Optional op-amp power pins remain visible and probeable after rotation."""
+# Probe the actual top/bottom contact identities and their captions across rotations.
+# The older three-terminal glyph must remain unchanged when supply identifiers are omitted.
 
 import os
 import unittest
@@ -15,6 +17,7 @@ from circuitlab.viewer.schematic import SchematicView, point
 
 
 class OpAmpSupplyPinsTest(unittest.TestCase):
+    # Qt permits one QApplication per process; reuse it across this test class.
     @classmethod
     def setUpClass(cls):
         cls.app = QApplication.instance() or QApplication([])

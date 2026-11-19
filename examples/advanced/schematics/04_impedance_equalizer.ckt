@@ -4,30 +4,30 @@
 # At 1 Vrms input: quadrature=-2j V, equalized=1 V, wetMix=-1+j V, null=0 V.
 # wetMix=-(input+quadrature/2), so its magnitude is sqrt(2) Vrms at +135 degrees.
 # Changing f leaves these fixed-Z gains unchanged. All op amps are ideal.
-Vin(1 Vrms) between(input, 0);
+Vin(1 Vrms) between(input, 0);  # The phasor-domain circuit compares its frequency-dependent branches through explicit probes.
 f = 1k;
 
 
-main {
+main {  # Assemble the declared parts and chips using the named connections below.
     Zinput(2-j2 kohm) between(input, firstSum);
     Zfeedback(4+j4 kohm) between(quadrature, firstSum);
-    op1(0, firstSum, quadrature);
+    op1(0, firstSum, quadrature);  # Ideal amplifier: the feedback connections determine this channel's behavior.
 
     ZinverseInput(4+j4 kohm) between(quadrature, secondSum);
     ZinverseFeedback(2-j2 kohm) between(equalized, secondSum);
-    op2(0, secondSum, equalized);
+    op2(0, secondSum, equalized);  # Ideal amplifier: the feedback connections determine this channel's behavior.
 
     Rdry(10k) between(input, mixSum);
     Rwet(20k) between(quadrature, mixSum);
     RmixFeedback(10k) between(wetMix, mixSum);
-    op3(0, mixSum, wetMix);
+    op3(0, mixSum, wetMix);  # Ideal amplifier: the feedback connections determine this channel's behavior.
 
     # A unity-gain difference amplifier tests the recovered signal against the original.
     Rnull1(10k) between(equalized, nullPlus);
     Rnull2(10k) between(nullPlus, 0);
     Rnull3(10k) between(input, nullMinus);
     Rnull4(10k) between(null, nullMinus);
-    op4(nullPlus, nullMinus, null);
+    op4(nullPlus, nullMinus, null);  # Ideal amplifier: the feedback connections determine this channel's behavior.
     RloadQuadrature(10k) between(quadrature, 0);
     RloadEqualized(10k) between(equalized, 0);
     RloadMix(10k) between(wetMix, 0);

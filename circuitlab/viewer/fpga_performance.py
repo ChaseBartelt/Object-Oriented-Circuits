@@ -1,4 +1,7 @@
 """Display measured FPGA results and an explicitly saved comparison baseline."""
+# Performance widgets display measured results and explicit baseline comparisons only.
+# Missing values remain unknown, incompatible reports are not subtracted, and loading a
+# saved report cannot grant the separate permission/verification needed to program hardware.
 
 from pathlib import Path
 
@@ -118,6 +121,8 @@ class PerformancePanel(QWidget):
                 return self.report
         return None
 
+    # Display only comparable deltas and preserve unknown measurements as unknown.
+    # A saved report describes performance, not a currently verified programming image.
     def refresh(self):
         current = self._current()
         baseline = self.baseline or {}
@@ -193,6 +198,7 @@ class PerformancePanel(QWidget):
         lines.extend(("", f"Reports: {report.get('build_directory', '')}"))
         return "\n".join(lines)
 
+    # Make baseline replacement an explicit operation rather than a side effect of building.
     def save_current_baseline(self):
         current = self._current()
         if not current or not current.get("verified") or self.building:

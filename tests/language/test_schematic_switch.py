@@ -1,4 +1,6 @@
 """Native switch declarations preserve state and identity through expansion."""
+# Manual two-contact switches have state aliases and scoped names distinct from the
+# existing four-terminal voltage-controlled switch; both forms must keep their identities.
 
 import unittest
 

@@ -1,4 +1,4 @@
-circuit oocTimerLatch(vcc, gnd, set, clear, q, qbar) {
+circuit oocTimerLatch(vcc, gnd, set, clear, q, qbar) {  # Each invocation receives private internal nets while its declared ports bind to the caller.
     nor(vcc, gnd, clear, qbar, q);
     nor(vcc, gnd, set, q, qbar);
 }

@@ -2,9 +2,9 @@
 # 5 V control approximation. Uses bidirectional 470 ohm / 1 Gohm switches with a 2.5 V threshold.
 # Datasheet: https://www.ti.com/lit/ds/symlink/cd4066b.pdf
 
-chip CD4066(a1, b1, b2, a2, ctl2, ctl3, gnd, a3, b3, b4, a4, ctl4, ctl1, vdd) {
-    switch1(ctl1, gnd, a1, b1, 2.5, 470, 1G);
-    switch2(ctl2, gnd, a2, b2, 2.5, 470, 1G);
-    switch3(ctl3, gnd, a3, b3, 2.5, 470, 1G);
-    switch4(ctl4, gnd, a4, b4, 2.5, 470, 1G);
+chip CD4066(a1, b1, b2, a2, ctl2, ctl3, gnd, a3, b3, b4, a4, ctl4, ctl1, vdd) {  # External ports retain package order; internal instances share only their explicitly bound nets.
+    switch1(ctl1, gnd, a1, b1, 2.5, 470, 1G);  # The first two nodes control the contact between the third and fourth nodes.
+    switch2(ctl2, gnd, a2, b2, 2.5, 470, 1G);  # The first two nodes control the contact between the third and fourth nodes.
+    switch3(ctl3, gnd, a3, b3, 2.5, 470, 1G);  # The first two nodes control the contact between the third and fourth nodes.
+    switch4(ctl4, gnd, a4, b4, 2.5, 470, 1G);  # The first two nodes control the contact between the third and fourth nodes.
 }

@@ -1,3 +1,7 @@
+# Manual CI pipeline: validate source, build a complete installer, and exercise the installed
+# payload.
+# Draft release creation is conditional; uploaded validation artifacts help diagnose failed
+# installs.
 name: Windows installer
 
 on:
@@ -37,6 +41,7 @@ jobs:
             node --check $_.FullName
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
+      # The build compiler is pinned and checksum-verified before it is used to package the payload.
       - name: Prepare verified Inno Setup compiler
         shell: pwsh
         run: |
@@ -49,6 +54,8 @@ jobs:
       - name: Build complete installer
         shell: pwsh
         run: python installer/windows/build_installer.py --iscc "$env:RUNNER_TEMP/inno/ISCC.exe" --output dist/windows
+      # Exercise installation behavior in disposable runner directories before publishing the
+      # artifacts.
       - name: Verify installed runtime, repair, update and uninstall
         shell: pwsh
         run: |
@@ -70,6 +77,7 @@ jobs:
             ${{ runner.temp }}/ooc-verification/**/validation.json
             ${{ runner.temp }}/ooc-verification/**/installed-tests.json
             ${{ runner.temp }}/ooc-verification/**/*.log
+      # A successful build can create a reviewable draft only when the workflow input requests it.
       - name: Create reviewable draft release
         if: inputs.draft_release
         shell: pwsh

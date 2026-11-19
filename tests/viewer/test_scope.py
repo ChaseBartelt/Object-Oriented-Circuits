@@ -1,4 +1,7 @@
 """AC run/pause controls feed the existing oscilloscope with simulated samples."""
+# Drive the real scope controls and sample history through run/pause/resume/reset.
+# Node/value/step adjustments must preserve compatible history while unsupported models explain
+# failure.
 
 import math
 import os
@@ -18,6 +21,7 @@ SOURCE = "battery test { Vrms=2; phaseV=30; f=1k; wire=vin; }\nmain { series { R
 
 
 class OscilloscopeTest(unittest.TestCase):
+    # Qt permits one QApplication per process; reuse it across this test class.
     @classmethod
     def setUpClass(cls):
         cls.app = QApplication.instance() or QApplication([])

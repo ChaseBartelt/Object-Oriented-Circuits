@@ -4,6 +4,7 @@
 #endif
 #define Bundle "versions\" + AppVersion
 
+; Install a versioned, per-user payload so validation can finish before the active runtime changes.
 [Setup]
 AppId={{96DCC84C-C824-45CC-A49E-BC6AA67B39C2}
 AppName=Object-Oriented Circuits
@@ -33,22 +34,27 @@ UninstallDisplayName=Object-Oriented Circuits
 UninstallDisplayIcon={app}\{#Bundle}\runtime\pythonw.exe
 ChangesAssociations=no
 
+; Editor integration and the desktop shortcut are independent optional installation tasks.
 [Tasks]
 Name: "vscode"; Description: "Install or update the OOC extension in VS Code"; Flags: checkedonce
 Name: "desktopicon"; Description: "Create a desktop shortcut for the viewer"; Flags: unchecked
 
+; The build has already staged the runtime and dependencies; Setup copies the complete payload.
 [Files]
 Source: "{#Payload}\*"; DestDir: "{app}\{#Bundle}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
+; Shortcuts launch the bundled interpreter, so a separate system Python is unnecessary.
 [Icons]
 Name: "{group}\OOC Viewer"; Filename: "{app}\{#Bundle}\runtime\pythonw.exe"; Parameters: "-m circuitlab --editor"; WorkingDir: "{userdocs}"; Check: not IsPortable
 Name: "{group}\Uninstall OOC"; Filename: "{uninstallexe}"; Check: not IsPortable
 Name: "{autodesktop}\OOC Viewer"; Filename: "{app}\{#Bundle}\runtime\pythonw.exe"; Parameters: "-m circuitlab --editor"; Tasks: desktopicon; Check: not IsPortable
 
+; Post-install launch/download choices remain explicit and are skipped during silent verification.
 [Run]
 Filename: "{app}\{#Bundle}\runtime\pythonw.exe"; Parameters: "-m circuitlab --editor"; Description: "Open the OOC viewer"; Flags: postinstall nowait skipifsilent unchecked
 Filename: "https://code.visualstudio.com/download"; Description: "Download VS Code (not found on this computer)"; Flags: shellexec postinstall skipifsilent unchecked; Check: CodeMissing
 
+; Remove installer-owned descriptors and logs without deleting unrelated user circuit documents.
 [UninstallDelete]
 Type: files; Name: "{app}\install.json"
 Type: files; Name: "{app}\install.pending.json"
@@ -57,6 +63,9 @@ Type: files; Name: "{app}\extension-install.log"
 Type: files; Name: "{app}\updates\OOC-Setup-*-windows-x64.exe"
 Type: dirifempty; Name: "{app}\updates"
 
+; The callbacks validate the selected VS Code path, then activate only a validated installed
+; runtime.
+; Extension installation failure is reported separately so the compiler/viewer can remain usable.
 [Code]
 var
   CodePage: TInputFileWizardPage;

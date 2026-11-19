@@ -1,4 +1,7 @@
 """Translate the compiler's circuit graph into a standalone LTspice netlist."""
+# Validate the complete electrical graph before serializing device names or models.
+# Name allocation is case-insensitive for SPICE, so distinct OOC identities must be renamed
+# without merging their nets. Physical export models may differ from display-only packages.
 
 import math
 import re
@@ -109,6 +112,8 @@ def spice_netlist(circuit: Circuit) -> str:
     return "\n".join([*lines, "", spice.directive, ".end", ""])
 
 
+# The ideal subcircuit enforces equal input voltage with zero input current.
+# Optional supply terminals remain explicit identifiers without adding rail clipping.
 def opamp_subcircuit(pins, *, model=OPAMP_MODEL, reference="return"):
     # The two VCVSs enforce plus = minus without drawing input current
     # or fixing the output voltage. Additional symbol pins may be unused.
@@ -153,6 +158,8 @@ def _bjt_models(parts):
     return models, definitions, comments
 
 
+# Validate models and values across the full graph before allocating SPICE names.
+# This prevents an unsupported part inside a collapsed package from disappearing on export.
 def spice_circuit(circuit: Circuit) -> SpiceCircuit:
     """Normalize values and names before writing a netlist or schematic."""
     circuit.require_values()

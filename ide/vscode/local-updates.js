@@ -1,7 +1,11 @@
+// Development updates are accepted only from a complete local manifest with matching artifact
+// hashes.
+// Polling must not race another check or replace a newer editor runtime with an older package.
 const fs = require("node:fs/promises");
 const path = require("node:path");
 const { createHash } = require("node:crypto");
 
+// Compare numeric version components rather than lexical strings, where 10 could sort before 2.
 function newer(candidate, installed) {
     const valid = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
     if (!valid.test(candidate) || !valid.test(installed)) return false;
@@ -12,6 +16,8 @@ function newer(candidate, installed) {
     return false;
 }
 
+// Validate product identity, canonical filenames, bounded file sizes, and hashes together
+// before treating the local feed as a complete installable release.
 async function candidate(root, installed) {
     const directory = path.join(root, "ide", "vscode", "dist");
     let release;
@@ -45,6 +51,8 @@ async function candidate(root, installed) {
     return { file, version: release.version, bundle };
 }
 
+// Keep one in-flight update at a time and dispose the polling timer with the extension.
+// A loader/registration incompatibility requires a reload instead of a partial live swap.
 function startLocalUpdates(vscode, context, getRoot, output, applyRuntime, checkInstalled) {
     let installed = context.extension.packageJSON.version;
     let busy = false, disposed = false, lastError;

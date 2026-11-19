@@ -1,4 +1,7 @@
 """PySide6 schematic scene for the shared layout model."""
+# The electrical graph is authoritative; scene items are a view of separate layout geometry.
+# Drag previews propose checked edits, source-backed value gestures use explicit signals,
+# and repainting live values must not rebuild the circuit or erase placement/undo history.
 
 import math
 import re
@@ -290,6 +293,8 @@ class SchematicView(QGraphicsView):
             items.clear()
         self.highlight = None
 
+    # Choose visible hierarchy levels and restore compatible placement records before painting.
+    # The underlying compiled component/net identities remain unchanged by opening a package.
     def draw(self, circuit, pins=None, *, boundary=(), layout=None, detail_root=None):
         """Open a circuit, or isolate one package for shared layout editing."""
         if circuit is not self.circuit:
@@ -438,6 +443,8 @@ class SchematicView(QGraphicsView):
         self.finish_position()
         self.hide_position_control()
 
+    # Refresh the glyph/value presentation using existing geometry, including opened packages;
+    # a live value preview must not restart placement or replace its undo history.
     def preview_potentiometers(self, circuit):
         """Refresh value glyphs using the current geometry, including expanded packages."""
         parts = {part.name: part for part in circuit.components}
@@ -453,6 +460,8 @@ class SchematicView(QGraphicsView):
             position = rotate_point(position, *self.symbol_turn)
         return point(position) + self.offset
 
+    # Attach scene items to their model identities so probing and gestures can resolve a
+    # painted object back to the correct component or canonical electrical net.
     def _paint_level(self, circuit, layout):
         scene = self.scene()
         self.label_offsets = layout.label_offsets
@@ -960,6 +969,8 @@ class SchematicView(QGraphicsView):
     def undo(self):
         self.undo_placement()
 
+    # Validate all displayed levels before accepting the bulk operation, retaining one
+    # coherent undo record rather than a partially aligned hierarchy.
     def align_to_grid(self):
         """Align all displayed levels atomically and retain a single undo step."""
         if not self.isEnabled() or self.drag is not None or not self.levels:
@@ -984,6 +995,8 @@ class SchematicView(QGraphicsView):
         self.placement_changed.emit()
         return True
 
+    # Optimization is explicit and undoable; keep all displayed levels electrically valid
+    # before committing the group of geometry changes.
     def optimize_wiring(self):
         """Shorten displayed wiring explicitly, with one undo step for all levels."""
         if not self.isEnabled() or self.drag is not None or not self.levels:
@@ -1107,6 +1120,7 @@ class SchematicView(QGraphicsView):
             else:
                 item.setPen(self.pen(label_color, 1.8 if selected else 1.2))
 
+    # Update colors from the active simulator without rerouting or modifying source text.
     def set_logic_values(self, values):
         """Overlay simulated 0/1 levels without changing layout or source."""
         previous = self.logic_values
@@ -1253,6 +1267,8 @@ class SchematicView(QGraphicsView):
             item.setData(3, p)
             item.setToolTip(name)
 
+    # Draw device-specific contacts and their labels from the same anchor geometry used
+    # by routing and rotation; decorative glyphs do not introduce new electrical terminals.
     def symbol(self, part, a, b, top):
         if part.kind == "O":
             x, y = a
@@ -1525,6 +1541,8 @@ class SchematicView(QGraphicsView):
                 return
         super().mousePressEvent(event)
 
+    # Capture the original layout and pointer offset so every preview is a proposal from a
+    # stable baseline rather than an accumulation of unchecked incremental moves.
     def start_drag(self, kind, name, key, pos, edge=None, *, terminal=None, control=False, caption=None):
         layout = self.manual_layouts.get(key, self.level_layouts[key])
         selection = self.selected_symbols if key == self.selection_key else set()
@@ -1584,6 +1602,8 @@ class SchematicView(QGraphicsView):
                     match = key, net, (a, b)
         return match
 
+    # Prefer a valid snapped candidate and retain the previous valid preview when the current
+    # pointer position would break a contact or short another net.
     def preview_drag(self, pos):
         drag = self.drag
         if pos == drag.last_position:
@@ -1787,6 +1807,8 @@ class SchematicView(QGraphicsView):
                 self.drag_timer.start()
         event.accept()
 
+    # A completed drag commits geometry; a click may probe or request a source-backed control
+    # change. Keep those paths distinct to avoid toggling a switch while moving it.
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton and self.selection_start is not None:
             bounds = QRect(self.selection_start, event.position().toPoint()).normalized()
@@ -1854,6 +1876,8 @@ class SchematicView(QGraphicsView):
         self.viewport().unsetCursor()
         event.accept()
 
+    # Offer actions for the selected object's actual capabilities and emit source-edit requests
+    # rather than changing electrical connections directly in the graphics scene.
     def contextMenuEvent(self, event):
         wire = None
         if not self.place_pin:

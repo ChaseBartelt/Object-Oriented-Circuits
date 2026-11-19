@@ -11,7 +11,7 @@
 # LED6 ramp MSB, LED7 pause, LED8/9 channel enables. PWM LEDs show average light.
 # Automatic switch synchronization; complementary logic has no dead-time stage.
 
-chip HYBRID01(MAX10_CLK1_50, SW0, SW1, SW2, SW3, SW4, SW5, SW6, SW7, SW8, SW9, LEDR0, LEDR1, LEDR2, LEDR3, LEDR4, LEDR5, LEDR6, LEDR7, LEDR8, LEDR9, AUDIO_OUT) {
+chip HYBRID01(MAX10_CLK1_50, SW0, SW1, SW2, SW3, SW4, SW5, SW6, SW7, SW8, SW9, LEDR0, LEDR1, LEDR2, LEDR3, LEDR4, LEDR5, LEDR6, LEDR7, LEDR8, LEDR9, AUDIO_OUT) {  # Counters and duty comparisons describe hardware PWM; clocked updates use pre-edge state.
     MAX10_CLK1_50, SW0, SW1, SW2, SW3, SW4, SW5, SW6, SW7, SW8, SW9 = input;
     LEDR0, LEDR1, LEDR2, LEDR3, LEDR4, LEDR5, LEDR6, LEDR7, LEDR8, LEDR9, AUDIO_OUT = output;
     carrier[8];
@@ -20,7 +20,7 @@ chip HYBRID01(MAX10_CLK1_50, SW0, SW1, SW2, SW3, SW4, SW5, SW6, SW7, SW8, SW9, L
     heartbeat;
     level_a[8], level_b[8], duty_a[8], raw_a, raw_b = wire;
 
-    clock(MAX10_CLK1_50, 50MHz) {
+    clock(MAX10_CLK1_50, 50MHz) {  # Rising-edge updates in this block read the pre-edge state.
         every(160ns) { carrier += 1; }
         every(5ms) {
             if (SW4 & !SW7) {

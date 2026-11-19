@@ -1,4 +1,6 @@
 """Bulk grid alignment retains nets, saved drawings, exports and undo behavior."""
+# Grid rounding is accepted only when every terminal and net still agrees with the model.
+# Check bulk undo and cases where nearby contacts would otherwise create an unintended short.
 
 import os
 import unittest
@@ -27,6 +29,7 @@ FIXTURES = Path(__file__).resolve().parent.parent / "fixtures"
 
 
 class GridAlignmentTest(unittest.TestCase):
+    # Qt permits one QApplication per process; reuse it across this test class.
     @classmethod
     def setUpClass(cls):
         cls.app = QApplication.instance() or QApplication([])

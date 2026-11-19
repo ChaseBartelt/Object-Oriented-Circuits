@@ -2,6 +2,6 @@
 # Pinout only. Wave shaping and the current-controlled oscillator need a model.
 # Datasheet: https://cdn.sparkfun.com/assets/8/a/b/3/9/XR2206.pdf
 
-chip XR2206(am_in, sine_tri, mult_out, vcc, tc1, tc2, tr1, tr2, fsk, bias, sync, gnd, wave1, wave2, symmetry1, symmetry2) {
-    model = unavailable;
+chip XR2206(am_in, sine_tri, mult_out, vcc, tc1, tc2, tr1, tr2, fsk, bias, sync, gnd, wave1, wave2, symmetry1, symmetry2) {  # Package pinout only: numerical behavior requires an additional model.
+    model = unavailable;  # Allow a schematic preview while refusing a numerical solve without a model.
 }

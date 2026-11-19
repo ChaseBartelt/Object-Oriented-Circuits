@@ -1,4 +1,7 @@
 """Save schematic geometry in source comments, with legacy sidecar support."""
+# Only complete, validated managed comment blocks may be replaced during a save.
+# Executable circuit text and unrelated comments remain authoritative; stored geometry is
+# rebound to current component identities and checked before being applied.
 
 import json
 import math
@@ -24,6 +27,8 @@ _MARKER = re.compile(r"^[ \t]*#[ \t]*@ooc-layout-(begin|end)([^\r\n]*)", re.M)
 _MODES = {"auto", "routed", "labeled"}
 
 
+# Malformed or duplicate managed markers are ambiguous; refuse to guess which region
+# should be removed or overwritten.
 def _block(source):
     """Locate one complete managed comment block; never guess at broken data."""
     markers = list(_MARKER.finditer(source))
@@ -117,6 +122,7 @@ def _embed_payload(source, data):
     return code + separator + marker + newline + "# " + lines + newline + _END + newline
 
 
+# Replace only recognized metadata, preserving the surrounding executable source text.
 def embed_placement(source, mode, records, *, pin_overrides=None, logic_layouts=None):
     """Replace the managed comment block without touching executable source."""
     if logic_layouts is None:
@@ -163,6 +169,8 @@ def read_logic_placement(path):
     return data if isinstance(data, dict) else {}
 
 
+# Migrate a valid old sidecar into the source once, retaining the sidecar as a backup
+# rather than discarding the only copy of a layout.
 def migrate_placement(path):
     """Embed a valid sidecar once, keeping the original JSON as a backup."""
     path = Path(path)
@@ -221,6 +229,8 @@ def write_placement(mode, records, *, pin_overrides=None, logic_layouts=None):
     return json.dumps(data, ensure_ascii=False, allow_nan=False, indent=2).encode("utf-8")
 
 
+# Serialize component identities and contacts with positions so restore can detect a
+# layout that belongs to a different version of the electrical circuit.
 def pack_layout(layout):
     return {
         "symbols": [[part.name, part.kind, list(part.terminal_nets), a, b, top]
@@ -240,6 +250,8 @@ def pack_layout(layout):
     }
 
 
+# Bind records to current parts and verify contacts before returning a usable drawing.
+# A structurally valid JSON object is insufficient if its electrical wiring no longer agrees.
 def restore_layout(record, circuit, boundary):
     """Bind saved coordinates to the current parts and verify their wiring."""
     def point(position):

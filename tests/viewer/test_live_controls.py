@@ -1,4 +1,6 @@
 """Potentiometer source edits and the running AC scope share the same circuit."""
+# Source-backed value edits and the running scope must share one accepted circuit revision.
+# Preview, acknowledgement, rejection, Undo, and pause/resume must retain stored physical history.
 
 import os
 from math import cos, pi, sqrt
@@ -22,10 +24,12 @@ SOURCE = "f = 1k\nVac(1 Vrms) between(high, 0);\nP1(10k, 25%) between(high, out,
 
 
 class LiveControlsTest(unittest.TestCase):
+    # Qt permits one QApplication per process; reuse it across this test class.
     @classmethod
     def setUpClass(cls):
         cls.app = QApplication.instance() or QApplication([])
 
+    # Give this case private files so disk edits cannot leak into another test case.
     def setUp(self):
         self.directory = TemporaryDirectory()
         self.path = Path(self.directory.name) / "volume.ckt"

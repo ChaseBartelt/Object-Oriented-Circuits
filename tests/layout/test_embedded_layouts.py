@@ -1,4 +1,6 @@
 """Embedded geometry preserves executable text and imports old layouts safely."""
+# Compare executable text before and after metadata writes, including encoding/newlines.
+# Malformed blocks, failed replacements, and legacy migration must preserve the original file.
 import json
 import os
 from pathlib import Path
@@ -20,6 +22,7 @@ SOURCE = 'V1(5) between(v,0);\nR1(1k) between(v,out);\nR2(2k) between(out,0);\n'
 
 
 class EmbeddedLayoutsTest(unittest.TestCase):
+    # Give this case private files so disk edits cannot leak into another test case.
     def setUp(self):
         directory = TemporaryDirectory()
         self.addCleanup(directory.cleanup)

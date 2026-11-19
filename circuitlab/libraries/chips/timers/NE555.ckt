@@ -5,7 +5,7 @@
 include("../shared/differential.ckt");
 include("../shared/timerLatch.ckt");
 
-chip NE555(gnd, trig, out, reset_n, ctrl, thres, disch, vcc) {
+chip NE555(gnd, trig, out, reset_n, ctrl, thres, disch, vcc) {  # External ports retain package order; internal instances share only their explicitly bound nets.
     RTop(5k) between(vcc, ctrl);
     RMid(5k) between(ctrl, lower_ref);
     RBot(5k) between(lower_ref, gnd);

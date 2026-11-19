@@ -1,4 +1,6 @@
 """Active-low hexadecimal decoder lowering, simulation and clocked use."""
+# Use all hexadecimal digits and decimal-point states as an explicit active-low oracle.
+# The same decoder must behave consistently in expressions, nested assembly, and clocked logic.
 
 import unittest
 

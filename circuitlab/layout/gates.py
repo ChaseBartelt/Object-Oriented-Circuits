@@ -1,4 +1,7 @@
 """Shared schematic layouts for built-in gates."""
+# Gate templates supply reusable geometry, while each live instance keeps its own electrical
+# parts and nets. Rebinding maps template identities onto those resolved instance names;
+# shared defaults remain separate from per-document placement edits.
 
 import json
 import os
@@ -17,6 +20,7 @@ from circuitlab.layout.persistence import pack_layout, restore_layout
 from circuitlab.layout.wire_edit import replace_route
 
 
+# Distinct preview nets expose every port and make template connectivity checks meaningful.
 @lru_cache(maxsize=64)
 def gate_preview(name, inputs):
     """Compile a representative gate with distinct nets at every port."""
@@ -336,6 +340,8 @@ class GateLayouts:
         return rebind_layout(layout, template, view, instance.pins, boundary)
 
 
+# Translate saved template parts and nets to one live instance without reusing another
+# instance's scoped names or changing its compiled connections.
 def rebind_layout(layout, template, view, pins, boundary, *, template_pins=None):
     """Map a reusable layout onto the resolved parts and nets of one instance."""
     if len(template.components) != len(view.components):

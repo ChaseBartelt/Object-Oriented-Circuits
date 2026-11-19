@@ -2,6 +2,6 @@
 # Pinout only. PLL VCO, phase comparators and inhibit need a mixed-signal model.
 # Datasheet: https://www.ti.com/lit/ds/symlink/cd4046b.pdf
 
-chip CD4046B(phase_pulses, pc1_out, comp_in, vco_out, inhibit, c1a, c1b, gnd, vco_in, r1, r2, demod, pc2_out, signal_in, zener, vdd) {
-    model = unavailable;
+chip CD4046B(phase_pulses, pc1_out, comp_in, vco_out, inhibit, c1a, c1b, gnd, vco_in, r1, r2, demod, pc2_out, signal_in, zener, vdd) {  # Package pinout only: numerical behavior requires an additional model.
+    model = unavailable;  # Allow a schematic preview while refusing a numerical solve without a model.
 }

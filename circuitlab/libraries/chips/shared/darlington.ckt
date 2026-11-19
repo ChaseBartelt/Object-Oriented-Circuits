@@ -1,5 +1,5 @@
 # Two BJTs form the driver. A diode-connected BJT approximates the clamp.
-circuit oocDarlington(input_pin, gnd, collector, common) {
+circuit oocDarlington(input_pin, gnd, collector, common) {  # Each invocation receives private internal nets while its declared ports bind to the caller.
     RInput(2.7k) between(input_pin, base);
     RBase(7.2k) between(base, mid);
     RMid(3k) between(mid, gnd);

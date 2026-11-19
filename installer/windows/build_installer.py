@@ -3,6 +3,9 @@
 Requires a build Python with pip/setuptools and an Inno Setup compiler. Neither
 Python, pip nor the repository is required on the user's computer.
 """
+# Assemble a reproducible payload from pinned downloads, the Python application, and VSIX.
+# Verify downloaded content before staging it, then hand the complete payload to Inno Setup;
+# Setup itself does not need to fetch a compiler/runtime from the network.
 import argparse
 import hashlib
 import json
@@ -30,6 +33,7 @@ def digest(path):
         return hashlib.file_digest(stream, "sha256").hexdigest()
 
 
+# Verify the pinned digest of each downloaded dependency before adding it to the payload.
 def fetch(url, checksum, path):
     if path.is_file() and digest(path) == checksum:
         return path
@@ -51,6 +55,8 @@ def execute(command, **kwargs):
     subprocess.run(list(map(str, command)), check=True, **kwargs)
 
 
+# Stage all required files before invoking the installer compiler, keeping build-time tools
+# out of the end user's runtime prerequisites.
 def build(args):
     version = tomllib.loads((REPO / "pyproject.toml").read_text())['project']['version']
     extension_version = json.loads((REPO / "ide/vscode/package.json").read_text())['version']

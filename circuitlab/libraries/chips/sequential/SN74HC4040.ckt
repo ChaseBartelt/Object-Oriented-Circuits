@@ -4,7 +4,7 @@
 
 include("../shared/flipFlop.ckt");
 
-chip SN74HC4040(q12, q6, q5, q7, q4, q3, q2, gnd, q1, clk, reset, q9, q8, q10, q11, vcc) {
+chip SN74HC4040(q12, q6, q5, q7, q4, q3, q2, gnd, q1, clk, reset, q9, q8, q10, q11, vcc) {  # External ports retain package order; internal instances share only their explicitly bound nets.
     not(vcc, gnd, reset, reset_n);
     not(vcc, gnd, clk, clk_n);
     oocDFlipFlop(vcc, gnd, q1_n, clk_n, vcc, reset_n, q1, q1_n);

@@ -1,4 +1,6 @@
 """Switch dispatch lowers to ordinary digital behavior without losing case order."""
+# Check fallthrough and nested breaks against executed logic, not only the lowered text.
+# Static loop expansion must retain the source order and original case-label locations.
 
 import unittest
 

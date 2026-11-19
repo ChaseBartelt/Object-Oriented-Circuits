@@ -1,4 +1,6 @@
 """Check that the simpler views preserve component pins and net identity."""
+# Check readable special-case layouts and general routing against the same compiled nets.
+# Visual compactness is secondary to retaining every component pin and intended connection.
 
 import unittest
 from dataclasses import replace

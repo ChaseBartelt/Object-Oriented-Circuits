@@ -1,4 +1,6 @@
 """Numbered scalar pin ranges keep their order through assembly and metadata."""
+# Check both descending physical pin ranges and genuine whole-vector arguments during
+# nested assembly, including the runtime bindings exposed to live diagrams.
 
 import unittest
 

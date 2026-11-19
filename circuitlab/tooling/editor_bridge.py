@@ -1,4 +1,7 @@
 """Receive explicit reload requests from the IDE over its private stdin pipe."""
+# The IDE and viewer exchange one JSON request per line through a private pipe.
+# Bridge signals transfer accepted requests onto Qt's event loop; the input reader itself
+# must not hold up interpreter shutdown when the parent editor keeps its pipe open.
 
 import json
 import codecs
@@ -36,6 +39,7 @@ class EditorBridge(QObject):
             pass
 
 
+# Read requests without leaving a daemon blocked on Python's buffered stdin lock at shutdown.
 def request_lines(stream):
     """Avoid holding Python's buffered stdin lock while a daemon waits at exit."""
     try:

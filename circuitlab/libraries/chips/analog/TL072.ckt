@@ -2,7 +2,7 @@
 # Ideal op-amp channels. Supply, rail limits, offset and bandwidth are omitted.
 # Datasheet: https://www.ti.com/lit/ds/symlink/tl072.pdf
 
-chip TL072(out1, minus1, plus1, vminus, plus2, minus2, out2, vplus) {
-    op1(plus1, minus1, out1);
-    op2(plus2, minus2, out2);
+chip TL072(out1, minus1, plus1, vminus, plus2, minus2, out2, vplus) {  # Keep the package pin order while the internal parts define the modeled signal behavior.
+    op1(plus1, minus1, out1);  # Ideal amplifier: the feedback connections determine this channel's behavior.
+    op2(plus2, minus2, out2);  # Ideal amplifier: the feedback connections determine this channel's behavior.
 }

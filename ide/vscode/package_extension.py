@@ -1,4 +1,7 @@
 """Build the local OOC VS Code extension package without npm dependencies."""
+# Package extension assets and a replaceable JavaScript runtime as one consistent release.
+# Normalize text before hashing so Windows line-ending conversion does not masquerade as a
+# compatibility change; publish the manifest only after all advertised artifacts are complete.
 
 import argparse
 import json
@@ -17,6 +20,8 @@ CONTENT_SCHEMA = "http://schemas.openxmlformats.org/package/2006/content-types"
 RUNTIME_FILES = ("runtime.js", "structure.js", "hover-client.js")
 
 
+# Hash loader/editor-registration assets separately from replaceable runtime files.
+# Only a compatible loader can apply a feature-runtime update without a window reload.
 def runtime_bundle(package, files):
     # Git's Windows line-ending conversion must not change live-update compatibility.
     files = {name: data.replace(b"\r\n", b"\n") for name, data in files.items()}
@@ -123,6 +128,8 @@ def build(output):
             archive.writestr(f"extension/{name}", data)
 
 
+# Replace the destination only after writing all bytes, so polling editors never read a
+# partially written package or release descriptor.
 def atomic_write(path, data):
     path.parent.mkdir(parents=True, exist_ok=True)
     with NamedTemporaryFile(dir=path.parent, delete=False) as stream:
@@ -134,6 +141,7 @@ def atomic_write(path, data):
         temporary.unlink(missing_ok=True)
 
 
+# Write the package and runtime first, then advertise their matching hashes in latest.json.
 def publish(output, directory=None):
     """Advertise only complete packages; running editors poll this local feed."""
     directory = directory or EXTENSION / "dist"

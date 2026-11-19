@@ -1,4 +1,6 @@
 """Connectivity and solver checks for reusable circuit methods."""
+# Repeated and nested method calls must keep private nets while honoring explicit bindings.
+# Ground names and parallel taps are checked through compilation, solving, and drawing.
 
 import unittest
 from math import tau

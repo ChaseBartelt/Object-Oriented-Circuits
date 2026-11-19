@@ -1,4 +1,6 @@
 """Exercise library includes through analysis, rendering and export."""
+# Treat catalog definitions as the models actually supplied by the application, not as proof
+# of manufacturer-level accuracy. Includes, pinout-only models, and physical exports are separate.
 
 from itertools import product
 from pathlib import Path

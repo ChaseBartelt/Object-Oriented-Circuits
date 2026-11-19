@@ -1,4 +1,7 @@
 """Exercise the normal editor, solve, render, and file workflows through Qt."""
+# Exercise normal editor and schematic workflows through real Qt events.
+# Check source text and electrical contacts alongside visual state so a successful gesture cannot
+# hide a changed connection, discarded edit, or incorrect export.
 
 import json
 import math
@@ -36,10 +39,12 @@ FIXTURES = Path(__file__).resolve().parent.parent / "fixtures"
 
 
 class ApplicationTest(unittest.TestCase):
+    # Qt permits one QApplication per process; reuse it across this test class.
     @classmethod
     def setUpClass(cls):
         cls.app = QApplication.instance() or QApplication([])
 
+    # Give this case private files so disk edits cannot leak into another test case.
     def setUp(self):
         self.fixtures_dir = TemporaryDirectory()
         self.addCleanup(self.fixtures_dir.cleanup)

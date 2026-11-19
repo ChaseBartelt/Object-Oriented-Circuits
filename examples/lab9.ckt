@@ -1,4 +1,4 @@
-battery PosSupply {
+battery PosSupply {  # The switch feeds a unity-gain inverting stage; named positive/negative rails are separate supplies.
     V = 2;
     wire = pos;
 }
@@ -7,7 +7,7 @@ battery NegSupply {
     Vneg = 5;
     wire = neg;
 }
-main{
+main{  # Assemble the declared parts and chips using the named connections below.
     S1(open) between(pos, W2);
 
     R2(10k) between(W2, W3);
@@ -16,7 +16,7 @@ main{
     R1 = 10k;
     }
 
-    op1(0, w4, out, pos, neg);
+    op1(0, w4, out, pos, neg);  # Ideal amplifier: the feedback connections determine this channel's behavior.
 }
 
 

@@ -1,4 +1,6 @@
 """Compile local source or linked files into an electrical circuit."""
+# This is the public compilation boundary: callers provide source text and optionally a file path.
+# Linked files and single-document inputs converge on the same electrical graph representation.
 
 from circuitlab.language.document import compile_document
 from circuitlab.language.linked import compile_linked

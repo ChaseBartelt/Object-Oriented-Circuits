@@ -1,3 +1,7 @@
+// This replaceable runtime registers language features and launches the checkout or installed
+// backend.
+// Source-edit requests use exact before/after text and IDE acknowledgements; a diagram gesture
+// does not grant permission to overwrite a document revision that has changed in the editor.
 const { execFile, spawn } = require("node:child_process");
 const { existsSync, readFileSync, readdirSync, realpathSync } = require("node:fs");
 const path = require("node:path");
@@ -44,6 +48,8 @@ function addFolds(document, nodes, folds) {
     }
 }
 
+// Resolve an explicit project root first, otherwise walk parents of a saved file until the
+// actual compiler entry point is found. Unsaved/non-file documents cannot supply that path.
 function checkoutRoot(document) {
     const config = vscode.workspace.getConfiguration("ooc", document.uri);
     const configured = config.get("projectRoot", "").trim();
@@ -67,6 +73,8 @@ function checkoutRoot(document) {
     }
 }
 
+// Treat manifest paths as untrusted until resolved beneath the installation root, including
+// symlink resolution, then return the matching interpreter/library/editor artifacts.
 function installedRuntime() {
     if (process.platform !== "win32") return;
     const configured = vscode.workspace.getConfiguration("ooc").get("installationPath", "").trim();
@@ -91,6 +99,8 @@ function installedRuntime() {
     } catch { return undefined; }
 }
 
+// Navigation accepts supported relative circuit paths or short library names, not arbitrary
+// absolute filesystem targets embedded in a source include.
 function includeTarget(document, filename) {
     filename = filename.replace(/\\/g, "/");
     const shortName = /^[A-Za-z0-9_][A-Za-z0-9_-]*$/.test(filename);
@@ -137,6 +147,8 @@ function compilerProcess(python, cwd, action, file) {
     });
 }
 
+// Translate the compiler's file/line messages to editor diagnostics without treating tool
+// output as source code or guessing a different file location.
 function compilerDiagnostics(document, stderr) {
     const groups = new Map();
     for (const outputLine of stderr.split(/\r?\n/)) {
@@ -173,6 +185,8 @@ function runtime(document) {
 
 const schematicSaving = new WeakSet();
 
+// Apply one checked replacement through the IDE only when the target still matches the
+// request's expected source; return an explicit acknowledgement to the viewer.
 async function applySchematicEdit(request) {
     if (!vscode.workspace.isTrusted) throw new Error('Trust this workspace before editing its circuit.');
     if (typeof request.path !== 'string' || !path.isAbsolute(request.path)
@@ -197,6 +211,7 @@ async function applySchematicEdit(request) {
     }
 }
 
+// Correlate source transactions and reserve the private protocol for structured responses.
 function attachSchematicEdits(child, output) {
     if (!child.stdout) return;
     child.stdout.removeAllListeners('data');
@@ -221,6 +236,8 @@ function attachSchematicEdits(child, output) {
     });
 }
 
+// Reuse the existing viewer for this source identity. Background save refreshes synchronize
+// state without behaving like an explicit user request to raise or reopen the window.
 function openSchematic(python, cwd, file, output, windows, automatic = false) {
     const key = JSON.stringify([python, cwd]);
     const existing = windows.get(key);
@@ -273,6 +290,8 @@ function openSchematic(python, cwd, file, output, windows, automatic = false) {
     });
 }
 
+// Register providers against the shared runtime state so compatible live replacement can
+// dispose old registrations without losing the already-running schematic processes.
 function activate(context, shared = {}) {
     const schematicWindows = shared.schematicWindows || new Map();
     const runningFiles = shared.runningFiles || new Map();

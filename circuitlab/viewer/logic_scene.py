@@ -1,4 +1,7 @@
 """Interactive digital ports and an expandable, source-backed dependency graph."""
+# Digital graph nodes and edges keep source/runtime identities behind their screen positions.
+# An input click changes logic; output and dependency clicks probe values. A drag changes
+# presentation geometry and must not accidentally perform the click action on release.
 
 import math
 from copy import deepcopy
@@ -245,6 +248,7 @@ class LogicSceneView(QGraphicsView):
         self.scale(scale, scale)
         self.centerOn(area.center().x(), area.top() + self.viewport().height() / (2 * scale))
 
+    # Update existing node/edge values without rebuilding the graph or refitting the viewport.
     def set_values(self, values):
         self.values = dict(values)
         for name, item in self.node_items.items():
@@ -280,6 +284,7 @@ class LogicSceneView(QGraphicsView):
         self._remember_placement()
         return deepcopy(self._placements)
 
+    # Restore only compatible presentation records; runtime logic and signal bindings are unchanged.
     def restore_placement(self, payload):
         self._placements = deepcopy(payload) if isinstance(payload, dict) else {}
         self._history.clear()
@@ -401,6 +406,7 @@ class LogicSceneView(QGraphicsView):
             return
         super().mouseMoveEvent(event)
 
+    # Commit a valid drag separately from click activation so moving an input does not toggle it.
     def mouseReleaseEvent(self, event):
         if self._drag is not None:
             drag, self._drag = self._drag, None

@@ -1,4 +1,7 @@
 """The native circuit source editor and its compiler annotations."""
+# Editing, coloring, completion, and hover remain usable before the source compiles.
+# SourceInfo supplies tolerant token/signature knowledge, while compilation remains the
+# authority for whether the text describes a valid electrical or digital design.
 
 import re
 
@@ -48,6 +51,8 @@ class CircuitHighlighter(QSyntaxHighlighter):
         (BUILTIN_CALL, "#e3b5f5"),
     )
 
+    # Color recognized tokens even in incomplete text; highlighting must not require a successful
+    # compile or consume comments as executable code.
     def highlightBlock(self, text):
         code, comment, _ = text.partition("#")
         for pattern, color in self.rules:
@@ -171,6 +176,8 @@ class CircuitEditor(QPlainTextEdit):
         self.completer.complete(rect)
         popup.setCurrentIndex(self.completer.currentIndex())
 
+    # Respect an already-present argument list and select only the newly inserted placeholder
+    # so accepting a completion does not overwrite the user's existing connections.
     def insert_completion(self, name):
         prefix = self._completion_prefix()
         if prefix is None or not name.casefold().startswith(prefix.casefold()):
@@ -373,6 +380,8 @@ class CircuitEditor(QPlainTextEdit):
             self.hovered_wire = wire
             self.wire_hovered.emit(wire, position)
 
+    # Translate the block-local editor cursor into the shared source-inspection identity.
+    # The caller adds the document line before requesting a compiler-backed trace.
     @staticmethod
     def wire_at(cursor):
         source = SourceInfo(cursor.block().text())

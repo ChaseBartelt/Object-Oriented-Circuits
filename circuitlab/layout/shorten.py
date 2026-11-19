@@ -1,4 +1,7 @@
 """Simplify wires and optionally reposition parts, preserving electrical nets."""
+# Wire simplification and component repositioning are separate, optional geometry operations.
+# Each candidate must improve the visible route and preserve net identity; bounded searches
+# keep an explicit Optimize wiring action from becoming an unbounded background process.
 
 import math
 from dataclasses import replace
@@ -29,6 +32,7 @@ def clear_of_bodies(edges, layout):
     return True
 
 
+# Remove unnecessary bends only where terminals and junction anchors remain attached.
 def straighten(circuit, original, budget=24, *, simplify=False):
     drawing = original
     length = None
@@ -255,6 +259,7 @@ def _close_gap(layout, axis, low, high, amount, grid):
     return result
 
 
+# Close empty space between groups without resizing parts or changing their relative order.
 def compact_spacing(circuit, drawing, *, budget=36, grid=.25, grid_safe=False):
     """Close empty rows/columns together without resizing or reordering parts."""
     if len(drawing.symbols) < 2:
@@ -313,6 +318,8 @@ def reposition(circuit, drawing, *, budget=36, grid=0.25):
     return drawing
 
 
+# Treat optimization as an explicit transaction with deterministic, bounded proposals.
+# Every accepted change must preserve nets so the caller can safely offer a single undo.
 def optimize_layout(circuit, original, *, flip_budget=4, move_parts=False, grid=0.25):
     """Keep all edits optional, deterministic, bounded and electrically checked."""
     drawing = straighten(circuit, original, simplify=move_parts)

@@ -1,3 +1,6 @@
+# Inspect generated archives and release hashes instead of installing an extension.
+# Optional documentation may disappear without creating dangling assets or changing runtime
+# identity.
 import json
 import unittest
 from pathlib import Path

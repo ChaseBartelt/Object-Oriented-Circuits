@@ -1,3 +1,6 @@
+// Requests and replies are bounded JSON-lines messages correlated by numeric IDs.
+// Timeouts or process failure resolve pending previews and allow a fresh renderer on the next
+// hover.
 const { spawn } = require("node:child_process");
 
 // One offscreen renderer per checkout, kept warm instead of starting Qt per hover.
@@ -11,6 +14,7 @@ class HoverClient {
         this.child = undefined;
     }
 
+    // Start at most one helper and keep protocol stdout separate from diagnostic stderr.
     start() {
         if (this.child) return;
         const child = spawn(this.python, ["-X", "utf8", "-m", "circuitlab.tooling.hover"], {
@@ -52,6 +56,8 @@ class HoverClient {
         child.stderr.on("data", (data) => this.report(`OOC hover: ${data.toString().trim()}`));
     }
 
+    // Bound source size and outstanding work before sending a request; an optional hover
+    // must not grow an unbounded queue or keep a dead process waiting forever.
     request(payload) {
         if (payload.source.length > 2 * 1024 * 1024 || this.pending.size >= 4) return Promise.resolve(undefined);
         this.start();
@@ -68,6 +74,8 @@ class HoverClient {
         });
     }
 
+    // Resolve outstanding callers as unavailable when the helper is stopped, then clear timers
+    // and request ownership so late replies cannot complete an unrelated preview.
     dispose() {
         const child = this.child;
         this.child = undefined;

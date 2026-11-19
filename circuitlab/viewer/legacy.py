@@ -1,4 +1,7 @@
 """Native editor, schematic preview, and analysis results."""
+# This shell owns an editable source document in addition to schematic and results views.
+# Store per-tab source, encoding, and placement state independently, and preserve dirty edits
+# when switching files or accepting reload requests from an external IDE.
 
 import re
 from dataclasses import dataclass, replace
@@ -191,6 +194,8 @@ class MainWindow(QMainWindow):
     def refresh_from_editor(self, filename):
         return self.open_from_editor(filename, activate=False)
 
+    # An IDE request may target an existing tab with unsaved state; reload only through the
+    # normal dirty-edit checks rather than replacing that tab blindly.
     def open_from_editor(self, filename, *, activate=True):
         """Reload a requested tab without discarding unsaved source or placement."""
         path = Path(filename).resolve()
@@ -350,6 +355,8 @@ class MainWindow(QMainWindow):
             self.editor_tabs.addTab(editor, path.name if path else "Untitled.ckt")
         return editor
 
+    # Keep this tab's accepted text, file encoding, and placement state before another editor
+    # becomes active; state from one document must not leak into the next.
     def store_tab(self):
         state = self.documents[self.editor]
         state.path, state.disk_bytes = self.path, self.disk_bytes
@@ -656,6 +663,7 @@ class MainWindow(QMainWindow):
         self.refresh_picker()
         self.compile_source()
 
+    # Use the current editor text, including unsaved changes, for compilation and analysis.
     def compile_source(self, *, preserve_scope=False):
         source = self.editor.toPlainText()
         if not preserve_scope:
@@ -701,6 +709,8 @@ class MainWindow(QMainWindow):
                 self.views.setCurrentWidget(self.results)
         self.show_issues(issues)
 
+    # Keep rendering independent of a successful solve so users can inspect and repair a
+    # connected schematic even when its operating point is not yet determined.
     def _draw_source(self, source, mode, *, preserve_scope=False):
         """Render a compiled graph even when electrical analysis cannot solve it."""
         if has_chip(source) and not self.includes_files(source):
@@ -1051,6 +1061,8 @@ class MainWindow(QMainWindow):
     def write_export_companions(self, path, files, title):
         return write_companions(self, path, files, title)
 
+    # Save executable source together with the intended presentation metadata while retaining
+    # the document's encoding and protecting outside edits.
     def save(self):
         if not self.path:
             return self.save_as()

@@ -2,7 +2,7 @@
 # Active-low 3-to-8 decoder at nominal 5 V.
 # Datasheet: https://www.ti.com/lit/ds/symlink/sn74hc138.pdf
 
-chip SN74HC138(a, b, c, g2a_n, g2b_n, g1, y7_n, gnd, y6_n, y5_n, y4_n, y3_n, y2_n, y1_n, y0_n, vcc) {
+chip SN74HC138(a, b, c, g2a_n, g2b_n, g1, y7_n, gnd, y6_n, y5_n, y4_n, y3_n, y2_n, y1_n, y0_n, vcc) {  # External ports retain package order; internal instances share only their explicitly bound nets.
     not(vcc, gnd, a, na);
     not(vcc, gnd, b, nb);
     not(vcc, gnd, c, nc);

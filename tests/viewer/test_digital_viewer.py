@@ -1,4 +1,6 @@
 """Interact with digital inputs, clocks, profiles and bounded trace history."""
+# Exercise pacing and pause/resume against actual simulated cycles and bounded history.
+# Slow processing must report lag honestly instead of displaying state from unexecuted cycles.
 
 import os
 from pathlib import Path
@@ -26,6 +28,7 @@ COUNTER = '''chip Counter(clk,a,y) {
 
 
 class DigitalViewerTest(unittest.TestCase):
+    # Qt permits one QApplication per process; reuse it across this test class.
     @classmethod
     def setUpClass(cls):
         cls.app = QApplication.instance() or QApplication([])

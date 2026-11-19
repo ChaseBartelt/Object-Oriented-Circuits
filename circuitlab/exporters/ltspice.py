@@ -1,4 +1,7 @@
 """Write native LTspice symbols, wires, and flags from a schematic layout."""
+# A native symbol has fixed pin coordinates that differ from the viewer glyph geometry.
+# Export reconnects each native pin to its original net, and uses matching labels if a
+# crowded drawing cannot safely fit continuous wiring on the LTspice grid.
 
 from collections import defaultdict
 from dataclasses import dataclass, replace
@@ -33,6 +36,8 @@ class Block:
     pins: tuple[tuple[str, str, int, int], ...]
 
 
+# Export reusable child sheets and their symbol files together, preserving each package
+# boundary rather than flattening away the user-edited internal arrangement.
 def export_hierarchy(circuit, layout, details=None):
     """Export the top sheet and native LTspice block files for the packages it uses."""
     spice = spice_circuit(circuit)
@@ -132,6 +137,8 @@ def _export_drawing(layout, spice, *, blocks=None, ports=None, aliases=(), comma
     return _export_with_pin_labels(layout, spice, options)
 
 
+# Represent the wiper with the junction of two native resistor legs so the exported
+# schematic requires no custom external potentiometer symbol.
 def _potentiometer_layout(layout, spice):
     """Use two native resistors and a wiper junction without external symbols."""
     if not any(part.kind == "P" for part, *_ in layout.symbols):
@@ -188,6 +195,8 @@ class GridConflict(Exception):
     """The drawing needs more grid space to keep connections distinct."""
 
 
+# Rotate native pin anchors with each symbol and reconnect them to canonical nets.
+# A visually adjacent line is insufficient: exported contacts must be electrically continuous.
 def _schematic(layout, spice, scale, *, pin_flags=False, blocks, ports, aliases, commands):
     """Snap the drawing, attach native symbol pins, and serialize the sheet."""
 

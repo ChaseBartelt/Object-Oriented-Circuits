@@ -1,3 +1,5 @@
+// The stable loader owns shared output and running-window maps across feature-runtime updates.
+// A compatible runtime can be replaced without duplicating commands or abandoning open schematics.
 // Stable loader: replace compatible OOC features without restarting VS Code.
 const vscode = require("vscode");
 const path = require("node:path");
@@ -7,6 +9,8 @@ const { LiveRuntime } = require("./live-runtime");
 const { installedUpdater } = require("./installed-updates");
 const bundled = require("./runtime-bundle.json");
 
+// Keep shared process/window state outside the replaceable runtime; activation wires both
+// development and installed update feeds to the same compatibility gate.
 function activate(context) {
     const output = vscode.window.createOutputChannel("OOC");
     const shared = { output, schematicWindows: new Map(), runningFiles: new Map() };

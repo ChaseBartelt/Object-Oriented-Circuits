@@ -1,4 +1,6 @@
 """Live value edits retain circuit history instead of repeating startup transients."""
+# Value-only edits restamp the existing topology instead of replaying startup conditions.
+# Compare stored energy and elapsed time before/after reconfiguration and pause/resume.
 
 from dataclasses import replace
 import math

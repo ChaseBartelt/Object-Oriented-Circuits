@@ -1,5 +1,5 @@
-chip LT1677(Vos, minus, plus, vminus, offset2, out, vplus, nc) {
-    op1(plus, minus, out);
+chip LT1677(Vos, minus, plus, vminus, offset2, out, vplus, nc) {  # Keep the package pin order while the internal parts define the modeled signal behavior.
+    op1(plus, minus, out);  # Ideal amplifier: the feedback connections determine this channel's behavior.
 }
 
 

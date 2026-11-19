@@ -1,4 +1,6 @@
 """The default text inserted by digital editor snippets must compile."""
+# Expand snippet defaults as the editor would, then compile the inserted source.
+# Escaped interpolation and generated names must survive the snippet layer literally.
 
 import json
 from pathlib import Path

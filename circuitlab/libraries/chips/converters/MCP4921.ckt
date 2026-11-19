@@ -2,6 +2,6 @@
 # Pinout only. SPI input register, latch, and 12-bit conversion need a model.
 # Datasheet: https://ww1.microchip.com/downloads/en/DeviceDoc/21897B.pdf
 
-chip MCP4921(vdd, cs_n, sck, sdi, ldac_n, vref, avss, vout) {
-    model = unavailable;
+chip MCP4921(vdd, cs_n, sck, sdi, ldac_n, vref, avss, vout) {  # Package pinout only: numerical behavior requires an additional model.
+    model = unavailable;  # Allow a schematic preview while refusing a numerical solve without a model.
 }

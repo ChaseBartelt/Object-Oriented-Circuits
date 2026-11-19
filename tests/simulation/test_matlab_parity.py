@@ -1,4 +1,6 @@
 """Compare Python results with data captured from the MATLAB application."""
+# Captured MATLAB values provide an external regression oracle with explicit tolerances.
+# Do not regenerate expected values from the Python solver under test.
 
 import json
 import unittest

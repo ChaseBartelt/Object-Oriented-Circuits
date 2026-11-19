@@ -1,4 +1,6 @@
 """Editor help and snippets follow manual-switch and supply syntax."""
+# Help, snippets, and grammar should describe the same switch/supply syntax the compiler accepts.
+# Similar names in digital declarations must not trigger unrelated electrical help.
 
 import json
 from pathlib import Path

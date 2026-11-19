@@ -1,4 +1,6 @@
 """Nominal unloaded gate truth tables; these are not manufacturer accuracy tests."""
+# Truth tables check nominal unloaded model behavior at the chosen supply.
+# They do not assert real IC input ranges, propagation delay, or output-drive specifications.
 
 from itertools import product
 import unittest

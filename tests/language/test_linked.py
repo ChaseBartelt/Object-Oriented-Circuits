@@ -1,4 +1,6 @@
 """Cross-file circuit connections through the compiler and exporters."""
+# Temporary include files isolate cross-file connector tests. Only named connector nets
+# may be shared; local part/net names and cycle diagnostics retain their original file.
 
 import unittest
 from pathlib import Path

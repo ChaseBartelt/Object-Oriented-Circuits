@@ -1,4 +1,6 @@
 """AC sources drive the real time-domain equations using the RMS cosine convention."""
+# Use the RMS-to-peak cosine convention as the waveform oracle, including source phase.
+# Time-domain samples must agree with the phasor interpretation rather than invent a default phase.
 
 from dataclasses import replace
 import math

@@ -1,3 +1,6 @@
+// Navigation scans offsets in unfinished text; successful scanning is not compiler validation.
+// Quoted strings, comments, interpolation, and legacy delimiters must not create false blocks
+// or method references in document symbols, folds, and definition links.
 "use strict";
 
 // Tolerant source scanning for editor navigation. Compilation still decides
@@ -30,6 +33,8 @@ function nodeFor(match, nameGroup, kindGroup, start, end) {
     };
 }
 
+// Keep display ranges distinct from selected-name ranges so navigation highlights the name
+// while a fold or outline item still spans the complete structural block.
 function bracedNode(header, start, end) {
     const main = MAIN.exec(header);
     if (main) {
@@ -72,6 +77,8 @@ function legacyMarker(text, start, previousEnd) {
     return marker;
 }
 
+// Use one token walk for structure and references so both features agree on source offsets.
+// The frame stack keeps nested braced/legacy blocks and do/while tails attached correctly.
 function scanDocument(text) {
     const structure = [];
     const references = [];
@@ -104,6 +111,8 @@ function scanDocument(text) {
         }
     }
 
+    // Only complete recognized include/call statements become references; ordinary assignments
+    // and control-flow tails must not navigate as if they were reusable methods.
     function finishStatement(to, end = to) {
         const raw = text.slice(previousEnd, to);
         const statement = raw.trim();

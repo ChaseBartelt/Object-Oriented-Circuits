@@ -1,4 +1,6 @@
 """The optional legacy editor preserves viewer-only probe captions."""
+# Probe captions are viewer metadata: save/reload must preserve overrides without changing
+# the circuit targets described by the optional source editor.
 
 import os
 from pathlib import Path
@@ -13,6 +15,7 @@ from circuitlab.layout.persistence import placement_path, read_pin_overrides, wr
 
 
 class PinPersistenceTest(unittest.TestCase):
+    # Qt permits one QApplication per process; reuse it across this test class.
     @classmethod
     def setUpClass(cls):
         cls.app = QApplication.instance() or QApplication([])

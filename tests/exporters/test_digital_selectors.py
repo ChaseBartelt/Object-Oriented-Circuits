@@ -1,4 +1,6 @@
 """Static FPGA loops, numbered pin banks, slices and conditional expressions."""
+# Mix generated scalar banks with true vectors to catch bit-order and scope mistakes.
+# Clocked slice updates must preserve untouched bits and read the old register value.
 
 from pathlib import Path
 import re

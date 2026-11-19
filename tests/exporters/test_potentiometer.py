@@ -1,4 +1,6 @@
 """Check physical potentiometer equivalents and exported pin connectivity."""
+# Validate both resistor legs and exact endpoint shorts, then check all three exported
+# terminal contacts independently of the viewer glyph.
 import unittest
 
 from circuitlab.exporters.ltspice import export_hierarchy, export_schematic

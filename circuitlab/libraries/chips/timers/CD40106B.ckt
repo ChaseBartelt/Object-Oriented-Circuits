@@ -4,7 +4,7 @@
 
 include("../shared/schmitt.ckt");
 
-chip CD40106B(a1, y1, a2, y2, a3, y3, gnd, y4, a4, y5, a5, y6, a6, vcc) {
+chip CD40106B(a1, y1, a2, y2, a3, y3, gnd, y4, a4, y5, a5, y6, a6, vcc) {  # External ports retain package order; internal instances share only their explicitly bound nets.
     oocSchmittInvert(vcc, gnd, a1, y1);
     oocSchmittInvert(vcc, gnd, a2, y2);
     oocSchmittInvert(vcc, gnd, a3, y3);

@@ -1,1 +1,1 @@
-include("SN74HC02.ckt");
+include("SN74HC02.ckt");  # Import the compatible shared declaration for this short library lookup name.

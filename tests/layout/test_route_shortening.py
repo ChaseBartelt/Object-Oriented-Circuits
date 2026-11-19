@@ -1,4 +1,6 @@
 """Regression cases for unnecessary channel detours and reversed passive leads."""
+# Compare candidate route lengths while also checking electrical connectivity and clearance.
+# A shorter drawing is not an improvement if it detaches a terminal or passes through a body.
 import os
 import unittest
 from copy import deepcopy
@@ -66,6 +68,7 @@ def spaced_parts():
 
 
 class RouteShorteningTest(unittest.TestCase):
+    # Qt permits one QApplication per process; reuse it across this test class.
     @classmethod
     def setUpClass(cls):
         cls.app = QApplication.instance() or QApplication([])

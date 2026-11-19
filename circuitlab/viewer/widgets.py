@@ -1,4 +1,7 @@
 """Shared viewer panels and dialogs, independent of the optional source editor."""
+# Shared widgets format and present existing model data for both window shells.
+# File writes and shared-default publishing use explicit helpers so a failed save does not
+# leave a partially written replacement or silently change another circuit's source.
 
 from PySide6.QtCore import QIODevice, QSaveFile, QSignalBlocker, Qt
 from PySide6.QtGui import QColor
@@ -69,6 +72,8 @@ def search_text(value):
     return " ".join(value.casefold().replace("_", " ").split())
 
 
+# Report the selected model identity from each available operating point, rather than
+# deriving values from scene coordinates or a stale display caption.
 def probe_text(result, kind, name, *, separator=" · "):
     """Describe a selected node or component in each solved analysis mode."""
     if not result or not result.network:
@@ -265,6 +270,8 @@ class Results(QWidget):
                 self.table.setItem(i, j, item)
 
 
+# Write a complete temporary file before replacing the destination so a failed save
+# cannot truncate the previously usable file.
 def write_bytes(parent, path, data, title):
     """Commit a complete file or leave the previous file intact."""
     file = QSaveFile(str(path))

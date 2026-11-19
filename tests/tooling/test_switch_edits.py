@@ -1,4 +1,6 @@
 """Schematic switch toggles edit the selected source statement atomically."""
+# Toggling must change one state span rather than rewrite the component's connections.
+# Grouped and included definitions retain shared scope, surrounding whitespace, and comments.
 
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -9,6 +11,7 @@ from circuitlab.tooling.source_edits import edit_switch
 
 
 class SwitchEditsTest(unittest.TestCase):
+    # Give this case private files so disk edits cannot leak into another test case.
     def setUp(self):
         self.temp = TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)

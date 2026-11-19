@@ -1,4 +1,7 @@
 """Shared .ckt grammar, source rows, and automatic analysis mode detection."""
+# These recognizers are shared by compilation and tolerant editor inspection.
+# Statement splitting must ignore delimiters inside strings, calls, and interpolation while
+# retaining original line numbers for errors and schematic source edits.
 
 import re
 from dataclasses import dataclass, field
@@ -77,6 +80,7 @@ class Binding:
     instance: int | None = None
     path: object = None
 
+    # Ground node 0 stays global; other names use explicit formal bindings or instance-local scope.
     def wire(self, wire):
         if not self.scope or wire == "0":
             return wire
@@ -164,6 +168,8 @@ def _block_rows(line, depth):
     return "\n".join(rows), depth
 
 
+# Split on structural boundaries rather than raw punctuation so calls and quoted paths are
+# kept intact. The original line accompanies every normalized statement.
 def source_rows(source, *, legacy_markers=True):
     """Split statements while retaining the original line for diagnostics."""
     depth = 0
@@ -200,6 +206,8 @@ def parse_wires(raw: str, count: int | None = None) -> tuple[str, ...]:
     return values
 
 
+# Position is measured from the low terminal; percentages and fractional inputs share the
+# same normalized 0-to-1 representation used by the electrical model.
 def parse_potentiometer(raw):
     """Parse total resistance and position measured from the low end (default 50%)."""
     fields = raw.split(",")
@@ -218,6 +226,7 @@ SWITCH_ON_RESISTANCE = 1e-3
 SWITCH_OFF_RESISTANCE = 1e12
 
 
+# An omitted state is intentionally open, unlike an unspecified passive component value.
 def parse_switch(raw):
     """Read a native switch state; omitted states start open."""
     state = raw.strip().casefold()

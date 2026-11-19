@@ -1,4 +1,6 @@
 """Unspecified component values can be drawn but cannot be simulated."""
+# A missing value is a schematic placeholder, not a numeric zero or open circuit.
+# Drawing can succeed while solving/exporting must request the absent physical information.
 
 from dataclasses import replace
 from pathlib import Path

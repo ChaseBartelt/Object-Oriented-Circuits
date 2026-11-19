@@ -2,6 +2,8 @@
 
 This small evaluator is not a general HDL simulator or FPGA synthesis check.
 """
+# Use a small independent evaluator for the emitted HDL subset to check pre-edge values,
+# timer boundaries, and register wrapping without reusing the source parser as the oracle.
 import random
 import re
 import unittest

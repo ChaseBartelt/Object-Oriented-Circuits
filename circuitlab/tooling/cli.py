@@ -1,4 +1,7 @@
 """Check or solve a saved OOC file without starting the graphical editor."""
+# The command line shares compilation and analysis with the viewer but does not import Qt.
+# Diagnostics include editor-readable file/line locations, and the exit status distinguishes
+# a successful result from invalid source or failed numerical analysis.
 
 import argparse
 import sys
@@ -25,6 +28,8 @@ def _diagnostic(path, severity, message, line=None):
     print(f"{location}: {severity} {code}: {message.translate(_CONSOLE_SYMBOLS)}", file=sys.stderr)
 
 
+# Choose electrical checking/solving or digital validation based on the source structure.
+# Keep numerical failure diagnostics distinct from a circuit that checked successfully.
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=("check", "solve"))

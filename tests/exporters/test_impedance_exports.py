@@ -1,4 +1,6 @@
 """Keep theoretical AC impedances out of physical SPICE export formats."""
+# A theoretical Z value has no automatic physical SPICE equivalent. Verify that every export
+# path rejects it explicitly, including a device hidden inside a collapsed package.
 
 from pathlib import Path
 from tempfile import TemporaryDirectory

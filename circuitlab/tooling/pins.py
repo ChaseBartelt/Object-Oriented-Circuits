@@ -1,4 +1,7 @@
 """Named schematic probes stored as backward-compatible circuit comments."""
+# Named probes are metadata, not extra circuit connections.
+# Viewer caption overrides can hide or rename a source-defined probe without modifying the
+# electrical graph or changing the underlying source annotation.
 
 import json
 
@@ -25,6 +28,7 @@ def read_pins(source):
     return {net: name for _, net, name in pin_entries(source)}
 
 
+# Overlay presentation-only captions; the source-defined node or component target is unchanged.
 def apply_pin_overrides(pins, overrides):
     """Overlay optional viewer captions on source-defined probe names."""
     result = dict(pins)
@@ -36,6 +40,7 @@ def apply_pin_overrides(pins, overrides):
     return result
 
 
+# Ignore probe metadata when deciding whether executable source has changed.
 def circuit_text(source):
     """Return the editor text with pin metadata removed for change detection."""
     pin_lines = {line for line, _, _ in pin_entries(source)}

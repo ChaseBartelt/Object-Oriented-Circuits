@@ -1,4 +1,7 @@
 """Drawing data, terminal geometry and small placement primitives."""
+# Coordinates use schematic units with positive Y upward; the viewer later maps them to pixels.
+# Terminal geometry is centralized here so routing, rotation, persistence, and export agree
+# on the physical contact positions for the same component.
 
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
@@ -19,6 +22,7 @@ def wire_axis(edge):
     return None
 
 
+# Rotate about the symbol center in quarter turns, retaining exact reusable coordinates.
 def rotate_point(point, a, b, turns):
     """Rotate clockwise around the center of a symbol, in quarter turns."""
     if not turns:
@@ -36,6 +40,8 @@ def pin_offset(value, grid=0):
     return math.copysign(max(1, math.floor(abs(value) / grid + 0.5)) * grid, value)
 
 
+# The physical package order runs down one side and back up the other, so header order
+# continues to match package pin numbering.
 def package_pins(part, grid=0):
     """Put the first half down the left side and the rest up the right side."""
     if part.base:
@@ -52,6 +58,8 @@ def package_pins(part, grid=0):
         yield label, net, left, (middle - row) * max(1, 2 * grid)
 
 
+# Use the device-specific contact positions rather than treating every glyph as a simple
+# two-terminal line. Routing and saved-layout checks consume this same geometry.
 def symbol_pins(part, a, b, top, *, grid=0):
     """Yield each net and its coordinates for one placed symbol."""
     if part.kind == "H":
@@ -188,6 +196,8 @@ def component_pins(parts, flipped=(), reversed_parts=()):
     return pins
 
 
+# Routing side hints are not always the physical contact: powered op-amp supply pins
+# sit at the triangle center above and below the signal path.
 def grid_terminal(part, a, b, left, offset):
     """Resolve a routing pin hint to its physical contact on a grid symbol."""
     if part.kind == "O" and part.vplus and abs(offset) == 1.25:
@@ -271,6 +281,8 @@ def place_symbol(layout, part, first_net, start, end):
     layout.positions[part.name] = a
 
 
+# Drawing orientation follows which terminal is grounded, not the sign of the source value.
+# A negative supply can therefore retain a readable vertical source and local ground.
 def source_pin_is_upper(part, positive, grounds):
     """The grounded terminal goes below the active terminal, regardless of polarity."""
     return positive != (part.p in grounds and part.n not in grounds)

@@ -1,4 +1,6 @@
 """Check direct module ownership and independently usable compiler layers."""
+# Use isolated imports where necessary to detect accidental dependency cycles or Qt imports.
+# Shared result contracts must remain available without loading a GUI or a solver dispatcher.
 
 from pathlib import Path
 import subprocess

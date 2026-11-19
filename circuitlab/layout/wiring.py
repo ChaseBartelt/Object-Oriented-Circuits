@@ -1,4 +1,7 @@
 """Readable views of a resolved circuit graph."""
+# Choose between labeled connections and readable buffered signal-flow drawings.
+# Matching labels connect electrical islands intentionally; label allocation must avoid
+# collisions between distinct nets that merely have similar display names.
 
 import math
 from collections import Counter, defaultdict
@@ -9,6 +12,8 @@ from circuitlab.layout.geometry import Layout, add_wire, component_pins, grid_sy
 from circuitlab.layout.automatic import series_runs, source_cells
 
 
+# Allocate readable labels once per electrical net; distinct nets must never receive the
+# same connector label just because their shortened names collide.
 def connector_names(nets):
     """Keep readable labels without collisions between distinct electrical nets."""
     names = {}
@@ -32,6 +37,8 @@ def connector_names(nets):
     return names
 
 
+# Use local ground symbols and named connector islands to avoid long continuous wires.
+# The labels encode intentional connectivity that the saved-layout checker also understands.
 def labeled(circuit, labels):
     """Use local ground symbols and matching names to connect distant pins."""
     parts = circuit.components
@@ -124,6 +131,8 @@ class Stage:
     input: str
 
 
+# Recognize buffered stages only when all required terminals can be represented; otherwise
+# return None and leave the drawing to a more general layout strategy.
 def signal_flow(circuit):
     """Draw trees of buffered stages with one feed and parallel shunts."""
     parts = circuit.components

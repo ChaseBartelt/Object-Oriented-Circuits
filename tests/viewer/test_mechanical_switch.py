@@ -1,4 +1,7 @@
 """Manual switch clicks update the shared source, solution and undo history."""
+# A click commits a source state change and recomputes results; Ctrl-click only selects.
+# Check the acknowledged IDE path as well as standalone editing, including preserved layout and
+# Undo.
 
 import os
 from pathlib import Path
@@ -23,10 +26,12 @@ SOURCE = "V1(5) between(input,0);\nS1(open) between(input,out);\nR1(1k) between(
 
 
 class MechanicalSwitchTest(unittest.TestCase):
+    # Qt permits one QApplication per process; reuse it across this test class.
     @classmethod
     def setUpClass(cls):
         cls.app = QApplication.instance() or QApplication([])
 
+    # Give this case private files so disk edits cannot leak into another test case.
     def setUp(self):
         self.directory = TemporaryDirectory()
         self.path = Path(self.directory.name) / "switch.ckt"

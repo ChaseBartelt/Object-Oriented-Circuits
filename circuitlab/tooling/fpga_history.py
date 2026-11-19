@@ -3,6 +3,9 @@
 Snapshots describe Quartus reports, not functional equivalence. Merely building
 another design never replaces a saved baseline.
 """
+# A baseline is an explicit, per-source snapshot, while latest measurements are separate.
+# Compare only compatible reports and preserve missing measurements as unknown; historical
+# performance data never authorizes programming a stale FPGA image.
 
 import hashlib
 import json
@@ -128,6 +131,7 @@ def load_baseline(build_dir, source_path):
     return _load_snapshot(build_dir, source_path, "performance-baselines")
 
 
+# Replace a baseline only on an explicit request and only with a report suitable for that role.
 def save_baseline(build_dir, source_path, report):
     """Atomically save an explicitly selected verified report for this source."""
     _save_snapshot(build_dir, source_path, report, "performance-baselines")
@@ -143,6 +147,8 @@ def save_latest(build_dir, source_path, report):
     _save_snapshot(build_dir, source_path, report, "performance-latest")
 
 
+# Subtract compatible numeric measurements while retaining unknown fields as unknown.
+# Differences in tool/profile/clock settings prevent misleading direct comparisons.
 def compare_reports(current, baseline):
     """Return current-minus-baseline deltas only for comparable build settings.
 

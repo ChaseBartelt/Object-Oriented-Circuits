@@ -5,25 +5,25 @@
 # high=0.169550+j0.442907 V, reconstructed=1 V, and reconstruction error near zero.
 # Change f to sweep. This demonstrates complementary voltage paths, not an acoustic speaker design.
 # Ideal buffers isolate each RC section and load; no rail, power or bandwidth limits are modeled.
-Vin(1 Vrms) between(input, 0);
+Vin(1 Vrms) between(input, 0);  # Complementary low/mid/high paths recombine electrically; ideal buffers isolate their RC poles.
 f = 1k;
 
 circuit low400(input, output, ground) {
     R1(10k) between(input, pole1);
     C1(39.78873577297384n) between(pole1, ground);
-    op1(pole1, buffered, buffered);
+    op1(pole1, buffered, buffered);  # Ideal amplifier: the feedback connections determine this channel's behavior.
     R2(10k) between(buffered, pole2);
     C2(39.78873577297384n) between(pole2, ground);
-    op2(pole2, output, output);
+    op2(pole2, output, output);  # Ideal amplifier: the feedback connections determine this channel's behavior.
 }
 
 circuit low4k(input, output, ground) {
     R1(10k) between(input, pole1);
     C1(3.978873577297384n) between(pole1, ground);
-    op1(pole1, buffered, buffered);
+    op1(pole1, buffered, buffered);  # Ideal amplifier: the feedback connections determine this channel's behavior.
     R2(10k) between(buffered, pole2);
     C2(3.978873577297384n) between(pole2, ground);
-    op2(pole2, output, output);
+    op2(pole2, output, output);  # Ideal amplifier: the feedback connections determine this channel's behavior.
 }
 
 circuit difference(positive, negative, output, ground) {
@@ -31,11 +31,11 @@ circuit difference(positive, negative, output, ground) {
     R2(10k) between(plus, ground);
     R3(10k) between(negative, minus);
     R4(10k) between(output, minus);
-    op1(plus, minus, output);
+    op1(plus, minus, output);  # Ideal amplifier: the feedback connections determine this channel's behavior.
 }
 
-main {
-    op1(input, buffered, buffered);
+main {  # Assemble the declared parts and chips using the named connections below.
+    op1(input, buffered, buffered);  # Ideal amplifier: the feedback connections determine this channel's behavior.
     low400(buffered, low, 0);
     low4k(buffered, upperLow, 0);
     difference(upperLow, low, mid, 0);
@@ -45,10 +45,10 @@ main {
     Rmid(10k) between(mid, sum);
     Rhigh(10k) between(high, sum);
     RsumFeedback(10k) between(invertedSum, sum);
-    op2(0, sum, invertedSum);
+    op2(0, sum, invertedSum);  # Ideal amplifier: the feedback connections determine this channel's behavior.
     Rinvert(10k) between(invertedSum, inverse);
     Rrestore(10k) between(reconstructed, inverse);
-    op3(0, inverse, reconstructed);
+    op3(0, inverse, reconstructed);  # Ideal amplifier: the feedback connections determine this channel's behavior.
 
     RloadLow(10k) between(low, 0);
     RloadMid(10k) between(mid, 0);

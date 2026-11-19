@@ -1,4 +1,6 @@
 """Schematic value edits preserve source connections and support checked undo."""
+# Check exact source changes as well as numeric results: comments, names, and terminal order
+# must survive edits. Undo/Discard and IDE acknowledgements must not overwrite external changes.
 import os
 import unittest
 from pathlib import Path
@@ -29,10 +31,12 @@ POTENTIOMETER_SOURCE = ('V1(5) between(v,0);\n'
 
 
 class SourceEditsTest(unittest.TestCase):
+    # Qt permits one QApplication per process; reuse it across this test class.
     @classmethod
     def setUpClass(cls):
         cls.app = QApplication.instance() or QApplication([])
 
+    # Give this case private files so disk edits cannot leak into another test case.
     def setUp(self):
         self.temp = TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)

@@ -1,4 +1,6 @@
 """Exercise the asynchronous FPGA UI without invoking Quartus or hardware."""
+# Fake external processes let the real asynchronous UI sequence run without Quartus or hardware.
+# Source changes and chain failures must invalidate programming eligibility before the final action.
 
 import os
 from pathlib import Path
@@ -61,10 +63,12 @@ class FakeProcess(QObject):
 
 
 class FpgaViewerTest(unittest.TestCase):
+    # Qt permits one QApplication per process; reuse it across this test class.
     @classmethod
     def setUpClass(cls):
         cls.app = QApplication.instance() or QApplication([])
 
+    # Give this case private files so disk edits cannot leak into another test case.
     def setUp(self):
         self.temp = TemporaryDirectory()
         self.root = Path(self.temp.name)

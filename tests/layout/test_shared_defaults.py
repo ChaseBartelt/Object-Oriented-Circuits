@@ -1,3 +1,5 @@
+# Isolate settings and published defaults so these tests do not replace personal layouts.
+# Selection cases move component bodies and terminal/label attachments as one coherent group.
 import json
 import math
 import os
@@ -21,6 +23,7 @@ from circuitlab.viewer.schematic import SchematicView, point
 
 
 class SharedDefaultsTest(unittest.TestCase):
+    # Qt permits one QApplication per process; reuse it across this test class.
     @classmethod
     def setUpClass(cls):
         cls.app = QApplication.instance() or QApplication([])

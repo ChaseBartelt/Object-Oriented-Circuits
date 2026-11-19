@@ -1,4 +1,7 @@
 """Edit a schematic's wire geometry while retaining its electrical nets."""
+# Convert visible runs into a graph split at tees and overlaps before editing them.
+# Terminals, labels, and junctions are fixed anchors; cleanup may remove dead stubs or
+# collinear bends only when those attachments remain connected.
 
 from collections import Counter, defaultdict
 from dataclasses import replace
@@ -31,6 +34,8 @@ def route_anchors(
     }
 
 
+# Split runs at all real contacts before graph traversal so a tee in the middle of a long
+# segment is recognized as a connection rather than an unrelated crossing.
 def wire_graph(edges, anchors):
     """Split overlaps and tees into a graph of distinct straight runs."""
     horizontal, vertical, diagonal = [], [], []
@@ -94,6 +99,7 @@ def terminal_run(graph, start, fixed):
     return run
 
 
+# Preserve anchored contacts while pruning dead ends and collapsing straight-through bends.
 def compact_wire(edges, anchors):
     """Remove dead stubs and merge collinear bends away from terminals."""
     graph = wire_graph(edges, anchors)

@@ -1,4 +1,7 @@
 """Browse library declarations and edit their reusable schematic geometry."""
+# A device-layout dialog edits reusable geometry independently of the circuit document.
+# Each declaration and opened child level retains its own draft so applying one template
+# does not silently replace another device's defaults.
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
@@ -160,6 +163,7 @@ class DeviceLayoutDialog(QDialog):
         dialog.exec()
         dialog.deleteLater()
 
+    # Retain this device/level draft before the dialog switches to another library declaration.
     def record_draft(self):
         self.drafts[self.key] = self.preview.layout
         self.message.setText(f"{self.layouts.devices[self.key].name} layout edited. Apply to save its default.")
@@ -178,6 +182,7 @@ class DeviceLayoutDialog(QDialog):
         self.draw_device(layout)
         self.message.setText("Apply to use the saved design again.")
 
+    # Publish the selected checked geometry to the intended reusable device template only.
     def apply_layout(self):
         if self.key not in self.drafts:
             self.message.setText("There are no changes to apply for this device.")

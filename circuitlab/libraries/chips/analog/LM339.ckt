@@ -4,7 +4,7 @@
 
 include("../shared/collectorComparator.ckt");
 
-chip LM339(out2, out1, vplus, minus1, plus1, minus2, plus2, minus3, plus3, minus4, plus4, vminus, out4, out3) {
+chip LM339(out2, out1, vplus, minus1, plus1, minus2, plus2, minus3, plus3, minus4, plus4, vminus, out4, out3) {  # Keep the package pin order while the internal parts define the modeled signal behavior.
     oocCollectorComparator(vplus, vminus, plus1, minus1, out1, vminus);
     oocCollectorComparator(vplus, vminus, plus2, minus2, out2, vminus);
     oocCollectorComparator(vplus, vminus, plus3, minus3, out3, vminus);

@@ -3,6 +3,9 @@
 No command is executed here. The viewer runs argv lists asynchronously and asks
 the user to program explicitly. Board constants ship with the Python runtime.
 """
+# These helpers prepare files and argv lists; they do not launch Quartus or hardware access.
+# Programming eligibility depends on matching source, board settings, constraints, and verified
+# build artifacts, not merely on a tool returning a zero exit status.
 
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
@@ -135,6 +138,8 @@ class FpgaProject:
         return self.source_sha256 == source_digest(source)
 
 
+# Add board-specific switch conditioning only for the supported board profile; ordinary
+# Verilog export stays board-neutral and must not acquire hidden synchronizers.
 def compile_de10_lite(source):
     """Apply board input conditioning without changing board-neutral HDL export.
 
@@ -239,6 +244,8 @@ def _manual_synchronizer(body, hdl):
     return True
 
 
+# Write the generated HDL and board constraints together with fingerprints used later
+# to reject programming from mismatched source or stale build settings.
 def prepare_project(source, build_dir):
     hdl, qsf, sdc = compile_de10_lite(source)
     root = Path(build_dir).expanduser().resolve()
@@ -321,6 +328,8 @@ def programmer_success(output):
     return True
 
 
+# Check expected artifacts and source/settings fingerprints in addition to build success.
+# A stale image from an earlier compilation is not a verified result of this request.
 def verify_build(project):
     directory = project.directory
     try:
@@ -360,6 +369,8 @@ def verify_build(project):
         raise FpgaError("Cannot verify the Quartus build; rebuild before programming.") from error
 
 
+# Construct the programmer invocation only after checking the selected cable, chain, and
+# verified image; command preparation itself does not access the device.
 def program_command(project, quartus_bin, cable, *, source):
     if not project.matches_source(source):
         raise FpgaError("The OOC source changed after this build. Build again before programming.")

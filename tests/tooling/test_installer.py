@@ -1,4 +1,6 @@
 """Installer staging and CI inputs without downloading or running Setup."""
+# Inspect staged payloads and workflow inputs in temporary directories.
+# These checks validate packaging without downloading dependencies or launching Setup.
 
 from argparse import Namespace
 import contextlib

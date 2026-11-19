@@ -1,4 +1,6 @@
 """Check both supported launch commands with the project interpreter."""
+# Use the project interpreter to check both supported launch forms in bounded subprocesses.
+# An open IDE pipe must not keep the viewer alive after its window has exited.
 
 import subprocess
 import sys

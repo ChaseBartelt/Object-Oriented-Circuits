@@ -2,7 +2,7 @@
 # Shunt approximation calibrated near 2.495 V at 2.5 mA with 2 uA reference current.
 # Datasheet: https://www.ti.com/lit/ds/symlink/tl431.pdf
 
-chip TL431(cathode, anode, ref) {
+chip TL431(cathode, anode, ref) {  # External ports retain package order; internal instances share only their explicitly bound nets.
     IRef(2u) between(ref, anode);
-    switch1(ref, anode, cathode, anode, 2.61, 10, 1G);
+    switch1(ref, anode, cathode, anode, 2.61, 10, 1G);  # The first two nodes control the contact between the third and fourth nodes.
 }

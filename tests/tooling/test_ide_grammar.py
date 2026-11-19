@@ -1,4 +1,6 @@
 """Check OOC scopes with the same TextMate engine shipped by VS Code."""
+# Tokenize with the editor's TextMate engine so assertions describe real highlighting scopes.
+# Comments, incomplete text, and similar signal names must not be mistaken for valid syntax.
 
 import json
 import os

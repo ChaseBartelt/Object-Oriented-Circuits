@@ -1,4 +1,7 @@
 """Render editor hover references as PNGs over a private JSON-lines pipe."""
+# One offscreen process can render many hover requests without constructing the source editor.
+# The JSON-lines protocol returns text/image data; invalid or unfinished source should produce
+# a bounded preview failure rather than terminate the editor's background helper.
 
 import base64
 import json
@@ -112,6 +115,7 @@ class HoverRenderer:
         return {"text": text, "image": png(image), "nets": sorted(nets), "components": sorted(names)}
 
 
+# Handle one bounded protocol request at a time and keep stdout reserved for responses.
 def main():
     app = QApplication([])
     # Offscreen Qt may not discover Windows fonts in an isolated process.

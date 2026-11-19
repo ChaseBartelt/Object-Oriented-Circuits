@@ -1,4 +1,6 @@
 """FPGA reports remain read-only and never bypass programming verification."""
+# Display reports and saved baselines through the UI while preserving the independent build gate.
+# Loading attractive metrics or extracting paths must never unlock a stale/unverified image.
 
 from copy import deepcopy
 import os
@@ -44,10 +46,12 @@ def report_for(path, source=SOURCE):
 
 
 class PerformancePanelTest(unittest.TestCase):
+    # Qt permits one QApplication per process; reuse it across this test class.
     @classmethod
     def setUpClass(cls):
         cls.app = QApplication.instance() or QApplication([])
 
+    # Give this case private files so disk edits cannot leak into another test case.
     def setUp(self):
         self.temp = TemporaryDirectory()
         self.root = Path(self.temp.name)
@@ -193,10 +197,12 @@ class PerformancePanelTest(unittest.TestCase):
 
 
 class FpgaPerformanceFlowTest(unittest.TestCase):
+    # Qt permits one QApplication per process; reuse it across this test class.
     @classmethod
     def setUpClass(cls):
         cls.app = QApplication.instance() or QApplication([])
 
+    # Give this case private files so disk edits cannot leak into another test case.
     def setUp(self):
         self.temp = TemporaryDirectory()
         self.root = Path(self.temp.name)

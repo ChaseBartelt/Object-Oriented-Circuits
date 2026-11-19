@@ -1,4 +1,6 @@
 """Check physical segment order, active-low values and live simulator updates."""
+# Check physical segment order, active-low color, and exact signal probing together.
+# Stepping, reset, collapsed outputs, and cleared sources must not leave stale lit segments.
 
 import os
 from time import perf_counter
@@ -29,6 +31,7 @@ CLOCKED = '''chip Display(clk, HEX00) {
 
 
 class SevenSegmentTest(unittest.TestCase):
+    # Qt permits one QApplication per process; reuse it across this test class.
     @classmethod
     def setUpClass(cls):
         cls.app = QApplication.instance() or QApplication([])

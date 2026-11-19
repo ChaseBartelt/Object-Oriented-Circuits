@@ -1,4 +1,7 @@
 """Screen-sized grid and alignment rules for schematic dragging."""
+# Snapping is measured against the visible grid and zoom, not arbitrary raw pointer offsets.
+# The grab offset remains stable during a drag, while a bounded magnet prevents nearby
+# terminals from pulling a part across an adjacent grid row.
 
 import math
 

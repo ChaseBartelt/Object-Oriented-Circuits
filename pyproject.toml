@@ -1,7 +1,9 @@
+# Build-time tooling is separate from the dependencies required by the installed application.
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
+# These runtime dependencies provide the Qt interface, numerical arrays/solvers, and symbolic rules.
 [project]
 name = "electric-circuits-calculator"
 version = "1.1.2"
@@ -9,6 +11,7 @@ description = "Editor, schematic renderer, and circuit analysis calculator"
 requires-python = ">=3.10"
 dependencies = ["PySide6-Essentials>=6.6,<7", "numpy>=1.26,<3", "scipy>=1.11,<2", "sympy>=1.12,<2"]
 
+# The launcher enters the same module used by the development command python -m circuitlab.
 [project.gui-scripts]
 electric-circuits = "circuitlab.__main__:main"
 
@@ -16,5 +19,7 @@ electric-circuits = "circuitlab.__main__:main"
 include = ["circuitlab", "circuitlab.*"]
 namespaces = false
 
+# Ship chip definitions and shared geometry along with Python modules so installed previews
+# and includes resolve without a copy of the development checkout.
 [tool.setuptools.package-data]
 circuitlab = ["libraries/layouts/*.json", "libraries/chips/*/*.ckt"]

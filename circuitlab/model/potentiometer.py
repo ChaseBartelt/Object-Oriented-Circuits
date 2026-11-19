@@ -1,10 +1,15 @@
 """Electrical branches of an ideal linear three-terminal potentiometer."""
+# Expand each three-terminal potentiometer into high-to-wiper and wiper-to-low branches.
+# The returned index map lets numerical results be folded back into the original component
+# order without losing terminal current or total power information.
 
 from math import isfinite
 
 from circuitlab.model.graph import CircuitError, Component
 
 
+# At either endpoint, retain an exact short rather than a tiny invented resistance.
+# Generated leg names are checked against the shared component-name set.
 def potentiometer_legs(part, *, used=None):
     """Return high->wiper and wiper->low branches; zero-length legs are ideal shorts.
 

@@ -1,4 +1,6 @@
 """Diagram metadata binds source signals to the existing runtime's real slots."""
+# Use compiler metadata to identify the real runtime slots behind visible diagram names.
+# Nested instances and renamed signals must not share state merely because captions resemble.
 
 import unittest
 

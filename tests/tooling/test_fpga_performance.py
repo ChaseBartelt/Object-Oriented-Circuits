@@ -1,4 +1,6 @@
 """Quartus report fixtures and corruption checks; no tools or board required."""
+# Read resource/timing measurements from fixed report fixtures, including damaged/partial ones.
+# Unknown metrics stay unknown and report parsing never grants programming verification.
 
 import json
 import os

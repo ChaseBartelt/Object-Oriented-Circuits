@@ -1,4 +1,7 @@
 """Pick the visible packages and their contents from the compiled graph."""
+# The compiled graph stays flat for solving, but drawing can show a package or its contents.
+# Build visible levels in parent-first order so opened child sheets retain their enclosing
+# instance identity and terminal bindings.
 
 from collections import Counter, defaultdict
 from dataclasses import replace

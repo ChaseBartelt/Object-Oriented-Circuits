@@ -4,7 +4,7 @@
 
 include("../shared/darlington.ckt");
 
-chip ULN2003A(in1, in2, in3, in4, in5, in6, in7, gnd, common, out7, out6, out5, out4, out3, out2, out1) {
+chip ULN2003A(in1, in2, in3, in4, in5, in6, in7, gnd, common, out7, out6, out5, out4, out3, out2, out1) {  # External ports retain package order; internal instances share only their explicitly bound nets.
     oocDarlington(in1, gnd, out1, common);
     oocDarlington(in2, gnd, out2, common);
     oocDarlington(in3, gnd, out3, common);

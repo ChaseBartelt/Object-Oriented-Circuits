@@ -1,4 +1,6 @@
 """Compile-time control flow through the circuit compiler and downstream tools."""
+# Static loops generate a circuit before solving; they are not simulated runtime behavior.
+# Cases exercise expansion limits, independent call scopes, and original error locations.
 
 import unittest
 from pathlib import Path

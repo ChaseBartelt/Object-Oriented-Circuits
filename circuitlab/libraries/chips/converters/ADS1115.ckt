@@ -2,6 +2,6 @@
 # Pinout only. Quantizer, configuration and I2C need a model.
 # Datasheet: https://www.ti.com/lit/ds/symlink/ads1115.pdf
 
-chip ADS1115(addr, alert_rdy, gnd, ain0, ain1, ain2, ain3, vdd, sda, scl) {
-    model = unavailable;
+chip ADS1115(addr, alert_rdy, gnd, ain0, ain1, ain2, ain3, vdd, sda, scl) {  # Package pinout only: numerical behavior requires an additional model.
+    model = unavailable;  # Allow a schematic preview while refusing a numerical solve without a model.
 }

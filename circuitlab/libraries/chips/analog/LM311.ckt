@@ -4,6 +4,6 @@
 
 include("../shared/collectorComparator.ckt");
 
-chip LM311(emitter, plus, minus, vminus, balance, strobe, collector, vplus) {
+chip LM311(emitter, plus, minus, vminus, balance, strobe, collector, vplus) {  # Keep the package pin order while the internal parts define the modeled signal behavior.
     oocCollectorComparator(vplus, vminus, plus, minus, collector, emitter);
 }

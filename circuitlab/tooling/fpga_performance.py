@@ -3,6 +3,9 @@
 Missing measurements stay unknown. Timing path extraction only reads the fitted
 netlist; it neither recompiles the design nor accesses a programmer.
 """
+# Resource usage, clock measurements, and fitted timing paths can be independently available.
+# Read only fresh reports for this build, and retain verification status as supplied by the
+# build pipeline rather than inferring permission to program from attractive timing numbers.
 
 from datetime import datetime, timezone
 import hashlib
@@ -135,6 +138,8 @@ def _read_paths(project, record, notes):
         return []
 
 
+# Collect partial measurements even for a failed timing run, but carry the caller's verified
+# status separately so report availability cannot unlock hardware programming.
 def read_report(project, *, source_path="", verified=False, verification_error=""):
     """Return JSON-safe measurements from this build, including failed timing.
 
@@ -202,6 +207,8 @@ diagnosing a failed build, so resource and timing availability are independent.
     return result
 
 
+# Return an argv list for asynchronous fitted-netlist inspection; do not recompile or
+# open the programmer merely to obtain performance measurements.
 def report_command(project, quartus_bin):
     """Prepare and return an asynchronous Quartus STA command for fitted paths."""
     record = _record(project)

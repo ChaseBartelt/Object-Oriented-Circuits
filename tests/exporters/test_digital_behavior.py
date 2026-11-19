@@ -1,4 +1,6 @@
 """Complete combinational behavior and unsigned data ports in digital chips."""
+# Check that combinational output bits are completely driven and that conflicting, missing,
+# or cyclic drivers become source diagnostics instead of implicit storage.
 
 import unittest
 

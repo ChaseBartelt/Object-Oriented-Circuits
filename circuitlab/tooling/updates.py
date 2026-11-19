@@ -1,4 +1,7 @@
 """Check and install complete application releases from the project's GitHub feed."""
+# Validate release identity, version ordering, and integrity metadata before accepting an update.
+# Downloads stay temporary until complete and verified; only then may the installer activate
+# the candidate while preserving the previous usable installation on failure.
 
 import argparse
 import hashlib
@@ -39,6 +42,8 @@ def read_url(url, limit):
     return data
 
 
+# Treat remote metadata as untrusted input: validate product identity, version, URL, and
+# integrity fields before any candidate is considered installable.
 def validate_release(record, tag):
     if record.get("schema") != 1 or record.get("product") != PRODUCT:
         raise ValueError("Invalid OOC release manifest.")
@@ -80,6 +85,7 @@ def check(root, fetch=read_url):
             "current": current["version"], "release": record}
 
 
+# Keep incomplete bytes out of the final installer path and verify integrity before promotion.
 def download(record, directory, opener=urlopen):
     """Stream into a temporary file; a partial/corrupt update is never executable."""
     validate_release(record, "ooc-v" + record["version"])
@@ -109,6 +115,8 @@ def download(record, directory, opener=urlopen):
         Path(temporary).unlink(missing_ok=True)
 
 
+# Recheck the candidate and installed version at application time, since they may have
+# changed since the earlier update check.
 def apply(root, expected):
     result = check(root)
     if not result["available"] or result["release"]["version"] != expected:

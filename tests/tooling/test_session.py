@@ -1,4 +1,7 @@
 """Document compilation and source ownership without a GUI dependency."""
+# Keep accepted text, compilation, drawing, and diagnostics transactional without importing Qt.
+# A model error may still yield a useful package preview, while a new revision invalidates old
+# results.
 
 from pathlib import Path
 import subprocess

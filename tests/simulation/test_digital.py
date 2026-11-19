@@ -1,4 +1,6 @@
 """Digital behavior, compiler parity and bounded interpreter diagnostics."""
+# Compare logical state at exact clock edges, including synchronization delay and unsigned
+# wrapping. Fast/batched advancement must match individual interpreted cycles.
 
 from pathlib import Path
 import unittest

@@ -1,4 +1,7 @@
 """Movable digital block geometry; connections remain attached to their nodes."""
+# Digital positions and wire bends are presentation data attached to named graph nodes.
+# Moving a block reattaches its terminal runs while retaining useful interior bends; saved
+# records are bounded and versioned before they are trusted on reload.
 
 from math import copysign, floor, hypot, isfinite
 
@@ -48,6 +51,7 @@ def _path(values):
     return tuple(result if len(result) > 1 else result * 2)
 
 
+# Update the terminal segments while preserving interior bends when their geometry permits it.
 def _reattach(points, start, end):
     """Keep interior bends, adjusting only the terminal runs where possible."""
     if _same(points[0], start) and _same(points[-1], end):

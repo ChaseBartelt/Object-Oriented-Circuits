@@ -1,4 +1,6 @@
 """Use the same pulse source in the built-in simulator and SPICE export."""
+# The built-in sampler and SPICE export must use the same pulse levels and timing fields.
+# Boundary cases prevent an off-by-one phase or delay from changing the waveform.
 
 import unittest
 

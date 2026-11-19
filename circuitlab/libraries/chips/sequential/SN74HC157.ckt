@@ -4,7 +4,7 @@
 
 include("../shared/mux.ckt");
 
-chip SN74HC157(select, a1, b1, y1, a2, b2, y2, gnd, y3, b3, a3, y4, b4, a4, enable_n, vcc) {
+chip SN74HC157(select, a1, b1, y1, a2, b2, y2, gnd, y3, b3, a3, y4, b4, a4, enable_n, vcc) {  # External ports retain package order; internal instances share only their explicitly bound nets.
     not(vcc, gnd, enable_n, enabled);
     oocMux2(vcc, gnd, select, a1, b1, mux1);
     and(vcc, gnd, mux1, enabled, y1);

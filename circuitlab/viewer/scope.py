@@ -1,4 +1,7 @@
 """Run or pause a built-in time simulation and plot a circuit node."""
+# The scope owns bounded sampling work and a selected-node view of stored simulation history.
+# Pause/resume preserves physical state; value-only updates can restamp a compatible circuit
+# without treating a slider gesture or a new monitored node as a fresh simulation.
 
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
@@ -14,6 +17,8 @@ from circuitlab.model.graph import CircuitError
 from circuitlab.math.nonlinear import TimeDomain, source_frequency
 
 
+# Bound each worker batch and copy returned voltage arrays before the next step mutates them.
+# The cancellation event lets edits and shutdown stop work between samples.
 def sample_batch(simulation, stop):
     samples = []
     error = None
@@ -147,6 +152,8 @@ class Oscilloscope(QWidget):
         self.setVisible(supported and self.panel_visible)
         return supported
 
+    # Preserve the selected node and compatible history during value-only refreshes.
+    # Block widget signals while repopulating controls so setup does not trigger extra resets.
     def set_circuit(self, circuit, *, preserve_state=False):
         if circuit is self.circuit:
             return
@@ -196,6 +203,8 @@ class Oscilloscope(QWidget):
             self.stop_batch.set()
             self.refresh_simulation()
 
+    # Accept results only from the current simulation owner. Reorder stored voltage columns
+    # when compatible source edits reorder nodes without changing their identities.
     def finish_batch(self):
         if self.pending is None:
             return True
@@ -218,6 +227,8 @@ class Oscilloscope(QWidget):
                 self.message.setText(f"{error} Try a smaller time step or set an initial capacitor voltage.")
         return True
 
+    # Wait for the worker to release its state before restamping values or the time step.
+    # An incompatible topology requires a reset; a value edit can preserve stored energy.
     def refresh_simulation(self):
         """Apply the newest value change only after the worker releases its state."""
         if not self.finish_batch():
@@ -244,6 +255,7 @@ class Oscilloscope(QWidget):
         self.stop_batch.set()
         self.run.setText("Resume" if self.simulation else "Run")
 
+    # Stop UI timers and cancel queued sampling work before the widget is released.
     def shutdown(self):
         self.pause()
         self.refresh_timer.stop()

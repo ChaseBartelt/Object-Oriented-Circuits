@@ -1,4 +1,7 @@
 """Six live active-low DE10-Lite digits, drawn without images or web content."""
+# Each physical segment keeps its board bit identity a through g, then the decimal point.
+# The board convention is active-low, so a simulated zero lights a segment and an unknown
+# or unconnected value must remain distinguishable from a valid lit/dark state.
 
 import re
 

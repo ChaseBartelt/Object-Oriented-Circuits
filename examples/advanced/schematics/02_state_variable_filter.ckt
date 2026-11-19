@@ -4,22 +4,22 @@
 # HP=input+BP-LP; two inverting integrators close the second-order feedback loop.
 # Change f to sweep the responses. Ideal integrators are intended for AC analysis, not DC startup.
 # Probes are RMS phasors; all op amps are ideal (no rail, bandwidth or slew limits).
-Vin(1 Vrms) between(input, 0);
+Vin(1 Vrms) between(input, 0);  # Feedback and integrator paths produce related filter outputs from the same input signal.
 f = 1.5915494309189535k;
 
 circuit integrator(input, output, ground) {
     Rinput(10k) between(input, minus);
     Cfeedback(10n) between(output, minus);
-    op1(ground, minus, output);
+    op1(ground, minus, output);  # Ideal amplifier: the feedback connections determine this channel's behavior.
 }
 
-main {
+main {  # Assemble the declared parts and chips using the named connections below.
     # The equal input resistors average input and BP; the amplifier doubles this average.
     Rinput(10k) between(input, plus);
     Rdamping(10k) between(bp, plus);
     Rlow(10k) between(lp, minus);
     Rfeedback(10k) between(hp, minus);
-    op1(plus, minus, hp);
+    op1(plus, minus, hp);  # Ideal amplifier: the feedback connections determine this channel's behavior.
     integrator(hp, bp, 0);
     integrator(bp, lp, 0);
 
@@ -27,7 +27,7 @@ main {
     RnotchHigh(10k) between(hp, notchSum);
     RnotchLow(10k) between(lp, notchSum);
     RnotchFeedback(10k) between(notch, notchSum);
-    op2(0, notchSum, notch);
+    op2(0, notchSum, notch);  # Ideal amplifier: the feedback connections determine this channel's behavior.
     RloadLP(10k) between(lp, 0);
     RloadBP(10k) between(bp, 0);
     RloadHP(10k) between(hp, 0);

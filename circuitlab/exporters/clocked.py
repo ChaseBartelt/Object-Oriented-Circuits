@@ -1,4 +1,7 @@
 """Typed unsigned expressions and rising-edge blocks for the digital exporter."""
+# Expression lowering carries unsigned widths alongside emitted HDL expressions.
+# Clocked assignments use pre-edge values, and interval/frequency helpers derive integer
+# counter or accumulator constants without introducing an extra software clock.
 
 import re
 from fractions import Fraction
@@ -51,6 +54,7 @@ def interval_cycles(text, rate, line):
     return (2 * cycles.numerator + cycles.denominator) // (2 * cycles.denominator)
 
 
+# Keep physical frequency arithmetic exact until an integer hardware count is required.
 def frequency(text, line):
     """Parse physical frequency exactly; never round through a float."""
     match = re.fullmatch(FREQUENCY, text.strip())
@@ -229,6 +233,8 @@ class Expressions:
                 self.additions[left] = operands
         return left, left_width
 
+    # Share arithmetic only when both mutually exclusive updates increment the same register.
+    # The transformed expression must still use its pre-edge value and original unsigned width.
     def select_increment(self, condition, yes, no, indent):
         """Share the adder for two exclusive increments of the same state.
 
@@ -260,6 +266,8 @@ class Expressions:
         return [f"{indent}{target} <= {add_yes};"]
 
 
+# Generate edge-triggered logic and explicit timer state while preserving nonblocking
+# assignment ordering and the declared clock domain.
 def compile_clocks(clocks, signals, states, directions):
     expressions = Expressions(signals)
     blocks = []

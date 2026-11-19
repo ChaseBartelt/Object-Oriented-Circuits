@@ -2,25 +2,25 @@
 # 5 V control approximation. Uses bidirectional 470 ohm / 1 Gohm switches with a 2.5 V threshold. Analog rail clipping is omitted.
 # Datasheet: https://www.ti.com/lit/ds/symlink/cd4051b.pdf
 
-chip CD4051(ch4, ch6, common, ch7, ch5, inhibit, vee, gnd, s2, s1, s0, ch3, ch0, ch1, ch2, vdd) {
+chip CD4051(ch4, ch6, common, ch7, ch5, inhibit, vee, gnd, s2, s1, s0, ch3, ch0, ch1, ch2, vdd) {  # External ports retain package order; internal instances share only their explicitly bound nets.
     not(vdd, gnd, s0, ns0);
     not(vdd, gnd, s1, ns1);
     not(vdd, gnd, s2, ns2);
     not(vdd, gnd, inhibit, enabled);
     and(vdd, gnd, enabled, ns0, ns1, ns2, ctl0);
-    switch1(ctl0, gnd, ch0, common, 2.5, 470, 1G);
+    switch1(ctl0, gnd, ch0, common, 2.5, 470, 1G);  # The first two nodes control the contact between the third and fourth nodes.
     and(vdd, gnd, enabled, s0, ns1, ns2, ctl1);
-    switch2(ctl1, gnd, ch1, common, 2.5, 470, 1G);
+    switch2(ctl1, gnd, ch1, common, 2.5, 470, 1G);  # The first two nodes control the contact between the third and fourth nodes.
     and(vdd, gnd, enabled, ns0, s1, ns2, ctl2);
-    switch3(ctl2, gnd, ch2, common, 2.5, 470, 1G);
+    switch3(ctl2, gnd, ch2, common, 2.5, 470, 1G);  # The first two nodes control the contact between the third and fourth nodes.
     and(vdd, gnd, enabled, s0, s1, ns2, ctl3);
-    switch4(ctl3, gnd, ch3, common, 2.5, 470, 1G);
+    switch4(ctl3, gnd, ch3, common, 2.5, 470, 1G);  # The first two nodes control the contact between the third and fourth nodes.
     and(vdd, gnd, enabled, ns0, ns1, s2, ctl4);
-    switch5(ctl4, gnd, ch4, common, 2.5, 470, 1G);
+    switch5(ctl4, gnd, ch4, common, 2.5, 470, 1G);  # The first two nodes control the contact between the third and fourth nodes.
     and(vdd, gnd, enabled, s0, ns1, s2, ctl5);
-    switch6(ctl5, gnd, ch5, common, 2.5, 470, 1G);
+    switch6(ctl5, gnd, ch5, common, 2.5, 470, 1G);  # The first two nodes control the contact between the third and fourth nodes.
     and(vdd, gnd, enabled, ns0, s1, s2, ctl6);
-    switch7(ctl6, gnd, ch6, common, 2.5, 470, 1G);
+    switch7(ctl6, gnd, ch6, common, 2.5, 470, 1G);  # The first two nodes control the contact between the third and fourth nodes.
     and(vdd, gnd, enabled, s0, s1, s2, ctl7);
-    switch8(ctl7, gnd, ch7, common, 2.5, 470, 1G);
+    switch8(ctl7, gnd, ch7, common, 2.5, 470, 1G);  # The first two nodes control the contact between the third and fourth nodes.
 }

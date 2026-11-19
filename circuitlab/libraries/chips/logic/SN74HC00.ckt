@@ -2,7 +2,7 @@
 # 5 V logic-family approximation using OOC transistor gates.
 # Datasheet: https://www.ti.com/lit/ds/symlink/sn74hc00.pdf
 
-chip SN74HC00(a1, b1, y1, a2, b2, y2, gnd, y3, a3, b3, y4, a4, b4, vcc) {
+chip SN74HC00(a1, b1, y1, a2, b2, y2, gnd, y3, a3, b3, y4, a4, b4, vcc) {  # External ports retain package order; internal instances share only their explicitly bound nets.
     nand(vcc, gnd, a1, b1, y1);
     nand(vcc, gnd, a2, b2, y2);
     nand(vcc, gnd, a3, b3, y3);

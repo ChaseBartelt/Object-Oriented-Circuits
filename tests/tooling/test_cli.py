@@ -1,4 +1,6 @@
 """Exercise saved circuit files through the OOC command line."""
+# Run the public command line on saved source and inspect both diagnostics and exit status.
+# A valid digital check must not accidentally invoke the electrical numerical solver.
 
 import subprocess
 import sys

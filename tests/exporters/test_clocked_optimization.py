@@ -1,4 +1,6 @@
 """Resource sharing preserves fixed-width state and rising-edge semantics."""
+# Exercise both sides of resource-sharing eligibility: equivalent self-increments should
+# share arithmetic, while unsupported update shapes must retain their original semantics.
 
 from pathlib import Path
 import random

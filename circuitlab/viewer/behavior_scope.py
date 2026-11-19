@@ -1,4 +1,7 @@
 """Select a chip's diagram signals using compiler/runtime identity mappings."""
+# Visible diagram names can differ from flattened runtime names after nested chip assembly.
+# Use compiler-provided instance bindings to find the live values; a structural preview must
+# not create a second simulation clock or present its initial state as a running circuit.
 
 import re
 from types import SimpleNamespace
@@ -7,6 +10,8 @@ from circuitlab.math.digital import DigitalSimulation
 from circuitlab.language.pin_banks import expand_pin_banks
 
 
+# Prefer bindings from the active compiled instance. A standalone structural preview can
+# describe ports without fabricating running values for private state.
 def chip_diagram_model(circuit, index, simulation=None):
     """Return display metadata and display-name -> live-signal bindings.
 

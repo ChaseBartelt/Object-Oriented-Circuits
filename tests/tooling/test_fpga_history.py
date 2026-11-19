@@ -1,4 +1,6 @@
 """Performance comparisons preserve a user-selected baseline across builds."""
+# A new build must not silently replace an explicitly chosen comparison baseline.
+# Keep per-source keys and incompatible report settings separate across saved snapshots.
 
 from copy import deepcopy
 import json
@@ -11,6 +13,7 @@ from circuitlab.tooling import fpga_history as history
 
 
 class FpgaHistoryTest(unittest.TestCase):
+    # Give this case private files so disk edits cannot leak into another test case.
     def setUp(self):
         self.temporary = TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)

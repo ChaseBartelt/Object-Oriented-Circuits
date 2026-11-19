@@ -1,4 +1,7 @@
 """Move, rotate, slide and split geometry while preserving electrical nets."""
+# Editing operates on candidate layouts and reconnects moved terminals to fixed attachments.
+# Accept a move only after checking connectivity, so dragging a glyph cannot redefine the
+# circuit or join nets merely because their coordinates happen to overlap.
 
 import math
 from collections import Counter, defaultdict
@@ -21,6 +24,8 @@ def _graph_edges(graph):
     return ((a, b) for a, neighbors in graph.items() for b in neighbors if a < b)
 
 
+# Move the body and all of its physical contacts together, then reconnect those contacts
+# to the unchanged surrounding circuit before accepting the candidate.
 def move_symbol(circuit, original, name, delta, *, diagonal=False, rotate=0, align_axis=None):
     """Move or rotate one symbol and reroute the leads to its pins."""
     i, symbol = next(
@@ -93,6 +98,8 @@ def selection_ends(layout):
     yield from ((("connector", i), net, pos) for i, (net, pos, *_) in enumerate(layout.connectors))
 
 
+# Move the selected group as a unit: its internal geometry travels together, while only
+# connections to fixed external attachments need rerouting.
 def move_symbols(circuit, original, names, delta, *, diagonal=False):
     """Translate a selection together and reroute its connections to fixed parts."""
     if not any(delta):
@@ -286,6 +293,8 @@ def move_ground(circuit, original, point, delta, *, diagonal=False, align_axis=N
     )
 
 
+# Treat only visible wire continuity as physical connectivity here; equal net labels are
+# handled separately so joining labeled islands can remove redundant connectors safely.
 def _physical_islands(drawing, net, extra=()):
     """Identify wire connectivity without treating matching labels as wires."""
     anchors = route_anchors(drawing, net) | set(map(clean_point, extra))
@@ -329,6 +338,8 @@ def _prune_joined_connectors(circuit, drawing, net):
     return drawing if preserves_nets(circuit, drawing) else None
 
 
+# A label can join another island only when both belong to the exact same net.
+# Similar text or a nearby ground symbol is not permission to short two nodes.
 def move_connector(circuit, original, index, end, *, join=None, join_wire=False, diagonal=False):
     """Move a label; join a matching label or a different island of its exact net."""
     net, start, name, left, below = original.connectors[index]
@@ -396,6 +407,8 @@ def _move_endpoint_labels(layout, *, grounds=None, connectors=None):
     return offsets
 
 
+# Replace the cut connection with matching labels or appropriate local ground symbols,
+# keeping the electrical net connected even though the visible wire is separated.
 def split_wire(circuit, original, net, edge, at, *, grid=0, origin=(0, 0)):
     """Cut a wire into matching labeled ends, or local ground symbols."""
     a, b = sorted(map(clean_point, edge))
@@ -646,6 +659,8 @@ def _shortest_move(drawing, circuit, affected, connections, fixed_edges, bends, 
     return best[1] if best else None
 
 
+# Try snapped candidates in order and return the first one that preserves every contact.
+# An invalid pointer position should leave the last valid geometry available to the viewer.
 def move_wire(circuit, original, net, edge, distance, *, snap=0, pointer=None, accept_offset=None):
     """Return the first electrically valid slide and its snapped offset, if any."""
     for drawing, offset in wire_slide_candidates(original, net, edge, distance, snap=snap, pointer=pointer):

@@ -1,4 +1,6 @@
 """Persist editable digital diagrams without changing executable OOC or runtime state."""
+# Persist digital geometry as metadata while comparing executable source and runtime state.
+# Profiles, opened chips, and output modes keep separate placements and coherent undo histories.
 
 import json
 import os
@@ -41,10 +43,12 @@ def serialized(value):
 
 
 class LogicLayoutSaveTest(unittest.TestCase):
+    # Qt permits one QApplication per process; reuse it across this test class.
     @classmethod
     def setUpClass(cls):
         cls.app = QApplication.instance() or QApplication([])
 
+    # Give this case private files so disk edits cannot leak into another test case.
     def setUp(self):
         self.directory = TemporaryDirectory()
         self.path = Path(self.directory.name) / 'counter.ckt'

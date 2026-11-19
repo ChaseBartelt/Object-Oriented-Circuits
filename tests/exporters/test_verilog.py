@@ -1,4 +1,6 @@
 """Exercise chip declarations and the synthesizable Verilog they generate."""
+# Cover valid declaration boundaries and malformed inputs so width/state interpretation
+# does not silently change when a port, constant, or internal wire has a similar spelling.
 
 import re
 import unittest

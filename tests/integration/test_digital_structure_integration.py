@@ -1,4 +1,6 @@
 """Use behavioral chip assembly through the existing document and board APIs."""
+# Exercise the same assembled digital design through sessions, simulation, CLI checks,
+# and board constraints so no integration path invents a different signal scope or state.
 
 from pathlib import Path
 import subprocess

@@ -1,12 +1,12 @@
-chip DaisySeed3(p01, p02, p03, p04, p05, p06, p07, p08, p09, p10, p11, p12, p13, p14, p15, p16, p17, OUT_L, OUT_R, AGND, p21, p22, p23, p24, p25, p26, p27, p28, p29, p30, p31, p32, p33, p34, p35, p36, p37, p38, p39, DGND) {
-    model = unavailable;
+chip DaisySeed3(p01, p02, p03, p04, p05, p06, p07, p08, p09, p10, p11, p12, p13, p14, p15, p16, p17, OUT_L, OUT_R, AGND, p21, p22, p23, p24, p25, p26, p27, p28, p29, p30, p31, p32, p33, p34, p35, p36, p37, p38, p39, DGND) {  # Package pin order and named audio nets document the intended interconnections between blocks.
+    model = unavailable;  # Allow a schematic preview while refusing a numerical solve without a model.
 }
 
 chip HeadphoneJackAdapter(sleeve, ring, nc3, nc4, tip) {
-    model = unavailable;
+    model = unavailable;  # Allow a schematic preview while refusing a numerical solve without a model.
 }
 
-main {
+main {  # Assemble the declared parts and chips using the named connections below.
     DaisySeed3(seed01_nc, seed02_nc, seed03_nc, seed04_nc, seed05_nc, seed06_nc, seed07_nc, seed08_nc, seed09_nc, seed10_nc, seed11_nc, seed12_nc, seed13_nc, seed14_nc, seed15_nc, seed16_nc, seed17_nc, daisy_out_l, seed19_nc, 0, seed21_nc, seed22_nc, seed23_nc, seed24_nc, seed25_nc, seed26_nc, seed27_nc, seed28_nc, seed29_nc, seed30_nc, seed31_nc, seed32_nc, seed33_nc, seed34_nc, seed35_nc, seed36_nc, seed37_nc, seed38_nc, seed39_nc, 0);
     HeadphoneJackAdapter(0, jack_ring, jack03_nc, jack04_nc, jack_tip);
 

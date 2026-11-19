@@ -5,6 +5,8 @@ Only source-root paths are normalized; electrical names, values, scopes and
 pin ordering must agree exactly. Numerical outputs use the existing MATLAB
 parity suite's tolerances (rtol=1e-9, atol=1e-11).
 """
+# The fixed fixtures are independent historical expectations, not regenerated implementation
+# output. Preserve names, scopes, values, pin order, and saved geometry across refactoring.
 
 from dataclasses import asdict
 import json

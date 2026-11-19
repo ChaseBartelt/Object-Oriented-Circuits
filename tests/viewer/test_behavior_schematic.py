@@ -1,4 +1,7 @@
 """Exercise live behavioral chip diagrams through the real schematic viewer."""
+# Drive the real schematic view with compiled behavior and inspect live signal identities.
+# Opening a chip changes presentation only; input toggles, output probes, and private state stay
+# bound.
 
 import os
 from pathlib import Path
@@ -72,10 +75,12 @@ main Counters {
 
 
 class BehaviorSchematicTest(unittest.TestCase):
+    # Qt permits one QApplication per process; reuse it across this test class.
     @classmethod
     def setUpClass(cls):
         cls.app = QApplication.instance() or QApplication([])
 
+    # Give this case private files so disk edits cannot leak into another test case.
     def setUp(self):
         self.directory = TemporaryDirectory()
         self.path = Path(self.directory.name) / 'behavior.ckt'

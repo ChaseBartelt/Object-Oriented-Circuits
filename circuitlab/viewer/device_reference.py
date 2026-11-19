@@ -1,4 +1,7 @@
 """Draw standard gate symbols and package pinouts for editor hover."""
+# Reference drawings explain gate or package pin order in editor hovers.
+# They are visual descriptions of the declared interface, not an extra numerical model or
+# a second instance inserted into the user's circuit.
 
 from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen

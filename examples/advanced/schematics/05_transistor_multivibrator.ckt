@@ -6,9 +6,9 @@
 # c1/c2 alternate between near ground and near 5 V; out1/out2 follow about one Vbe lower.
 # monitor is an additional 100k/2.2n low-pass view of c1. DC results show bias, not oscillation.
 # Uses native generic NPNs; timing is illustrative, without a specific transistor's parasitics.
-VCC(5) between(vcc, 0);
+VCC(5) between(vcc, 0);  # Cross-coupled transistor and RC branches demonstrate switching in the native time-domain model.
 
-main {
+main {  # Assemble the declared parts and chips using the named connections below.
     RC1(4.7k) between(vcc, c1);
     RC2(5.6k) between(vcc, c2);
     RB1(47k) between(vcc, b1);

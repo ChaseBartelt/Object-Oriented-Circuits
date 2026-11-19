@@ -1,4 +1,7 @@
 """Verify that schematic geometry preserves the compiled electrical nets."""
+# Electrical net identity is the acceptance rule for geometry changes.
+# Same-net contacts become junctions; crossings between distinct nets need visual gaps and
+# must never become accidental electrical connections.
 
 from collections import Counter, defaultdict
 from itertools import chain, combinations
@@ -38,6 +41,8 @@ def segments_intersect(first, second):
     return abs((c[0] - a[0]) * (b[1] - a[1]) - (c[1] - a[1]) * (b[0] - a[0])) < 1e-8
 
 
+# Compare physical wire islands and terminal attachments against the compiled net sets.
+# Both missing connections and unintended cross-net contacts invalidate the drawing.
 def preserves_nets(circuit, drawing):
     """Check for missing connections and unintended contacts between nets."""
     if Counter(part for part, *_ in drawing.symbols) != Counter(circuit.components):
@@ -92,6 +97,8 @@ def preserves_nets(circuit, drawing):
     )
 
 
+# A crossing inside one net is a junction; a crossing between different nets is a visual
+# bridge/gap. The display distinction must not change the underlying wire graph.
 def mark_crossings(drawing):
     """Mark junctions for the same net and visual gaps for distinct nets."""
     contacts = []

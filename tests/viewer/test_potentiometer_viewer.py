@@ -1,4 +1,6 @@
 """Potentiometer glyphs expose fixed terminals and an adjustable wiper arrow."""
+# Changing position moves the wiper arrow while keeping all external terminal anchors fixed.
+# Rotation and probe labels must remain consistent with the three-terminal electrical model.
 
 from dataclasses import replace
 import os
@@ -18,6 +20,7 @@ from circuitlab.viewer.widgets import probe_text
 
 
 class PotentiometerViewerTest(unittest.TestCase):
+    # Qt permits one QApplication per process; reuse it across this test class.
     @classmethod
     def setUpClass(cls):
         cls.app = QApplication.instance() or QApplication([])

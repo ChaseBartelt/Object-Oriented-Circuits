@@ -4,6 +4,9 @@ Locations use zero-based lines and UTF-16 columns, matching both VS Code and
 QTextCursor. Wire locations retain the compiler's one-based source-line numbers.
 This tolerant inspection describes source; it does not compile or simulate it.
 """
+# Editor inspection must remain useful while a document is syntactically incomplete.
+# Recognize names and signatures without running the compiler, and translate UTF-16 editor
+# columns carefully so non-ASCII characters do not shift hover or navigation targets.
 
 import re
 
@@ -105,6 +108,8 @@ class SourceInfo:
         self.lines = self.source.split("\n")
         self.read_imports = read_imports
 
+    # VS Code and QTextCursor count UTF-16 code units, while Python indexes Unicode code points.
+    # Reject a position inside a surrogate pair rather than selecting the wrong token.
     def position(self, line, column):
         """Return (line text, Python string index), or None outside the source."""
         if not isinstance(line, int) or not isinstance(column, int):
@@ -121,6 +126,8 @@ class SourceInfo:
                 return None  # A position inside a UTF-16 surrogate pair.
         return (text, len(text)) if units == column else None
 
+    # Reread included signatures on demand so changed library declarations are visible
+    # without treating an old hover/completion cache as current source.
     def method_signatures(self):
         signatures = {}
         if self.read_imports and "include" in self.source.casefold():
@@ -336,6 +343,8 @@ class SourceInfo:
             return "builtin", name.upper(), gate_inputs(name.casefold(), raw)
         return None
 
+    # Return the compiler-style source line, call name, terminal index, and wire spelling.
+    # The hover renderer uses that identity to trace the selected physical connection.
     def wire_at(self, line, column):
         location = self.position(line, column)
         if location is None:

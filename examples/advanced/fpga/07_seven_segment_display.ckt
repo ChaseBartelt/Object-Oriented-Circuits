@@ -2,7 +2,7 @@
 # HEX1:HEX0 show the number, HEX3:HEX2 its left shift, HEX5:HEX4 its right shift.
 # Shifts keep 8 bits, so bits moved past either end are discarded.
 # Clockless: changes appear immediately; no Run button or input clock needed.
-chip HYBRID01(SW[9:0], HEX0[7:0], HEX1[7:0], HEX2[7:0], HEX3[7:0], HEX4[7:0], HEX5[7:0]) {
+chip HYBRID01(SW[9:0], HEX0[7:0], HEX1[7:0], HEX2[7:0], HEX3[7:0], HEX4[7:0], HEX5[7:0]) {  # The decoder drives active-low segment bits; the decimal-point bit is separate from the low nibble.
     SW[9:0] = input;
     HEX0[7:0], HEX1[7:0], HEX2[7:0], HEX3[7:0], HEX4[7:0], HEX5[7:0] = output;
 

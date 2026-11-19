@@ -4,6 +4,9 @@ No production installation, editor profile or published release is modified.
 The update uses a synthetic older descriptor/runtime and a local release fixture;
 the real downloader checksum checks and Setup executable still run.
 """
+# Exercise installation and update behavior in disposable locations, including an optional
+# separate VS Code profile. Synthetic release metadata must still pass the real checksum
+# and activation paths instead of bypassing the installed application's checks.
 import argparse
 import hashlib
 import json
@@ -17,6 +20,8 @@ import tempfile
 REPO = Path(__file__).resolve().parents[2]
 
 
+# Use disposable install/profile paths so verification exercises real Setup behavior
+# without overwriting a user's production editor installation or active release.
 def verify(args):
     args.work_dir.mkdir(parents=True, exist_ok=True)
     work = Path(tempfile.mkdtemp(prefix="verify-", dir=args.work_dir)).resolve()

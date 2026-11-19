@@ -1,4 +1,6 @@
 """Vneg names a negative battery voltage without reversing its terminal names."""
+# Positive magnitudes and already-negative Vneg values describe the same negative rail.
+# Custom returns, scopes, and conflicting polarity declarations must retain their semantics.
 
 import unittest
 

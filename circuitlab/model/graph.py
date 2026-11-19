@@ -1,4 +1,7 @@
 """Data shared by the compiler, solvers, and schematic."""
+# The graph stores electrical identity, not pixel positions or Qt objects.
+# Component ordering is shared with solver result arrays, while named aliases and source
+# locations let reports and schematic gestures refer back to the same electrical objects.
 
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -81,6 +84,8 @@ class Component:
     def is_source(self):
         return self.kind in "VI" and self.equation != "V = I x 0 = 0"
 
+    # Expose all meaningful terminal identities to schematic and connector code. Optional power
+    # labels can appear here even when the ideal numerical model does not consume them.
     @property
     def terminal_nets(self):
         if self.kind == "H":
@@ -185,6 +190,8 @@ class Circuit:
                 missing[0][1], "MissingComponentValue", path=missing[0][2],
             )
 
+    # Build the numerical node order consistently with branch arrays. Supply-only identifiers on
+    # ideal op amps are omitted unless another electrical component actually uses those nets.
     @property
     def nodes(self) -> tuple[str, ...]:
         # Preserve terminal-category order without building an intermediate list.
@@ -201,6 +208,8 @@ class Circuit:
         return tuple(dict.fromkeys(nets))
 
 
+# Traverse connected terminal sets and assign one reference per connected domain.
+# An explicitly named ground does not automatically short every domain to node 0.
 def ground_references(grounds, connections):
     """Map connected nodes to their voltage reference, if they have one."""
     neighbors = defaultdict(set)

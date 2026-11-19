@@ -1,4 +1,6 @@
 """Mechanical contacts retain two terminals while moving and toggling state."""
+# A state toggle changes the lever, not the two contact identities or saved positions.
+# Routing and rotation must treat the manual switch as a two-terminal component.
 
 import unittest
 

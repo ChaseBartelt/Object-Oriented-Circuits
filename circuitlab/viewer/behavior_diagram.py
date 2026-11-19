@@ -1,4 +1,7 @@
 """Compact functional diagrams derived from compiled digital signal metadata."""
+# Functional blocks come from compiled signal dependencies rather than parsing source again.
+# Group compatible output/display bits for readability, condense dependency cycles for layout,
+# and retain the exact live signal identities behind every painted block and arrow.
 
 from collections import defaultdict
 from dataclasses import dataclass
@@ -15,6 +18,8 @@ WIDTH, HEIGHT, COLUMN, ROW = 176, 62, 246, 84
 MAX_NODES, MAX_EDGES = 120, 400
 
 
+# Collapse strongly connected dependencies before assigning columns so feedback does not
+# make a topological layering pass loop forever.
 def _layers(names, edges):
     """Condense feedback cycles before assigning dependency columns."""
     order = {name: index for index, name in enumerate(names)}
@@ -92,6 +97,8 @@ class BehaviorBlock:
         return f'{state} ({value})' if state else str(value) if self.width == 1 else f'0x{value:X}'
 
 
+# Group only output bits whose compiled dependencies justify one functional block.
+# Keep every source binding available so grouped shapes still probe the correct signal.
 def behavior_graph(simulation):
     """Group physical displays and proven output slices; retain dependencies."""
     sim = simulation
@@ -207,6 +214,8 @@ def block_positions(blocks, edges, *, width=WIDTH, height=HEIGHT):
             for name, (column, row) in positions.items()}
 
 
+# Use routing gutters for feedback and long dependencies instead of drawing through
+# the functional block bodies.
 def dependency_paths(rects, edges):
     """Keep feedback in the inter-column gutters, outside component bodies."""
     incoming, lanes, paths = defaultdict(list), defaultdict(int), {}

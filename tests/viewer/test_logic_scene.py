@@ -1,4 +1,7 @@
 """Exercise interactive, source-backed digital diagrams without changing source."""
+# Use input clicks, output probes, and drags as distinct actions on the same live graph.
+# Only geometry changes during movement; values and source-backed dependency identities remain
+# valid.
 
 import os
 from pathlib import Path
@@ -25,6 +28,7 @@ COUNTER = '''chip Counter(clk,a,y) {
 
 
 class LogicSceneTest(unittest.TestCase):
+    # Qt permits one QApplication per process; reuse it across this test class.
     @classmethod
     def setUpClass(cls):
         cls.app = QApplication.instance() or QApplication([])

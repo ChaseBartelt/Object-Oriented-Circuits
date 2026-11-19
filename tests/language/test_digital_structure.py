@@ -1,4 +1,6 @@
 """Static assembly creates scoped behavior without changing electrical syntax."""
+# Chip assembly flattens behavior without letting one instance capture another instance's
+# signals or drive a parent input through a renamed internal wire.
 
 import unittest
 

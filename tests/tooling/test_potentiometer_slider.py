@@ -1,4 +1,6 @@
 """Potentiometer gestures preview locally and commit one checked source edit."""
+# Preview changes stay local until the gesture commits one acknowledged source transaction.
+# Debouncing, stale worker results, Undo, and Discard must preserve the correct source revision.
 import os
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -23,10 +25,12 @@ SOURCE = 'V1(8) between(high,0);\nP1(10k,25%) between(high,out,0); # keep\n'
 
 
 class PotentiometerSliderTest(unittest.TestCase):
+    # Qt permits one QApplication per process; reuse it across this test class.
     @classmethod
     def setUpClass(cls):
         cls.app = QApplication.instance() or QApplication([])
 
+    # Give this case private files so disk edits cannot leak into another test case.
     def setUp(self):
         self.directory = TemporaryDirectory()
         self.path = Path(self.directory.name) / 'slider.ckt'

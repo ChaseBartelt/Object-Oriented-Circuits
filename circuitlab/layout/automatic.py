@@ -1,4 +1,7 @@
 """Conventional layouts for recognizable circuit topologies."""
+# Recognizable topologies get conventional arrangements before the general router is tried.
+# A specialized drawing is useful only when it represents every terminal; unsupported shapes
+# fall back to general routing rather than dropping branches or optional power connections.
 
 from dataclasses import dataclass, replace
 from statistics import median
@@ -44,6 +47,8 @@ def _connector(layout, net, start, end):
     layout.connectors.append((net, end, net.replace("_", " "), False, False))
 
 
+# Keep a declared unbranched chain together without treating devices with extra terminals
+# as reversible two-terminal passives.
 def series_runs(circuit):
     """Keep declared series groups and unbranched graph paths together."""
     parts = circuit.components
@@ -217,6 +222,8 @@ def _combine(kind, children, p, n):
     return Block(p, n, kind, children=tuple(flattened), width=width, depth=depth)
 
 
+# Recognize reducible connectivity first, then use the resulting tree to choose drawing
+# structure; this is layout decomposition, not a change to the electrical graph.
 def series_parallel(parts, terminals):
     """Reduce shared endpoints and degree-two junctions into a drawing tree."""
     if not parts or any(e.p == e.n for e in parts):
@@ -256,6 +263,7 @@ def series_parallel(parts, terminals):
     return None
 
 
+# Place nested series/parallel blocks recursively so their shared endpoints line up.
 def place_tree(layout, circuit, block, x, y):
     if block.kind == "part":
         place_symbol(layout, block.part, block.p, (x, y), (x + block.width, y))
@@ -500,6 +508,8 @@ def _divider_bank(circuit, source, tree, ground):
     return drawing
 
 
+# Return a specialized drawing only when the topology is fully supported, including every
+# optional terminal; returning None lets the caller choose the general router.
 def compact(circuit, labels=None):
     """Choose a conventional layout when the resolved topology supports one."""
     parts = circuit.components
@@ -557,6 +567,8 @@ def _paths(parts, start, terminals):
         visited = reached
 
 
+# Place the input and feedback branches around one amplifier while retaining their
+# actual shared sensing node rather than inventing a grounded input.
 def compact_amplifier(circuit):
     parts = circuit.components
     sources = [e for e in parts if e.kind == "V" and e.is_source]

@@ -1,4 +1,7 @@
 """Installer activation and update validation without modifying a real installation."""
+# Use temporary install/release fixtures and mocked external steps to protect real installations.
+# Identity, containment, checksum, and activation checks must still reject stale or corrupt
+# candidates.
 import hashlib
 import io
 import json

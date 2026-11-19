@@ -1,4 +1,6 @@
 """Numbered pin shorthand preserves scalar ports, ordering, and board behavior."""
+# Range syntax expands to ordered scalar pins; genuine vectors remain vectors.
+# Exhaustive switch patterns check that shorthand does not change the board-facing logic.
 
 import unittest
 

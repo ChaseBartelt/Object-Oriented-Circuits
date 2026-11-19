@@ -4,7 +4,7 @@
 # LEDR0–LEDR7: winning channel.
 # LEDR8: valid winner. LEDR9: multiple requests active.
 
-chip HYBRID01(SW[9:0], LEDR[9:0]) {
+chip HYBRID01(SW[9:0], LEDR[9:0]) {  # State and elapsed-time logic distinguish waiting, early responses, and a valid timed reaction.
     SW[9:0] = input;
     LEDR[9:0] = output;
 

@@ -1,4 +1,6 @@
 """Specified complex impedances in phasor-domain electrical circuits."""
+# A specified complex impedance belongs to phasor analysis and retains its complex value.
+# Unsupported DC, time-domain, or nonlinear combinations must fail rather than approximate it.
 
 import cmath
 from dataclasses import replace

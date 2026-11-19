@@ -1,4 +1,7 @@
 """Evolve schematic placements while keeping rails and series runs intact."""
+# Placement search preserves useful source rails and series runs while proposing local changes.
+# A reproducible random sequence makes the optional search repeatable for the same input;
+# the connectivity checks still determine which candidates are acceptable.
 
 from collections import defaultdict
 from random import Random
@@ -29,6 +32,8 @@ def placement_penalty(cells, feedback):
     return penalty
 
 
+# Retain successful parent placements and mutate a reproducible candidate population.
+# This search proposes geometry; electrical validity remains a separate acceptance check.
 def evolve_placements(seeds, units, feedback, evaluate, *, population_size=6):
     """Keep fit parents and mutate layouts with a reproducible random sequence."""
     rng = Random(0)

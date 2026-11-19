@@ -1,4 +1,7 @@
 """Source-aware component tools shared by the IDE viewer and optional editor."""
+# Value changes are transactions over an accepted source revision and the current geometry.
+# Preview gestures stay local; commits use checked before/after text and wait for IDE
+# acknowledgement before recording undo or treating the new source as authoritative.
 from concurrent.futures import ThreadPoolExecutor
 from cmath import phase
 from dataclasses import asdict, dataclass, replace
@@ -68,6 +71,8 @@ class SourceTools:
         undo.setToolTip('Undo the last component edit or layout move (Ctrl+Z).')
         canvas.addLayout(row)
 
+    # Resolve the active circuit, root document, current text, and include reader together.
+    # Every proposed edit must refer to this same accepted document revision.
     def context(self):
         window = self.window
         if not window.path:
@@ -98,6 +103,7 @@ class SourceTools:
         except (ValueError, OSError, CircuitError, StopIteration) as error:
             self.error(error)
 
+    # Capture a checked source/value baseline for the gesture before displaying the slider.
     def open_potentiometer(self, name):
         if self.pending:
             return
@@ -159,6 +165,8 @@ class SourceTools:
             self.preview_scope(edit['circuit'])
         self.view.hide_position_control()
 
+    # Coalesce preview updates during movement, then commit one final source edit for the
+    # gesture so Undo restores the position before the user started dragging.
     def adjust_position(self, name, percent, final=False):
         edit = self.position_edit
         if not edit or edit['name'] != name or self.pending:
@@ -192,6 +200,8 @@ class SourceTools:
             self.position_reopen = None
             self.error(error)
 
+    # Compute previews independently from writes, and discard stale worker results when a
+    # newer slider position or different document has superseded the request.
     def preview_position(self):
         edit = self.position_edit
         if not edit or self.current_identity() != edit['identity']:
@@ -237,6 +247,7 @@ class SourceTools:
         elif self.position_future is None:
             self.position_timer.stop()
 
+    # Ignore presentation-only layout comments when comparing executable source revisions.
     def current_identity(self):
         window = self.window
         source = window.editor.toPlainText() if hasattr(window, 'editor') else window.session.source
@@ -280,6 +291,8 @@ class SourceTools:
             wait.deleteLater()
         return bool(outcome and outcome[0])
 
+    # Check all affected files before restoring values. Outside edits must not be overwritten
+    # merely because the viewer still has an older before/after record.
     def discard_values(self):
         if self.pending:
             return False
@@ -362,6 +375,8 @@ class SourceTools:
         except (ValueError, OSError, CircuitError) as error:
             self.error(error)
 
+    # Stage the source transaction and preserve geometry/history. When attached to the IDE,
+    # wait for acknowledgement rather than assuming a requested write has already succeeded.
     def apply(self, plan, *, undo_entry=None, on_saved=None):
         if self.pending:
             raise ValueError('Wait for the previous source edit to finish.')
@@ -420,6 +435,8 @@ class SourceTools:
             elif on_saved:
                 on_saved(False)
 
+    # Match the response to the pending request so a late acknowledgement cannot complete
+    # or undo a different edit that is now active.
     def result(self, result):
         if not self.pending or result.get('id') != self.request_id:
             return
@@ -460,6 +477,7 @@ class SourceTools:
             self.position_reopen = None
             self.open_potentiometer(name)
 
+    # Rebuild from the accepted source while restoring compatible presentation and scope state.
     def refresh(self, snapshot, *, restoring=False):
         window = self.window
         records, mode = snapshot['records'], snapshot['mode']

@@ -1,5 +1,5 @@
 include("differential.ckt");
-circuit oocCollectorComparator(vcc, vminus, plus, minus, collector, emitter) {
+circuit oocCollectorComparator(vcc, vminus, plus, minus, collector, emitter) {  # Each invocation receives private internal nets while its declared ports bind to the caller.
     oocDifferential(vcc, vminus, minus, plus, drive);
     RB(47k) between(drive, base);
     transQOut(base, collector, emitter, npn);

@@ -1,4 +1,6 @@
 """Exercise FPGA preparation and verification without invoking hardware tools."""
+# Prepare board projects and verify artifacts using fixtures rather than running a programmer.
+# Exit success alone must not authorize a stale image, wrong device chain, or changed source.
 
 import json
 import os

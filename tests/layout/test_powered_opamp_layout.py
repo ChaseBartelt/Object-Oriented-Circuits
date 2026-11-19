@@ -1,4 +1,6 @@
 """Optional op-amp supply contacts stay connected through layout edits."""
+# Power contacts above/below the amplifier must remain attached in every wiring style.
+# Move, rotate, and save/restore cases guard against a visually present but disconnected rail.
 
 import unittest
 

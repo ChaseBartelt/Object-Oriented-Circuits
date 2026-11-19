@@ -1,4 +1,7 @@
 """Interactive ideal digital signals, cycle stepping and bounded waveforms."""
+# Qt controls drive the existing ideal digital simulator and display its actual cycle positions.
+# Wall-clock pacing, pause/resume accounting, and bounded trace history are UI concerns;
+# they must not alter edge semantics or report simulated cycles that have not been processed.
 
 from collections import deque
 from copy import deepcopy
@@ -29,6 +32,8 @@ def display_value(value, width):
     return str(value) if width == 1 else f"0x{value:X}"
 
 
+# Retain cycle coordinates and transition boundaries so skipped rendering samples do not
+# turn a real pulse or plateau into an invented diagonal waveform.
 class DigitalWaveform(QWidget):
     """One step trace per port/probe, using actual simulated cycle positions."""
 
@@ -104,6 +109,8 @@ class DigitalWaveform(QWidget):
                          Qt.AlignmentFlag.AlignRight, f"{axis} {last:,}")
 
 
+# Keep the software clock and trace buffers separate from the board programming workflow.
+# Inputs and observed outputs refer to the same simulator instance used by live diagrams.
 class DigitalSimulator(QWidget):
     """Software simulation only; never opens a programmer or reads physical pins."""
 

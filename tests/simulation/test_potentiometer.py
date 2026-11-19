@@ -1,4 +1,6 @@
 """Three-terminal potentiometers through compilation and native numerical solvers."""
+# Compare the native three-terminal model with its two-leg electrical equivalent.
+# Endpoint shorts, loading, current directions, and live value changes are independent checks.
 
 from dataclasses import replace
 import math

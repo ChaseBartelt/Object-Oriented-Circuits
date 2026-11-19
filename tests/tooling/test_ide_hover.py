@@ -1,3 +1,5 @@
+# Exercise the hover protocol and inspect returned help/trace data without starting the IDE.
+# An unfinished circuit or stale request must not turn an optional preview into an editor failure.
 import base64
 import os
 import subprocess
@@ -15,10 +17,12 @@ from circuitlab.tooling.hover import HoverRenderer
 
 
 class HoverTest(unittest.TestCase):
+    # Qt permits one QApplication per process; reuse it across this test class.
     @classmethod
     def setUpClass(cls):
         cls.app = QApplication.instance() or QApplication([])
 
+    # Give this case private files so disk edits cannot leak into another test case.
     def setUp(self):
         self.temp = TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)

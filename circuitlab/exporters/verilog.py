@@ -1,4 +1,7 @@
 """Compile digital .ckt declarations, logic and clock blocks to Verilog-2005."""
+# The digital path validates ports, widths, drivers, and state before emitting modules.
+# Combinational branches must assign their outputs completely; clocked state is handled
+# separately so missing assignments do not accidentally infer unsupported storage.
 
 import re
 from graphlib import CycleError, TopologicalSorter
@@ -154,6 +157,8 @@ def _signal_list(raw, line):
     return result
 
 
+# Track complete driven bits along every branch. Reject missing paths or feedback
+# instead of inferring latches or emitting an ambiguous combinational network.
 def _combinational(rows, targets, signals):
     """Build one complete expression per driven output/net; never infer storage."""
     index = 0
@@ -388,6 +393,8 @@ def _module(name, pins, body, header_line):
     return verilog, tuple((pin, directions[pin]) for pin in pins)
 
 
+# Compile each definition independently and preserve header port order for callers.
+# Return metadata alongside HDL so simulation and editor tooling share the same validation.
 def compile_chips(source: str):
     """Return each validated chip's pins, body, and Verilog."""
     from circuitlab.language.digital_structure import assemble_digital

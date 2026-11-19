@@ -1,4 +1,6 @@
 """Board pin locations, polarity and timing for the six DE10-Lite displays."""
+# Verify the physical board pin assignments and active-low display convention together.
+# Clocked and clockless designs must receive the constraints appropriate to their actual inputs.
 
 import re
 import unittest

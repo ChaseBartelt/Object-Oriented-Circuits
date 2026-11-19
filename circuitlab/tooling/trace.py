@@ -1,9 +1,14 @@
 """Trace a representative electrical path through a hovered component pin."""
+# A hover trace is a representative path through existing net identities, not a new circuit.
+# Preserve component terminal order when choosing a branch so the highlighted path starts at
+# the pin actually selected in the editor.
 
 import re
 from collections import defaultdict, deque
 
 
+# Walk the selected electrical net using component identities; the preview can highlight
+# its existing geometry without rewriting source or constructing a replacement circuit.
 def wire_trace(circuit, location, path=None):
     line, name, terminal, argument = location
     if re.fullmatch(r"trans[\w]+", name, re.I):

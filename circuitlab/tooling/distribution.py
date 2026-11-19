@@ -1,4 +1,7 @@
 """Installed application paths and post-install validation, independent of Qt."""
+# An installed runtime is trusted only after its manifest and contained paths are validated.
+# Keep activation separate from staging so an incomplete install cannot replace the active
+# version. VS Code integration uses explicit argument lists rather than shell interpolation.
 
 import argparse
 import importlib.metadata
@@ -19,6 +22,8 @@ def install_root():
     return Path(override) if override else Path(os.environ["LOCALAPPDATA"]) / "Programs" / "OOC"
 
 
+# Resolve symlinks before checking containment so a valid-looking relative name cannot
+# redirect an installation entry outside the selected runtime directory.
 def contained(root, relative):
     """Only accept paths below the installation, including resolved symlinks."""
     root = Path(root).resolve()
@@ -45,6 +50,8 @@ def read_install(root):
     return validate_install(root, json.loads((root / "install.json").read_text(encoding="utf-8-sig")))
 
 
+# Promote only a validated staged installation, preserving the previous active descriptor
+# if verification fails before the switch.
 def activate(root, manifest):
     root = Path(root).resolve()
     record = validate_install(root, json.loads(Path(manifest).read_text(encoding="utf-8-sig")))
@@ -88,6 +95,7 @@ def code_command(code, arguments):
     return [str(code), str(cli), *map(str, arguments)]
 
 
+# Pass each path as its own argument and record the CLI result for installation diagnostics.
 def install_extension(code, vsix, *, user_data=None, extensions_dir=None):
     args = ["--install-extension", str(vsix), "--force"]
     if user_data:
@@ -103,6 +111,8 @@ def install_extension(code, vsix, *, user_data=None, extensions_dir=None):
     return result.stdout.strip()
 
 
+# Validate the installed payload through its own interpreter rather than assuming the
+# development environment can import the same dependencies.
 def self_test():
     from circuitlab.tooling.session import CircuitSession
     session = CircuitSession()

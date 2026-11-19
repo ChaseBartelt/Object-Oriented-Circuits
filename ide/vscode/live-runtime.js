@@ -1,6 +1,10 @@
+// Compile the candidate bundle before retiring existing registrations.
+// Track every disposable created during activation so a failed swap can clean up completely
+// and reactivate the previous known-good runtime with the shared schematic connections intact.
 const vm = require("node:vm");
 const FILES = ["runtime.js", "structure.js", "hover-client.js"];
 
+// Validate the supported bundle API and required files before constructing executable modules.
 function compile(bundle) {
     if (bundle?.api !== 1 || !bundle.files || FILES.some((file) => typeof bundle.files[file] !== "string")) {
         throw new Error("Invalid OOC runtime bundle.");
@@ -31,6 +35,7 @@ class LiveRuntime {
     }
     get module() { return this.current.module; }
 
+    // Expose a constrained module loader and capture registrations even if activation fails midway.
     start(bundle, scripts) {
         const subscriptions = [];
         // Capture registrations immediately, including partial activation failures.
@@ -78,6 +83,8 @@ class LiveRuntime {
         }
     }
 
+    // Compatibility is a loader boundary. Roll back to the previous bundle if new activation
+    // fails after the old registrations have been disposed.
     apply(bundle) {
         if (!bundle || bundle.compatibility !== this.compatibility || bundle.api !== 1) return false;
         const scripts = compile(bundle);
