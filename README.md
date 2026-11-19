@@ -25,6 +25,12 @@ On macOS/Linux use python3 and .venv/bin/python. Solve is for electrical designs
 
 ## Daily workflow
 
+Manual switches use `S1(open) between(a, b);` or `S1(closed) between(a, b);`. Click the switch symbol to toggle it, update its source state, and recalculate; **Undo** restores the previous state. `on`/`off` and `1`/`0` also work, and an omitted state defaults to open. Inside a series or parallel block, use `S1 = open;`. The solver and exports model the selected state as 1 mΩ closed or 1 TΩ open.
+
+Inside a battery block, `Vneg = 5;` declares a −5 V supply on its first wire relative to its return. `Vneg = -5;` gives the same result. Use either `V` or `Vneg` once per battery block.
+
+Op amps accept `op1(in_plus, in_minus, out);` or `op1(in_plus, in_minus, out, vplus, vminus);`. The optional fourth and fifth wires add positive and negative supply pins above and below the triangle. They identify the power connections; the op-amp model remains ideal and does not simulate supply current or rail clipping.
+
 - **Electrical circuits:** compile/solve, inspect results or scope waveforms, and export SPICE/LTspice. Chip models are approximations; seven catalog devices remain pinout only.
 - **Digital circuits:** use Logic simulation to toggle inputs, step/run clocked behavior and inspect signals. This simulates ideal logic, not a connected board's measurements.
 - **Schematics:** move/rotate parts and wires, open chip internals, and save layout. Layout metadata is embedded in .ckt comments; legacy sidecars still load for migration. Right-click supported components to edit values through the source bridge.

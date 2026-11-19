@@ -1,0 +1,8 @@
+chip LT1677(Vos, minus, plus, vminus, offset2, out, vplus, nc) {
+    op1(plus, minus, out);
+}
+
+
+# @ooc-layout-begin padding=3
+# {"version":1,"mode":"auto","layouts":[["@method:0","auto",{"symbols":[["op1_LT1677_1","O",["plus","minus","out","0"],[2.0,0.0],[6.0,0.0],"+"]],"wires":{"out":[[[6.0,0.0],[6.5,0.0]]],"plus":[[[-0.25,-4.5],[1.25,-4.5]],[[1.25,-4.5],[1.25,0.25]],[[1.25,0.25],[2.0,0.25]]],"minus":[[[-0.25,-2.5],[0.75,-2.5]],[[0.75,-2.5],[0.75,-0.25]],[[0.75,-0.25],[2.0,-0.25]]]},"junctions":{},"labels":{},"grounds":[],"ground_names":[],"ground_rotations":[],"connectors":[],"boundary":{"minus":[-0.25,-2.5],"plus":[-0.25,-4.5],"out":[6.5,0.0]},"rotations":{},"crossings":[["plus",[1.25,-4.5],[1.25,0.25],[-0.25]]],"label_offsets":[],"pin_grid":0.25}]],"logic":{"schematic":{},"simulation":{}}}
+# @ooc-layout-end

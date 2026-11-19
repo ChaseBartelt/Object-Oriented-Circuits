@@ -63,6 +63,11 @@ def symbol_pins(part, a, b, top, *, grid=0):
         yield part.in_plus, (a[0], a[1] + plus)
         yield part.in_minus, (a[0], a[1] + minus)
         yield part.p, b
+        if part.vplus:
+            power_offset = pin_offset(1.25, grid)
+            center = (a[0] + b[0]) / 2
+            yield part.vplus, (center, a[1] + power_offset)
+            yield part.vminus, (center, a[1] - power_offset)
     elif part.kind == "Q":
         offset = pin_offset(BJT_PIN_OFFSET, grid)
         yield part.p, (b[0], b[1] + offset)
@@ -168,6 +173,11 @@ def component_pins(parts, flipped=(), reversed_parts=()):
         if e.kind == "O"
     ]
     for i, part in enumerate(parts):
+        if part.kind == "O" and part.vplus:
+            # Side hints choose routing gutters; the physical power contacts
+            # remain centered above and below the triangle.
+            pins.extend(((i, part.vplus, True, 1.25), (i, part.vminus, True, -1.25)))
+    for i, part in enumerate(parts):
         if part.kind == "H":
             pins.extend((i, net, left, offset) for _, net, left, offset in package_pins(part))
         elif part.kind in {"Q", "S", "P"}:
@@ -176,6 +186,13 @@ def component_pins(parts, flipped=(), reversed_parts=()):
                 (i, net, x == a[0], y) for net, (x, y) in symbol_pins(part, a, b, "+")
             )
     return pins
+
+
+def grid_terminal(part, a, b, left, offset):
+    """Resolve a routing pin hint to its physical contact on a grid symbol."""
+    if part.kind == "O" and part.vplus and abs(offset) == 1.25:
+        return (a[0] + b[0]) / 2, a[1] + offset
+    return min(a[0], b[0]) if left else max(a[0], b[0]), a[1] + offset
 
 
 def placement_order(parts, pins, grounds=("0",), roots=None):

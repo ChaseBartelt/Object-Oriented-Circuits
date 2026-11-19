@@ -11,7 +11,9 @@ from circuitlab.layout.geometry import BJT_PIN_OFFSET, package_pins, pin_offset,
 from circuitlab.layout.checks import segments_intersect
 from circuitlab.math.report import component_labels
 from circuitlab.layout.routing import fast_layout
-from circuitlab.exporters.spice import SpiceNames, opamp_subcircuit, spice_circuit
+from circuitlab.exporters.spice import (
+    OPAMP_MODEL, POWERED_OPAMP_MODEL, SpiceNames, opamp_subcircuit, spice_circuit,
+)
 from circuitlab.layout.wire_edit import route_anchors, wire_graph
 
 # Pin locations relative to the anchors in LTspice's built-in symbol library.
@@ -271,9 +273,14 @@ def _schematic(layout, spice, scale, *, pin_flags=False, blocks, ports, aliases,
                 lane = y - 16 if upper else y + 16
                 pin(net, (x + 32, lane), anchor=anchor, bends=((x + 16, point(anchor)[1]), (x + 16, lane)))
             pin(part.p, (x + 96, y), anchor=end)
-            for pin_y in (y - 32, y + 32):
-                supply = (x + 64, pin_y)
-                pin(part.n, supply)
+            for net, direction in ((part.vplus, 1), (part.vminus, -1)):
+                supply = (x + 64, y - direction * 32)
+                if part.vplus:
+                    anchor = ((start[0] + end[0]) / 2,
+                              start[1] + direction * pin_offset(1.25, layout.pin_grid))
+                    pin(net, supply, anchor=anchor, bends=((supply[0], point(anchor)[1]),))
+                else:
+                    pin(part.n, supply)
         elif model.kind == "Q":
             x, y = a
             if b[0] < x + 64:
@@ -407,15 +414,25 @@ def _schematic(layout, spice, scale, *, pin_flags=False, blocks, ports, aliases,
                             f"SYMATTR InstName J_EC_port{i}"))
     bottom += 96 * len(port_links)
     lines.extend(symbols)
+    for comment in spice.comments:
+        if comment.startswith("* Mechanical switch "):
+            bottom += 32
+            lines.append(f"TEXT {left} {bottom} Left 2 ;{comment[2:]}")
     if pin_flags:
         lines.append(f"TEXT {left} {bottom + 64} Left 2 ;Matching net labels connect.")
     directives = [spice.directive] if commands else []
     if commands:
         directives.extend(f"{name} {node} 0 DC 0" for name, node in spice.references)
-        if any(part.kind == "X" for part in spice.parts.values()):
+        if any(part.kind == "X" and part.value == OPAMP_MODEL for part in spice.parts.values()):
             # opamp2's pin order is plus, minus, V+, V-, out. The unused V+
             # pin and the return pin both connect to the circuit's return net.
             directives.extend(opamp_subcircuit("plus minus unused return out"))
+        if any(part.kind == "X" and part.value == POWERED_OPAMP_MODEL for part in spice.parts.values()):
+            # Power pins are retained for wiring while the ideal model remains
+            # independent of supplies and returns output current to ground.
+            directives.extend(opamp_subcircuit(
+                "plus minus vplus vminus out", model=POWERED_OPAMP_MODEL, reference="0",
+            ))
         directives.extend(spice.models)
     if directives:
         lines.append(f"TEXT {left} {bottom + 96} Left 2 !" + r"\n".join(directives))

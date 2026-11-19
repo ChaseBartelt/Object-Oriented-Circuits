@@ -23,7 +23,7 @@ from PySide6.QtWidgets import (
 )
 
 from circuitlab.layout.hierarchy import METHOD_PREFIX, hood_levels
-from circuitlab.layout.geometry import BJT_PIN_OFFSET, POT_PIN_OFFSET, package_pins, pin_offset, rotate_point
+from circuitlab.layout.geometry import BJT_PIN_OFFSET, POT_PIN_OFFSET, package_pins, pin_offset, rotate_point, symbol_pins
 from circuitlab.layout.grid import align_layout
 from circuitlab.layout.shorten import optimize_layout, wire_length
 from circuitlab.layout.persistence import pack_layout, restore_layout
@@ -105,6 +105,7 @@ class SchematicView(QGraphicsView):
     move_refused = Signal()
     value_requested = Signal(str)
     potentiometer_requested = Signal(str)
+    switch_requested = Signal(str)
     position_changed = Signal(str, int, bool)
     history_cleared = Signal()
     optimization_finished = Signal(str)
@@ -507,25 +508,37 @@ class SchematicView(QGraphicsView):
                 prefix = "U" if part.kind == "O" else part.kind
                 name = [f"{prefix}#{counts[part.kind]}", *name[1:]]
             pos, alignment = self.symbol(part, a, b, top)
+            powered_amp = part.kind == "O" and bool(part.vplus and part.vminus)
             if part.kind == "P":
                 height = pin_offset(POT_PIN_OFFSET, self.pin_grid)
                 first, second = self.mapped((a[0], a[1] - height)), self.mapped((b[0], b[1] + height))
+            elif powered_amp:
+                pins = [self.mapped(pin) for _, pin in symbol_pins(part, a, b, top, grid=self.pin_grid)]
+                first = QPointF(min(pin.x() for pin in pins), min(pin.y() for pin in pins))
+                second = QPointF(max(pin.x() for pin in pins), max(pin.y() for pin in pins))
             else:
                 first, second = self.mapped(a), self.mapped(b)
-            bounds = QRectF(first, second).normalized().adjusted(-8, -14, 8, 14)
+            margin_x, margin_y = (24, 24) if part.kind == "K" else (8, 14)
+            bounds = QRectF(first, second).normalized().adjusted(-margin_x, -margin_y, margin_x, margin_y)
             handle = scene.addRect(
                 bounds, QPen(Qt.PenStyle.NoPen), QBrush(QColor(0, 0, 0, 0))
             )
             handle.setZValue(0.5)
             self.drag_handle(handle, "component", part.name)
+            if part.kind == "K":
+                state = "closed" if part.closed else "open"
+                hint = " · Click to toggle; drag to move" if self.source_editing else ""
+                handle.setToolTip(f"{part.label or part.name} · {state}{hint}")
+                if self.source_editing:
+                    handle.setCursor(Qt.CursorShape.PointingHandCursor)
             if turns:
                 start, end = (rotate_point(pin, a, b, turns) for pin in (a, b))
                 x, y = (start[0] + end[0]) / 2, (start[1] + end[1]) / 2
                 padding = pin_offset(POT_PIN_OFFSET, self.pin_grid) + 0.25
                 if start[0] == end[0]:
-                    pos, alignment = (x - (padding if part.kind == "P" else 0.61), y), "right"
+                    pos, alignment = (x - (1.5 if powered_amp else padding if part.kind == "P" else 0.61), y), "right"
                 else:
-                    pos, alignment = (x, y + (padding if part.kind == "P" else 0.65)), "center"
+                    pos, alignment = (x, y + (1.65 if powered_amp else padding if part.kind == "P" else 0.65)), "center"
             self.symbol_turn = None
             component_captions.append((name, pos, ("component", part.name), alignment))
         for pos in layout.grounds:
@@ -1256,6 +1269,22 @@ class SchematicView(QGraphicsView):
             self.label(
                 "-" if top == "+" else "+", (x + 1.85, y - offset), INK, alignment="right"
             )
+            if part.vplus and part.vminus:
+                power_x = (a[0] + b[0]) / 2
+                pitch = pin_offset(1.25, self.pin_grid)
+                # Meet the triangle's sloping sides and keep the exposed ends
+                # identical to symbol_pins(), including rotated symbols.
+                edge = .72 * (x + 3.1 - power_x) / 1.7
+                for net, sign, direction in ((part.vplus, "+V", 1), (part.vminus, "-V", -1)):
+                    lead = self.lines([(power_x, y + direction * edge), (power_x, y + direction * pitch)])
+                    lead.setData(0, "node")
+                    lead.setData(1, net)
+                    lead.setZValue(1.1)
+                    lead.setToolTip(f"{sign} · {net}")
+                    self.net_items[net].append(lead)
+                    self.label(sign, (power_x + .16, y + (.95 if direction > 0 else -.65)),
+                               NET, ("node", net), alignment="left below")
+                return (x + 2.15, y + 1.65), "center"
             return (x + 2.15, y + 0.77), "center"
         if part.kind == "Q":
             return self.transistor_symbol(part, a, b)
@@ -1296,6 +1325,14 @@ class SchematicView(QGraphicsView):
                     for i in range(10)
                 ]
             )
+        elif part.kind == "K":
+            # Two contacts and a lever distinguish a manual switch from the
+            # four-terminal, voltage-controlled switch model above.
+            end = 0.65
+            path([(-end, 0), (end, 0 if part.closed else 0.48)])
+            for xx in (-end, end):
+                path([(xx + 0.07 * math.cos(math.tau * i / 16),
+                       0.07 * math.sin(math.tau * i / 16)) for i in range(17)])
         elif part.kind == "Z":
             path([(-end, -0.3), (end, -0.3), (end, 0.3), (-end, 0.3), (-end, -0.3)])
         elif part.kind == "C":
@@ -1338,7 +1375,7 @@ class SchematicView(QGraphicsView):
         self.lines([a, transform((-end, 0))])
         self.lines([transform((end, 0)), b])
         if abs(dx) > abs(dy):
-            return (x, y + 0.42), "center"
+            return (x, y + (0.68 if part.kind == "K" else 0.42)), "center"
         return (x - 0.61, y), "right"
 
     def potentiometer_symbol(self, part, a, b):
@@ -1790,6 +1827,8 @@ class SchematicView(QGraphicsView):
                     part = next((part for part in self.circuit.components if part.name == drag.name), None)
                     if part and part.kind == 'P':
                         self.potentiometer_requested.emit(drag.name)
+                    elif part and part.kind == 'K':
+                        self.switch_requested.emit(drag.name)
         else:
             if drag.control:
                 self.selection_key = drag.key
@@ -1842,6 +1881,9 @@ class SchematicView(QGraphicsView):
                             menu.addAction('Edit value…', lambda: self.value_requested.emit(name))
                         if part and part.kind == 'P':
                             menu.addAction('Adjust position…', lambda: self.potentiometer_requested.emit(name))
+                        if part and part.kind == 'K':
+                            menu.addAction('Open switch' if part.closed else 'Close switch',
+                                           lambda: self.switch_requested.emit(name))
                     if kind == "hood" and name.startswith(METHOD_PREFIX):
                         instance = self.circuit.instances[int(name.removeprefix(METHOD_PREFIX))]
                         if instance.builtin_gate:

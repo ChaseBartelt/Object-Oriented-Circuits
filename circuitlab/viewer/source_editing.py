@@ -11,7 +11,7 @@ from PySide6.QtGui import QTextCursor
 from PySide6.QtWidgets import QHBoxLayout, QInputDialog, QMessageBox
 
 from circuitlab.layout.persistence import pack_layout, embed_placement, strip_placement, layout_payload
-from circuitlab.tooling.source_edits import SourceEdit, edit_value, source_target
+from circuitlab.tooling.source_edits import SourceEdit, edit_switch, edit_value, source_target
 from circuitlab.model.graph import CircuitError
 from circuitlab.math.analysis import analyze
 from circuitlab.math.numbers import format_value
@@ -57,6 +57,7 @@ class SourceTools:
         self.view.source_editing = True
         self.view.value_requested.connect(self.change_value)
         self.view.potentiometer_requested.connect(self.open_potentiometer)
+        self.view.switch_requested.connect(self.toggle_switch)
         self.view.position_changed.connect(self.adjust_position)
         self.view.optimization_finished.connect(lambda message: window.status.setText(message))
         row = QHBoxLayout()
@@ -121,6 +122,18 @@ class SourceTools:
                                       initial=round(part.position * 100), percent=round(part.position * 100),
                                       identity=self.current_identity(), drawn=None)
             self.view.show_position_control(name, part.position)
+        except (ValueError, OSError, CircuitError, StopIteration) as error:
+            self.error(error)
+
+    def toggle_switch(self, name):
+        """Commit one switch click through the normal checked source/undo path."""
+        if self.pending:
+            return
+        self.cancel_position()
+        try:
+            circuit, root, source, reader = self.context()
+            part = next(part for part in circuit.components if part.name == name and part.kind == 'K')
+            self.apply(edit_switch(circuit, name, not part.closed, root, source, reader))
         except (ValueError, OSError, CircuitError, StopIteration) as error:
             self.error(error)
 

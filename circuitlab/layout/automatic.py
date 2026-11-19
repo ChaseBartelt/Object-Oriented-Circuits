@@ -27,7 +27,7 @@ def _passive_edges(parts, source):
         if part is source:
             continue
         edge = frozenset((part.p, part.n))
-        if part.kind not in {"R", "C", "L", "X", "Z"} or len(edge) != 2 or edge in edges:
+        if part.kind not in {"R", "C", "L", "X", "Z", "K"} or len(edge) != 2 or edge in edges:
             return None
         edges[edge] = part
     return edges
@@ -76,7 +76,7 @@ def series_runs(circuit):
         for position, (kind, name, value) in enumerate(group.entries):
             if kind == "G":
                 sequence.extend(sequences.get(value, [None]))
-            elif kind in "RCLXZP":
+            elif kind in "RCLXZPK":
                 sequence.append(by_name.get(name, by_order.get(group.entry_order.get(position))))
             else:
                 sequence.append(None)
@@ -503,6 +503,9 @@ def _divider_bank(circuit, source, tree, ground):
 def compact(circuit, labels=None):
     """Choose a conventional layout when the resolved topology supports one."""
     parts = circuit.components
+    if any(part.kind == "O" and part.vplus for part in parts):
+        # These topology-specific drawings only route the signal terminals.
+        return None
     if len(parts) > 12 or any(part.kind in {"Q", "P"} for part in parts):
         return None
     if any(part.kind == "O" for part in parts):
@@ -521,7 +524,7 @@ def compact(circuit, labels=None):
     tree = series_parallel(passive, terminals)
     if not tree or any(p.is_source for p in passive):
         return None
-    if source and set(terminals) & circuit.grounds and all(p.kind in "RCLXZ" for p in passive):
+    if source and set(terminals) & circuit.grounds and all(p.kind in "RCLXZK" for p in passive):
         return _grounded_tree(circuit, source, tree, labels)
     layout = Layout()
     place_tree(layout, circuit, tree, 1, 0)
@@ -581,7 +584,7 @@ def compact_amplifier(circuit):
         chain.append(candidates[0])
         previous = chain[-1].p
     branches = [e for e in parts if e.kind not in "VO"]
-    if any(e.kind not in "RCLXZ" for e in branches):
+    if any(e.kind not in "RCLXZK" for e in branches):
         return None
     inputs = _paths(branches, source.p, terminals)
     feedback = _paths([e for e in branches if e not in inputs], chip.in_minus, terminals)
@@ -669,7 +672,7 @@ def _summing_amplifier(circuit, sources, amp):
         or any(source.n != ground for source in sources)
     ):
         return None
-    passive = [part for part in circuit.components if part.kind in "RCLXZ"]
+    passive = [part for part in circuit.components if part.kind in "RCLXZK"]
     if len(passive) + len(sources) + 1 != len(circuit.components):
         return None
     branches = _passive_edges(passive, None)

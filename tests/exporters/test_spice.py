@@ -13,6 +13,37 @@ FIXTURES = Path(__file__).resolve().parents[1] / "fixtures"
 
 
 class SpiceExportTest(unittest.TestCase):
+    def test_powered_opamp_keeps_explicit_rails_without_changing_the_ideal_model(self):
+        netlist = export_spice(
+            'V1(2) between(input,0);\nR1(10k) between(input,minus);\n'
+            'R2(10k) between(out,minus);\nop1(0,minus,out,vcc,vee);\n'
+            'op2(out,buffered,buffered);'
+        )
+        self.assertIn('X_op1 out 0 0 minus vcc vee EC_IdealOpAmpPowered\n', netlist)
+        self.assertIn('.subckt EC_IdealOpAmpPowered out return plus minus vplus vminus\n', netlist)
+        self.assertIn('X_op2 buffered 0 out buffered EC_IdealOpAmp\n', netlist)
+        self.assertIn('.subckt EC_IdealOpAmp out return plus minus\n', netlist)
+
+    def test_mechanical_switch_exports_its_selected_state_without_control_pins(self):
+        for state, resistance in (("closed", "0.001"), ("open", "1000000000000")):
+            with self.subTest(state=state):
+                netlist = export_spice(
+                    'V1(5) between(input,0);\n'
+                    f'S1({state}) between(input,out);\nR1(1k) between(out,0);'
+                )
+                self.assertIn(f"R_S1 input out {resistance}\n", netlist)
+                self.assertIn(f"Mechanical switch 'S1' is {state}", netlist)
+                self.assertNotIn(".model", netlist)
+                self.assertNotIn("EC_SW", netlist)
+
+    def test_controlled_switch_keeps_its_four_terminal_spice_model(self):
+        netlist = export_spice(
+            'V1(5) between(control,0);\nV2(2) between(input,0);\n'
+            'switch1(control,0,input,out,2.5,10,1G);\nR1(1k) between(out,0);'
+        )
+        self.assertIn("switch1 input out control 0 EC_SW1\n", netlist)
+        self.assertIn(".model EC_SW1 SW(Ron=10 Roff=1000000000 Vt=2.5", netlist)
+
     def test_current_splitter_preserves_polarity_and_parallel_wiring(self):
         netlist = export_spice("""
         I1 = 10m : wire = in;

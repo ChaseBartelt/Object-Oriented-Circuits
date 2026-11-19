@@ -226,12 +226,23 @@ class SourceInfo:
         for match in IDENTIFIER.finditer(code):
             if match.start() <= column <= match.end():
                 name = match[0]
+                if name.casefold() == "vneg" and re.match(r"\s*=", code[match.end():]):
+                    prefix = '\n'.join(row.partition('#')[0] for row in self.lines[:line]) + '\n' + code[:match.start()]
+                    prefix = re.sub(r'\(\s*end\s+battery\s*\)', '}', prefix, flags=re.I)
+                    if re.search(r'(?:battery\s+[A-Za-z][A-Za-z0-9_]*\s*\{|\(\s*battery\b[^()]*\))[^{}]*$', prefix, re.I):
+                        return ("Vneg = 5;\nNegative battery supply: sets this battery to -5 V. "
+                                "Both 5 and -5 mean -5 V. Use V or Vneg once per battery block; "
+                                "the wire and ground names keep their usual order.")
                 if OP.fullmatch(name):
                     return (
                         f"{name}(in+, in-, out)\n"
+                        f"{name}(in+, in-, out, vplus, vminus)\n"
                         "1. Non-inverting input (+)\n"
                         "2. Inverting input (-)\n"
                         "3. Output\n\n"
+                        "Optionally add both positive and negative supply wires as pins 4 and 5. "
+                        "They appear above and below the triangle. Supply pins identify connections; "
+                        "this ideal model does not simulate rail clipping.\n\n"
                         "An op amp drives its output in response to the difference between "
                         "its inputs. With negative feedback, this ideal model keeps the two "
                         "input voltages equal and draws zero input current. Connect out "
@@ -250,6 +261,10 @@ class SourceInfo:
                         "The decimal point is off unless the optional point expression is nonzero. "
                         "For example: HEX0[7:0] = sevenseg(SW[3:0]);"
                     )
+                if name.upper().startswith("S") and re.match(r"\s*(?:(?:\([^()]*\)\s*)?between\s*\(|=\s*(?:open|closed|on|off|[01])\b)", code[match.end():], re.I):
+                    return (f"{name}(open) between(a, b)\nManual switch with two terminals. "
+                            "Use open/closed, off/on, or 0/1; omitting the state means open. "
+                            "Click the switch in the schematic to toggle it and update the source; Undo restores its previous state.")
                 if name.upper().startswith("Z") and re.match(r"\s*(?:\([^()]*\)\s*)?between\s*\(", code[match.end():], re.I):
                     return (
                         f"{name}(R + jX) between(positive, negative)\n"
@@ -345,7 +360,7 @@ class SourceInfo:
                 if first <= column < last:
                     return line + 1, match[1], index, token[0].strip()
         else:
-            match = re.match(r"\s*([RCLZVI][\w]*)\s+(\S+)\s+(\S+)\s+\S", code, re.I)
+            match = re.match(r"\s*([RCLZVIS][\w]*)\s+(\S+)\s+(\S+)\s+\S", code, re.I)
             if match:
                 for index in (0, 1):
                     if match.start(index + 2) <= column < match.end(index + 2):

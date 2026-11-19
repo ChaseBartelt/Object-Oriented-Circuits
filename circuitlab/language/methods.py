@@ -36,6 +36,7 @@ from circuitlab.language.syntax import (
     Binding,
     SourceRow,
     parse_potentiometer,
+    parse_switch,
     parse_wires,
 )
 
@@ -86,13 +87,15 @@ def _bind_arguments(method, raw, parent):
             component = PART_ARGUMENT.fullmatch(value)
             if not component:
                 raise CircuitError(
-                    f'{name}: argument "{parameter}" expects a resistor, capacitor, inductor, AC impedance, or potentiometer such as R(1k), Z(2-j2), or P(10k,25%).'
+                    f'{name}: argument "{parameter}" expects a resistor, capacitor, inductor, AC impedance, potentiometer, or switch such as R(1k), Z(2-j2), P(10k,25%), or S(closed).'
                 )
             part_name, part_value = component.groups()
             part_value = part_value or ""
             try:
                 if part_name[0].upper() == "P":
                     parse_potentiometer(part_value)
+                elif part_name[0].upper() == "S":
+                    parse_switch(part_value)
                 elif part_value.strip():
                     scalar(part_value, UNITS[part_name[0].upper()])
             except CircuitError as error:
@@ -105,9 +108,11 @@ def _bind_arguments(method, raw, parent):
         elif target.lower() == "wire":
             mapping[parameter] = parent.wire(parse_wires(value, 1)[0])
         else:
-            unit = UNITS[target[0].upper()]
             try:
-                scalar(value, unit)
+                if target[0].upper() == "S":
+                    parse_switch(value)
+                else:
+                    scalar(value, UNITS[target[0].upper()])
             except CircuitError as error:
                 raise CircuitError(
                     f'{name}: argument "{parameter}" for {target}. {error}'

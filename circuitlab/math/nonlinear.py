@@ -58,7 +58,7 @@ class TimeDomain:
         self.frequency = source_frequency(circuit)
         if len({part.name.casefold() for part in self.parts}) != len(self.parts):
             raise CircuitError("Give each component a unique name before simulating.")
-        if any(part.kind not in {"R", "C", "L", "V", "I", "O", "Q", "S"} for part in self.parts):
+        if any(part.kind not in {"R", "K", "C", "L", "V", "I", "O", "Q", "S"} for part in self.parts):
             raise CircuitError("Use R, C, L, voltage/current sources, ideal op amps, BJTs, or switches in time simulation.")
         if any(part.kind == "Q" and part.model for part in self.parts):
             raise CircuitError("Named BJT models require SPICE. Omit the model to use the built-in generic transistor.")
@@ -101,7 +101,7 @@ class TimeDomain:
             if part.kind not in {"Q", "S"} and p == n:
                 raise CircuitError(f"{part.label} needs two distinct nodes.")
             value = part.value
-            if part.kind in "RCL" and (value.imag or not math.isfinite(value.real) or value.real <= 0):
+            if part.kind in "RKCL" and (value.imag or not math.isfinite(value.real) or value.real <= 0):
                 raise CircuitError(f"{part.label} requires a valid real component value.")
             source = value.real
             if part.kind in "VI":
@@ -118,8 +118,8 @@ class TimeDomain:
                 sense = np.zeros(len(self.nodes))
                 sense[indices[part.in_plus]] += 1
                 sense[indices[part.in_minus]] -= 1
-            if part.kind in "RC":
-                admittance = 1 / value.real if part.kind == "R" else (value.real / step if step else 0)
+            if part.kind in "RKC":
+                admittance = 1 / value.real if part.kind in {"R", "K"} else (value.real / step if step else 0)
                 self.conductance[i] = admittance
                 self.matrix[:len(line), :len(line)] += admittance * np.outer(line, line)
                 if step and part.kind == "C":

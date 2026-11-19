@@ -113,11 +113,11 @@ class NodalBackend:
                 if circuit.mode == "mixed" and not ac and kind in "VI"
                 else part.value
             )
-            if kind not in {"R", "C", "L", "X", "Z", "V", "I", "O"}:
+            if kind not in {"R", "K", "C", "L", "X", "Z", "V", "I", "O"}:
                 raise CircuitError(
                     f"Unsupported component type {kind}.", code="UnsupportedComponent"
                 )
-            if kind in "RCL" and (value.imag != 0 or value.real <= 0):
+            if kind in "RKCL" and (value.imag != 0 or value.real <= 0):
                 raise CircuitError(f"{part.name} requires a positive real value.")
             if not ac and kind in "VI" and value.imag:
                 raise CircuitError(f"{part.name} requires a real value in DC.")
@@ -132,7 +132,7 @@ class NodalBackend:
                 targets.append(value if kind == "V" else 0)
             elif kind == "I":
                 currents[k] = value
-            elif kind == "R":
+            elif kind in {"R", "K"}:
                 y[k] = 1 / value
             elif kind == "Z":
                 if not value or not np.isfinite(value):
@@ -154,7 +154,7 @@ class NodalBackend:
                 impedance = math.tau * (frequency * value)
                 if impedance:
                     y[k] = -1j / impedance
-            if (kind in "RXZ" or (ac and kind in "CL")) and (
+            if (kind in "RKXZ" or (ac and kind in "CL")) and (
                 not y[k] or not np.isfinite(y[k])
             ):
                 raise CircuitError(

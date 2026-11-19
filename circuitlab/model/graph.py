@@ -71,6 +71,11 @@ class Component:
     pulse: Pulse | None = None
     wiper: str = ""
     position: float = 0.5
+    # Native two-terminal schematic switches (kind K); kind S is controlled.
+    closed: bool = False
+    # Optional schematic supply pins on ideal op amps; no rail clipping model.
+    vplus: str = ""
+    vminus: str = ""
 
     @property
     def is_source(self):
@@ -84,6 +89,8 @@ class Component:
             return self.base, self.p, self.n
         if self.kind == "P":
             return self.p, self.wiper, self.n
+        if self.kind == "O" and self.vplus and self.vminus:
+            return self.in_plus, self.in_minus, self.p, self.n, self.vplus, self.vminus
         if self.kind in {"O", "S"}:
             return self.in_plus, self.in_minus, self.p, self.n
         return self.p, self.n

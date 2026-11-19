@@ -206,6 +206,9 @@ def result_rows(result):
             if p.kind == "S":
                 add(name + " threshold", "V(control) - V(reference)", p.threshold, "V", provided=True)
                 continue
+            if p.kind == "K":
+                add(name + " state", "Manual switch", "Closed" if p.closed else "Open", provided=True)
+                continue
             if p.kind == "O":
                 add(
                     prefix + name + " model",
@@ -282,6 +285,7 @@ def result_rows(result):
             if p.kind != "I":
                 formulas = {
                     "R": "I = Vbranch / R",
+                    "K": "I = Vbranch / R_switch",
                     "C": "I = j x 2πf x C x Vbranch"
                     if is_ac
                     else "I = 0 (DC capacitor)",
@@ -392,6 +396,9 @@ def component_labels(circuit):
     for p in circuit.components:
         name = p.label or p.name
         labels[p.name] = label = [name.replace("_", " ")]
+        if p.kind == "K":
+            label.append("Closed" if p.closed else "Open")
+            continue
         if p.kind in {"O", "H", "S"}:
             continue
         if p.kind == "Q":

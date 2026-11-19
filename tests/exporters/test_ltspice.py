@@ -72,6 +72,44 @@ def read_connections(text, extra_pins=None):
 
 
 class LtspiceSchematicTest(unittest.TestCase):
+    def test_powered_opamp_keeps_both_supply_nets_on_rotated_ltspice_pins(self):
+        circuit = compile_circuit(
+            'V1(2) between(input,0);\nV2(5) between(vcc,0);\nV3(-5) between(vee,0);\n'
+            'R1(10k) between(input,minus);\nR2(10k) between(out,minus);\n'
+            'op1(0,minus,out,vcc,vee);'
+        )
+        original = schematic_layout(circuit, component_labels(circuit), 'auto')
+        for turns in range(4):
+            with self.subTest(turns=turns):
+                drawing = move_symbol(circuit, original, 'op1', (2, 2), rotate=turns)
+                self.assertIsNotNone(drawing)
+                sheet, _ = export_schematic(circuit, drawing)
+                pins, attributes = read_connections(sheet)['X_op1']
+                self.assertEqual(pins, ('0', 'minus', 'vcc', 'vee', 'out'))
+                self.assertEqual(attributes['Value'], 'EC_IdealOpAmpPowered')
+                self.assertIn('.subckt EC_IdealOpAmpPowered plus minus vplus vminus out', sheet)
+                self.assertIn('Eoutput out 0 out mid 1', sheet)
+
+    def test_mechanical_switch_export_preserves_state_and_rotated_contact_nets(self):
+        for state in ('open', 'closed'):
+            circuit = compile_circuit(
+                'V1(5) between(input,0);\n'
+                f'S1({state}) between(input,out);\nR1(1k) between(out,0);'
+            )
+            original = schematic_layout(circuit, component_labels(circuit), 'auto')
+            for turns in range(4):
+                with self.subTest(state=state, turns=turns):
+                    drawing = move_symbol(circuit, original, 'S1', (2, 2), rotate=turns)
+                    self.assertIsNotNone(drawing)
+                    sheet, _ = export_schematic(circuit, drawing)
+                    actual = read_connections(sheet)
+                    pins, attributes = actual['R_S1']
+                    self.assertEqual(pins, ('input', 'out'))
+                    self.assertEqual(scalar(attributes['Value'], 'ohm'),
+                                     .001 if state == 'closed' else 1e12)
+                    self.assertIn(f"Mechanical switch 'S1' is {state}", sheet)
+                    self.assertNotIn('SYMBOL sw ', sheet)
+
     def test_saved_555_layout_keeps_wires_and_symbol_rotations(self):
         path = FIXTURES / "refactor" / "timer555.ckt"
         circuit = compile_circuit(path.read_text(encoding="utf-8-sig"))

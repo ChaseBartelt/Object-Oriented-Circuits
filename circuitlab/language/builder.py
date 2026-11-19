@@ -40,6 +40,8 @@ from circuitlab.language.syntax import (
     SECTION,
     SOURCE_WIRE,
     SWITCH_CALL,
+    SWITCH_ON_RESISTANCE,
+    SWITCH_OFF_RESISTANCE,
     TRANSISTOR,
     TRANS_CALL,
     TRANS_POSITIONAL,
@@ -47,6 +49,7 @@ from circuitlab.language.syntax import (
     WAVE,
     analysis_mode,
     parse_potentiometer,
+    parse_switch,
     parse_wires,
 )
 
@@ -83,6 +86,7 @@ class Battery:
     known: dict = field(default_factory=dict)
     wires: list[str] = field(default_factory=list)
     ground: str | None = None
+    negative_supply: bool = False
 
 
 def _ac_source(raw, unit):
@@ -168,8 +172,12 @@ def compile_program(program, mode, *, render_only=False):
     for group in circuit.groups:
         group.entry_sources = {index: (lines[order], paths.get(order))
                                for index, order in group.entry_order.items()}
+    # Supply pins on an ideal op amp are real schematic connections even when
+    # no source drives them; they do not add unknowns to the signal solver.
+    schematic_nets = set(circuit.nodes)
+    schematic_nets.update(net for part in circuit.components for net in part.terminal_nets)
     for pin, line in connectors.items():
-        if circuit.resolve_wire(pin) not in circuit.nodes:
+        if circuit.resolve_wire(pin) not in schematic_nets:
             raise CircuitError(f'Connector pin "{pin}" is not a net in this file.', line)
     circuit.owners, circuit.component_lines, circuit.component_files = (
         {part.name: origins[part.order] for part in circuit.components if part.order in origins}
@@ -236,11 +244,14 @@ class Compiler:
                 self.amp = (amp_name[1], line, {})
             else:
                 try:
-                    pins = map(binding.wire, parse_wires(call[2], 3))
+                    pins = parse_wires(call[2])
+                    if len(pins) not in {3, 5}:
+                        raise CircuitError("Use three signal pins and optionally both supply pins.")
+                    pins = map(binding.wire, pins)
                     self.add_amp(binding.part(call[1]), *pins)
                 except CircuitError:
                     raise CircuitError(
-                        "Use op1(in+, in-, out); with three wire names."
+                        "Use op1(in+, in-, out) or op1(in+, in-, out, vplus, vminus)."
                     ) from None
             return
         amp_end = bool(re.fullmatch(r"\(\s*end\s+opamp\s*\)", text, re.I))
@@ -489,7 +500,7 @@ class Compiler:
             return
         self.node_row(text, binding)
 
-    def add_amp(self, name, plus, minus, out):
+    def add_amp(self, name, plus, minus, out, vplus="", vminus=""):
         self.amps.append(
             Component(
                 name,
@@ -500,9 +511,13 @@ class Compiler:
                 in_plus=plus,
                 in_minus=minus,
                 order=self.order,
+                vplus=vplus,
+                vminus=vminus,
             )
         )
         self.circuit.named_wires.update((plus, minus, out))
+        if vplus and vminus:
+            self.circuit.named_wires.update((vplus, vminus))
 
     def add_transistor(self, name, line, base, collector, emitter, polarity, model=""):
         part = Component(
@@ -655,6 +670,13 @@ class Compiler:
             )
         key, raw = assignment.groups()
         label, known = self.battery.label, self.battery.known
+        if key.casefold() == "vneg":
+            if "V" in known or self.battery.negative_supply:
+                raise CircuitError("Use either V or Vneg once in a battery block.")
+            value = -abs(real(scalar(raw, "V")))
+            set_known(known, "V", value)
+            self.battery.negative_supply = True
+            return
         if key == "measure" and raw.upper() == "P":
             self.circuit.probes.append(Probe("P", (binding.part(label),)))
             return
@@ -664,6 +686,8 @@ class Compiler:
             and key.casefold() == label.casefold()
         ):
             key = "V"
+        if key == "V" and self.battery.negative_supply:
+            raise CircuitError("Use either V or Vneg once in a battery block.")
         allowed = {"V"}
         if self.mode in {"ac", "mixed"}:
             allowed = AC_VOLTAGE | FREQUENCY | {"Vdc", "phaseV"}
@@ -715,6 +739,13 @@ class Compiler:
         return name
 
     def group_entry(self, assignment, binding):
+        if assignment and assignment[1][0].upper() == "S":
+            name, raw = assignment.groups()
+            closed = parse_switch(raw)
+            name = self.component_name(name, binding)
+            self.group.entry_order[len(self.group.entries)] = self.order
+            self.group.entries.append(("K", name, SWITCH_ON_RESISTANCE if closed else SWITCH_OFF_RESISTANCE))
+            return
         if assignment and assignment[1][0].upper() == "P":
             raise CircuitError("A potentiometer needs three terminals: P1(value) between(high, wiper, low).")
         if not assignment or assignment[1][0].upper() not in UNITS or (
@@ -853,6 +884,19 @@ class Compiler:
 
     def add_node_component(self, name, raw, p, n, binding):
         kind = name[0].upper()
+        if kind == "S":
+            if self.mode == "transient":
+                raise CircuitError("Use DC mode and Run in Results for a switch time simulation.")
+            closed = parse_switch(raw)
+            name = self.component_name(name, binding)
+            p, n = binding.wire(p), binding.wire(n)
+            self.circuit.components.append(Component(
+                name, "K", p, n, SWITCH_ON_RESISTANCE if closed else SWITCH_OFF_RESISTANCE,
+                label=name, order=self.order, off_resistance=SWITCH_OFF_RESISTANCE, closed=closed,
+            ))
+            self.circuit.named_wires.update((p, n))
+            self.method_parts |= bool(binding.scope)
+            return
         if kind == "Z":
             value = self.impedance_value(raw)
         if self.mode == "transient":
@@ -861,7 +905,7 @@ class Compiler:
             )
         if kind not in "RCLZVI":
             raise CircuitError(
-                f'Component "{name}" needs a name beginning R, C, L, Z, V, or I.'
+                f'Component "{name}" needs a name beginning R, C, L, Z, V, I, or S.'
             )
         pulse = None
         if not raw.strip():
@@ -1078,6 +1122,8 @@ class Compiler:
                 in_minus=resolve_alias(part.in_minus, aliases),
                 base=resolve_alias(part.base, aliases),
                 wiper=resolve_alias(part.wiper, aliases),
+                vplus=resolve_alias(part.vplus, aliases),
+                vminus=resolve_alias(part.vminus, aliases),
             )
             for part in c.components
         ]
@@ -1215,6 +1261,8 @@ class Compiler:
                             name,
                             equation,
                             order=group.entry_order[j],
+                            closed=kind == "K" and value == SWITCH_ON_RESISTANCE,
+                            off_resistance=SWITCH_OFF_RESISTANCE if kind == "K" else 0,
                         )
                     )
                 entries[i, j] = parts[-1], reversed_source

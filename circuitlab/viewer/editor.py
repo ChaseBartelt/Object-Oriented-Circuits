@@ -36,13 +36,14 @@ class CircuitHighlighter(QSyntaxHighlighter):
             re.compile(
                 r"\b(?:series|parallel|circuit|chip|gate|between|battery|opamp|transistor|"
                 r"end|main|return|measure|wire|ground|model|port|input|output|connector|include|"
-                r"for|while|do|if|else|clock|every|const|let|int|bool|true|false|break|continue)\b",
+                r"for|while|do|if|else|clock|every|const|let|int|bool|true|false|break|continue|"
+                r"open|closed|on|off|Vneg)\b",
                 re.I,
             ),
             "#92bfff",
         ),
-        (re.compile(r"\b(?:[RCLXZVIQ]\d[\w]*|op\d+)\b"), "#e3b5f5"),
-        (re.compile(r"\b[RCLZVIP]\w*(?=\s*(?:\([^()]*\)\s*)?between\s*\()", re.I), "#e3b5f5"),
+        (re.compile(r"\b(?:[RCLXZVIQPS]\d[\w]*|op\d+)\b"), "#e3b5f5"),
+        (re.compile(r"\b[RCLZVIPS]\w*(?=\s*(?:\([^()]*\)\s*)?between\s*\()", re.I), "#e3b5f5"),
         (re.compile(rf"(?<![\w.])[+-]?{NUMBER}(?:[A-Za-zµμΩ°]+)?"), "#ffd18b"),
         (BUILTIN_CALL, "#e3b5f5"),
     )
@@ -159,6 +160,7 @@ class CircuitEditor(QPlainTextEdit):
             names.setdefault(gate, gate)
         transistor = prefix if TRANS_CALL.fullmatch(prefix) else "transQ1"
         names.setdefault(transistor.casefold(), transistor)
+        names.setdefault("s1", "S1")
         self.completions.setStringList([names[key] for key in sorted(names)])
         self.completer.setCompletionPrefix(prefix)
         if not self.completer.setCurrentRow(0):
@@ -188,6 +190,11 @@ class CircuitEditor(QPlainTextEdit):
         method = self.method_signatures().get(name.casefold())
         if suffix.startswith("("):
             cursor.insertText(name)
+        elif name.casefold() == "s1" and method is None:
+            start = cursor.selectionStart()
+            cursor.insertText(name + "(open) between(a, b)" + ("" if suffix.startswith(";") else ";"))
+            cursor.setPosition(start + len(name) + 1)
+            cursor.setPosition(start + len(name) + 5, QTextCursor.MoveMode.KeepAnchor)
         else:
             cursor.insertText(name + "()" + ("" if suffix.startswith(";") else ";"))
             if method is None or method[2]:

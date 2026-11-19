@@ -8,7 +8,7 @@ def feedback_pairs(parts):
     """Find passive branches that connect an op-amp output to a sensing pin."""
     by_terminals = defaultdict(list)
     for i, part in enumerate(parts):
-        if part.kind in "RCLXZ":
+        if part.kind in "RCLXZK":
             by_terminals[frozenset((part.p, part.n))].append(i)
     return tuple(
         (i, j, pin)

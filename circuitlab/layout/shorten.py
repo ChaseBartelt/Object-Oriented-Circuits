@@ -325,7 +325,7 @@ def optimize_layout(circuit, original, *, flip_budget=4, move_parts=False, grid=
         drawing = compacted
     # Try the most heavily wired passive components first. Sources and devices
     # with directional behavior are never flipped by this pass.
-    candidates = sorted((s for s in drawing.symbols if s[0].kind in {'R','C','L','X'}),
+    candidates = sorted((s for s in drawing.symbols if s[0].kind in {'R','C','L','X','K'}),
         key=lambda s: -sum(math.dist(a,b) for net in s[0].terminal_nets for a,b in drawing.wires.get(net, ())))
     for symbol in candidates[:flip_budget]:
         best = drawing

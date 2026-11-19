@@ -13,6 +13,7 @@ from circuitlab.math.nonlinear import SWITCH_TRANSITION
 from circuitlab.language.syntax import AC_VOLTAGE, BJT_MODEL_NAME, BJT_TYPES, FREQUENCY
 
 OPAMP_MODEL = "EC_IdealOpAmp"
+POWERED_OPAMP_MODEL = "EC_IdealOpAmpPowered"
 OPAMP_SOURCES = (
     "Eoutput out return out mid 1",
     "Einput mid return plus minus 1",
@@ -87,7 +88,9 @@ def spice_netlist(circuit: Circuit) -> str:
         p, n = spice.nodes[part.p], spice.nodes[part.n]
         if model.kind in {"X", "S"}:
             plus, minus = spice.nodes[part.in_plus], spice.nodes[part.in_minus]
-            lines.append(f"{model.name} {p} {n} {plus} {minus} {model.value}")
+            rails = (f" {spice.nodes[part.vplus]} {spice.nodes[part.vminus]}"
+                     if part.kind == "O" and part.vplus else "")
+            lines.append(f"{model.name} {p} {n} {plus} {minus}{rails} {model.value}")
         elif model.kind == "Q":
             base = spice.nodes[part.base]
             lines.append(f"{model.name} {p} {base} {n} {model.value}")
@@ -95,17 +98,22 @@ def spice_netlist(circuit: Circuit) -> str:
             dc = "DC " if model.kind in "VI" and part.pulse is None else ""
             lines.append(f"{model.name} {p} {n} {dc}{model.value}{model.extra}")
     lines.extend(f"{name} {node} 0 DC 0" for name, node in spice.references)
-    if any(part.kind == "O" for part in circuit.components):
+    if any(part.kind == "O" and not part.vplus for part in circuit.components):
         lines.extend(("", *opamp_subcircuit("out return plus minus")))
+    if any(part.kind == "O" and part.vplus for part in circuit.components):
+        lines.extend(("", *opamp_subcircuit(
+            "out return plus minus vplus vminus", model=POWERED_OPAMP_MODEL,
+        )))
     if spice.models:
         lines.extend(("", *spice.models))
     return "\n".join([*lines, "", spice.directive, ".end", ""])
 
 
-def opamp_subcircuit(pins):
+def opamp_subcircuit(pins, *, model=OPAMP_MODEL, reference="return"):
     # The two VCVSs enforce plus = minus without drawing input current
     # or fixing the output voltage. Additional symbol pins may be unused.
-    return (f".subckt {OPAMP_MODEL} {pins}", *OPAMP_SOURCES, f".ends {OPAMP_MODEL}")
+    sources = tuple(source.replace("return", reference) for source in OPAMP_SOURCES)
+    return (f".subckt {model} {pins}", *sources, f".ends {model}")
 
 
 def _bjt_models(parts):
@@ -207,7 +215,11 @@ def spice_circuit(circuit: Circuit) -> SpiceCircuit:
 
     node_names = SpiceNames("0", "gnd")
     nodes = {"0": "0"}
-    for node in circuit.nodes:
+    # Explicit op-amp power contacts are visual connections in the ideal
+    # model. Keep their names even when they are not part of the solver graph.
+    power_nodes = tuple(net for part in parts if part.kind == "O" and part.vplus
+                        for net in (part.vplus, part.vminus))
+    for node in dict.fromkeys((*circuit.nodes, *power_nodes)):
         if node == "0":
             continue
         nodes[node] = node_names.claim(node)
@@ -233,6 +245,15 @@ def spice_circuit(circuit: Circuit) -> SpiceCircuit:
         if p == n and part.kind not in {"Q", "S"}:
             raise CircuitError(f"{part.name} needs two distinct nodes.")
         kind, value = part.kind, part.value
+        if kind == "K":
+            # A mechanical contact has no control pins. Preserve its saved
+            # state with the same finite resistance used by the native solver.
+            kind = "R"
+            state = "closed" if part.closed else "open"
+            lines.append(
+                f"* Mechanical switch {ascii(part.label or part.name)} is {state}; "
+                "exported as its selected-state resistance."
+            )
         if kind == "X":
             # A fixed reactance is equivalent to this L or C at the export frequency.
             if frequency is None or value.imag or not value.real:
@@ -258,7 +279,7 @@ def spice_circuit(circuit: Circuit) -> SpiceCircuit:
                 extra = f" AC {_number(amplitude)} {_number(phase)}"
         elif kind == "O":
             kind = "X"
-            spec = OPAMP_MODEL
+            spec = POWERED_OPAMP_MODEL if part.vplus else OPAMP_MODEL
         elif kind == "Q":
             spec = models[part.name]
         elif kind == "S":

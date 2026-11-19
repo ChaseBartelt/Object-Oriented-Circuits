@@ -16,9 +16,9 @@ class SourceEdit:
     description: str
 
 
-PLACED = re.compile(r'(?P<name>[RCLZVIP]\w*)(?P<value_clause>\s*\((?P<value>[^()\r\n]*)\))?\s+between\s*\((?P<pins>[^()\r\n]+)\)', re.I)
-LEGACY = re.compile(r'(?P<name>[RCLZVI]\w*)[ \t]+(?P<a>\S+)[ \t]+(?P<b>\S+)[ \t]+(?P<value>[^;#\r\n]+)', re.I)
-ASSIGN = re.compile(r'(?P<name>[RCLZ]\w*)\s*=\s*(?P<value>[^;#\r\n]*)', re.I)
+PLACED = re.compile(r'(?P<name>[RCLZVIPS]\w*)(?P<value_clause>\s*\((?P<value>[^()\r\n]*)\))?\s+between\s*\((?P<pins>[^()\r\n]+)\)', re.I)
+LEGACY = re.compile(r'(?P<name>[RCLZVIS]\w*)[ \t]+(?P<a>\S+)[ \t]+(?P<b>\S+)[ \t]+(?P<value>[^;#\r\n]+)', re.I)
+ASSIGN = re.compile(r'(?P<name>[RCLZS]\w*)\s*=\s*(?P<value>[^;#\r\n]*)', re.I)
 CALL = re.compile(r'(?P<name>[A-Za-z_]\w*)\s*\((?P<pins>[^()\r\n]*)\)')
 
 
@@ -80,3 +80,31 @@ def edit_value(circuit, name, value, root, source, read_source):
     compile_circuit(after if path == Path(root).resolve() else source, mode=circuit.mode,
                     render_only=True, path=Path(root), read_source=reader)
     return SourceEdit(path, before, after, f'Change {match["name"]} value')
+
+
+def edit_switch(circuit, name, closed, root, source, read_source):
+    """Change one manual switch state without changing its connections."""
+    part = next(p for p in circuit.components if p.name == name)
+    if part.kind != 'K' or not isinstance(closed, bool):
+        raise ValueError('Choose an open or closed state for a manual switch.')
+    path, before, offset, match = source_target(circuit, name, root, source, read_source)
+    groups = match.groupdict()
+    if 'value' not in groups:
+        raise ValueError('Edit this generated switch in its source definition.')
+    replacement = 'closed' if closed else 'open'
+    if 'value_clause' in groups and groups['value_clause'] is None:
+        start = end = match.end('name')
+        replacement = f'({replacement})'
+    else:
+        start, end = match.span('value')
+        raw = match['value']
+        start += len(raw) - len(raw.lstrip())
+        end -= len(raw) - len(raw.rstrip())
+    after = before[:offset+start] + replacement + before[offset+end:]
+
+    def reader(filename):
+        return after if Path(filename).resolve() == path else read_source(filename)
+
+    compile_circuit(after if path == Path(root).resolve() else source, mode=circuit.mode,
+                    render_only=True, path=Path(root), read_source=reader)
+    return SourceEdit(path, before, after, f'{"Close" if closed else "Open"} {match["name"]}')

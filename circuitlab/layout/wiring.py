@@ -5,7 +5,7 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass
 from itertools import groupby
 
-from circuitlab.layout.geometry import Layout, add_wire, component_pins, grid_symbol, ground_at, input_source_indices, placement_order
+from circuitlab.layout.geometry import Layout, add_wire, component_pins, grid_symbol, grid_terminal, ground_at, input_source_indices, placement_order
 from circuitlab.layout.automatic import series_runs, source_cells
 
 
@@ -72,7 +72,7 @@ def labeled(circuit, labels):
         if parts[i].is_source:
             return layout.symbols[i][1 if left else 2]
         _, a, b, _ = layout.symbols[i]
-        return (min(a[0], b[0]) if left else max(a[0], b[0]), a[1] + offset)
+        return grid_terminal(parts[i], a, b, left, offset)
 
     for net, group in nets.items():
         grounded = net in circuit.grounds
@@ -127,6 +127,8 @@ class Stage:
 def signal_flow(circuit):
     """Draw trees of buffered stages with one feed and parallel shunts."""
     parts = circuit.components
+    if any(part.kind == "O" and part.vplus for part in parts):
+        return None
     sources = [p for p in parts if p.kind == "V" and p.n in circuit.grounds]
     amps = [p for p in parts if p.kind == "O"]
     if len(sources) != 1 or not amps:
@@ -150,7 +152,7 @@ def signal_flow(circuit):
 
     by_node = defaultdict(list)
     for part in parts:
-        if part.kind in {"R", "C", "L", "X"} and part.p != part.n:
+        if part.kind in {"R", "C", "L", "X", "K"} and part.p != part.n:
             by_node[part.p].append((part.n, part))
             by_node[part.n].append((part.p, part))
 

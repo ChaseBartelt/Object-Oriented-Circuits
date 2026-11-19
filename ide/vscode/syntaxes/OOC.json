@@ -234,7 +234,7 @@
           }
         },
         {
-          "match": "(?i)(?:^|(?<=[;{:]))\\s*(wire|ground|measure|model|port|base|collector|emitter|type)(?=\\s*=)",
+          "match": "(?i)(?:^|(?<=[;{:]))\\s*(wire|ground|measure|model|port|base|collector|emitter|type|Vneg)(?=\\s*=)",
           "captures": {
             "1": { "name": "keyword.other.property.ooc" }
           }
@@ -245,7 +245,17 @@
       "patterns": [
         {
           "name": "entity.name.function.component.ooc",
-          "match": "(?i)\\b[RCLZVIP][A-Za-z0-9_]*(?=(?:\\$\\{[^}\\r\\n]*\\}[A-Za-z0-9_]*)*(?:\\s*\\([^;#\\r\\n]*\\)\\s+|\\s+)between\\s*\\()"
+          "match": "(?i)\\b[RCLZVIPS][A-Za-z0-9_]*(?=(?:\\$\\{[^}\\r\\n]*\\}[A-Za-z0-9_]*)*(?:\\s*\\([^;#\\r\\n]*\\)\\s+|\\s+)between\\s*\\()"
+        },
+        {
+          "match": "(?i)(?:^|(?<=[;{]))\\s*(S[A-Za-z0-9_]*)(?=\\s*=\\s*(?:open|closed|on|off|[01])\\b)",
+          "captures": {
+            "1": { "name": "entity.name.function.component.ooc" }
+          }
+        },
+        {
+          "name": "constant.language.switch-state.ooc",
+          "match": "(?i)\\b(?:open|closed|on|off)\\b"
         },
         {
           "match": "(?:^|(?<=[;{]))\\s*([RCLXZVI][A-Za-z0-9_]+)(?=\\s*=\\s*[+\\-−.0-9]|\\s+[A-Za-z0-9_.-]+\\s+[A-Za-z0-9_.-]+\\s+[+\\-−.0-9])",

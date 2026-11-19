@@ -15,6 +15,7 @@ from circuitlab.layout.geometry import (
     add_wire,
     component_pins,
     grid_symbol,
+    grid_terminal,
     ground_at,
     input_source_indices,
 )
@@ -165,7 +166,7 @@ def _channel_layout(
     rotated = {}
     if rotate:
         for i, part in enumerate(parts):
-            if part.kind not in "RCLXZ" or part.p == part.n:
+            if part.kind not in "RCLXZK" or part.p == part.n:
                 continue
             if rotate is not True and i not in rotate:
                 continue
@@ -361,7 +362,7 @@ def _channel_layout(
         terminals.append(
             (a if (left != (i in reversed_parts)) else b)
             if part.is_source or i in rotated
-            else (min(a[0], b[0]) if left else max(a[0], b[0]), a[1] + offset)
+            else grid_terminal(part, a, b, left, offset)
         )
 
     for net, indices in groups.items():
@@ -653,15 +654,18 @@ def _compact_channels(
         wires = [edge for segments in layout.wires.values() for edge in segments]
         for part, a, b, _ in layout.symbols:
             x, y = (a[0] + b[0]) / 2, (a[1] + b[1]) / 2
+            half_height = 0.6 if part.kind == "K" else 0.44
             if part.kind in {"O", "Q", "P"}:
-                height = {"Q": BJT_PIN_OFFSET, "P": POT_PIN_OFFSET}.get(part.kind, 0.73)
+                height = {"Q": BJT_PIN_OFFSET, "P": POT_PIN_OFFSET}.get(
+                    part.kind, 1.4 if part.vplus else 0.73
+                )
                 body = ((a[0] + 0.08, y - height), (b[0] - 0.08, y + height))
             elif a[0] == b[0]:
-                body = ((x - 0.44, min(a[1], b[1]) + 0.08),
-                        (x + 0.44, max(a[1], b[1]) - 0.08))
+                body = ((x - half_height, min(a[1], b[1]) + 0.08),
+                        (x + half_height, max(a[1], b[1]) - 0.08))
             else:
-                body = ((min(a[0], b[0]) + 0.08, y - 0.44),
-                        (max(a[0], b[0]) - 0.08, y + 0.44))
+                body = ((min(a[0], b[0]) + 0.08, y - half_height),
+                        (max(a[0], b[0]) - 0.08, y + half_height))
             if any(segments_intersect(body, edge) for edge in wires):
                 return False
         return True
@@ -704,7 +708,7 @@ def _compact_channels(
     }
     shunts = [
         i for i, part in enumerate(parts)
-        if part.kind in "RCLXZ" and {part.p, part.n} & anchors
+        if part.kind in "RCLXZK" and {part.p, part.n} & anchors
     ]
     for i in shunts[:12]:
         try_layout(best_cells, (rotations or set()) ^ {i})
@@ -761,7 +765,7 @@ def _compact_channels(
         trial_count = 7 if len(parts) <= 24 else 3
         for _, trial in sorted(trials, key=lambda candidate: candidate[0])[:trial_count]:
             try_layout(trial, rotations)
-            if len(unit) == 1 and parts[unit[0]].kind in "RCLXZ":
+            if len(unit) == 1 and parts[unit[0]].kind in "RCLXZK":
                 try_layout(trial, (rotations or set()) | {unit[0]})
                 # Two vertical branches can compete for the same drop. Give
                 # the newly rotated part a trial with the other one horizontal.
@@ -796,7 +800,7 @@ def _compact_channels(
     }
     for i in sorted(singles):
         part = parts[i]
-        if part.kind not in "RCLXZ" or not {part.p, part.n} & floating:
+        if part.kind not in "RCLXZK" or not {part.p, part.n} & floating:
             continue
         row, col = best_cells[i]
         occupied = {pos: j for j, pos in best_cells.items() if j != i}
@@ -839,7 +843,7 @@ def _shorten_rail_branches(circuit, drawing, cost, clear_symbols):
         return sum(math.dist(a, b) for a, b in edges)
 
     for index, (part, a, b, top) in enumerate(drawing.symbols):
-        if part.kind not in "RCLXZ" or part.p == part.n or not {part.p, part.n} <= rails.keys():
+        if part.kind not in "RCLXZK" or part.p == part.n or not {part.p, part.n} <= rails.keys():
             continue
         p_rail, n_rail = rails[part.p], rails[part.n]
         py, ny = p_rail[0][1], n_rail[0][1]

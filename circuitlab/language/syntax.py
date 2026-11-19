@@ -48,8 +48,8 @@ MARKER = re.compile(
 WIRE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_. \t-]*")
 ASSIGNMENT = re.compile(r"([A-Za-z][A-Za-z0-9_]*)\s*=\s*(.*)")
 PIN_DIRECTION = re.compile(r"[\w, \t\[\]:]+\s*=\s*(input|output)", re.I)
-PARAMETER_TARGET = re.compile(r"[RCLXZVI][A-Za-z0-9_]*", re.I)
-PART_ARGUMENT = re.compile(r"([RCLZP][A-Za-z0-9_]*)(?:\s*\(([^()]*)\))?", re.I)
+PARAMETER_TARGET = re.compile(r"[RCLXZVIS][A-Za-z0-9_]*", re.I)
+PART_ARGUMENT = re.compile(r"([RCLZPS][A-Za-z0-9_]*)(?:\s*\(([^()]*)\))?", re.I)
 PART_PLACEMENT = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)\s+between\s*\(([^()]*)\)", re.I)
 PLACEMENT = re.compile(
     r"([A-Za-z][A-Za-z0-9_]*)\s*\(((?:[^()]|\([^()]*\))*)\)\s+between\s*\(([^()]*)\)", re.I
@@ -178,7 +178,7 @@ def source_rows(source, *, legacy_markers=True):
         if legacy_markers and MARKER.search(line):
             line = MARKER.sub(r"\n\1\n", line)
             line = re.sub(
-                r"[ \t]+((?:[RCLXZVI][A-Za-z0-9_]*|measure|wire|ground|f|T|w|phase[VI]|rad\s*/\s*s)[ \t]*=)",
+                r"[ \t]+((?:[RCLXZVIS][A-Za-z0-9_]*|measure|wire|ground|f|T|w|phase[VI]|rad\s*/\s*s)[ \t]*=)",
                 r"\n\1",
                 line,
                 flags=re.I,
@@ -212,3 +212,17 @@ def parse_potentiometer(raw):
     if not 0 <= position <= 1:
         raise CircuitError("Use a potentiometer position from 0% to 100% (or a fraction from 0 to 1).")
     return value, position
+
+
+SWITCH_ON_RESISTANCE = 1e-3
+SWITCH_OFF_RESISTANCE = 1e12
+
+
+def parse_switch(raw):
+    """Read a native switch state; omitted states start open."""
+    state = raw.strip().casefold()
+    if state in {"", "open", "off", "0"}:
+        return False
+    if state in {"closed", "on", "1"}:
+        return True
+    raise CircuitError("Use S1(open) or S1(closed) between(a, b); on/off and 1/0 are also accepted.")

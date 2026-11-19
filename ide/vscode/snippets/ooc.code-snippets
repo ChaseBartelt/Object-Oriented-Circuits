@@ -66,6 +66,27 @@
     "body": "${1:R1}(${2:1k}) between(${3:in}, ${4:out});$0",
     "description": "Place a resistor between two nodes."
   },
+  "Manual switch": {
+    "prefix": "switch",
+    "body": "${1:S1}(${2|open,closed|}) between(${3:in}, ${4:out});$0",
+    "description": "Place a two-terminal switch; click its schematic symbol to toggle it."
+  },
+  "Negative battery supply": {
+    "prefix": "battery-negative",
+    "body": [
+      "battery ${1:NegSupply} {",
+      "\tVneg = ${2:5};",
+      "\twire = ${3:neg};",
+      "}",
+      "$0"
+    ],
+    "description": "Declare a negative rail; Vneg = 5 means -5 volts."
+  },
+  "Op amp with supply pins": {
+    "prefix": "opamp-powered",
+    "body": "${1:op1}(${2:in_plus}, ${3:in_minus}, ${4:out}, ${5:vplus}, ${6:vminus});$0",
+    "description": "Place an ideal op amp with optional positive and negative supply identifiers."
+  },
   "Link circuit file": {
     "prefix": "include",
     "body": "include(\"${1:other.ckt}\");$0",
