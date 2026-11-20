@@ -17,6 +17,7 @@ from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
 from circuitlab.layout.persistence import pack_layout
+from circuitlab.layout.geometry import along, rotate_point
 from circuitlab.viewer.schematic import point
 from circuitlab.viewer.editor import CircuitEditor
 from circuitlab.viewer.window import ViewerWindow
@@ -94,6 +95,17 @@ class MechanicalSwitchTest(unittest.TestCase):
         self.assertEqual(self.path.read_text(), SOURCE)
         self.assertFalse(self.window.source_tools.history)
         self.assertIn("S1", view.selected_symbols)
+
+    def test_switch_wire_lead_does_not_toggle_the_switch(self):
+        view = self.window.schematic
+        part, a, b, _ = next(record for record in view.layout.symbols if record[0].kind == "K")
+        turns = view.layout.rotations.get(part.name, 0)
+        lead = point(rotate_point(along(a, b, 0.1), a, b, turns))
+        QTest.mouseClick(view.viewport(), Qt.MouseButton.LeftButton, pos=view.mapFromScene(lead))
+        self.assertFalse(self.switch().closed)
+        self.assertEqual(self.path.read_text(), SOURCE)
+        self.click_switch()
+        self.assertTrue(self.switch().closed)
 
     def test_ide_toggle_waits_for_ack_and_rejection_leaves_source_unchanged(self):
         tools = self.window.source_tools

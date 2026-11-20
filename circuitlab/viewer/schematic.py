@@ -27,7 +27,7 @@ from PySide6.QtWidgets import (
 
 from circuitlab.layout.hierarchy import METHOD_PREFIX, hood_levels
 from circuitlab.layout.geometry import (
-    BJT_PIN_OFFSET, POT_PIN_OFFSET, ChipPackage, package_half_height, package_pins,
+    BJT_PIN_OFFSET, POT_PIN_OFFSET, ChipPackage, along, package_half_height, package_pins,
     pin_offset, rotate_point, symbol_pins,
 )
 from circuitlab.layout.grid import align_layout
@@ -49,6 +49,8 @@ PROBE = QColor("#974616")
 LOGIC_HIGH = QColor("#159b71")
 LOGIC_LOW = QColor("#718096")
 SCALE = 38
+SWITCH_CONTACT_OFFSET = 0.65
+SWITCH_HIT_MARGIN = 8
 
 # Grid appearance. Movement spacing and magnet strength are in snapping.py.
 GRID_MAJOR_STEPS = 2      # Number of snap intervals per darker square.
@@ -59,6 +61,15 @@ GRID_LINE_WIDTH = 1.0
 
 def point(p):
     return QPointF(p[0] * SCALE, -p[1] * SCALE)
+
+
+def switch_bounds(a, b, turns):
+    """Bound the contact area without including the wire leads."""
+    span = SWITCH_CONTACT_OFFSET / math.dist(a, b)
+    first, last = (point(rotate_point(along(a, b, fraction), a, b, turns))
+                   for fraction in (0.5 - span, 0.5 + span))
+    margin = SWITCH_HIT_MARGIN
+    return QRectF(first, last).normalized().adjusted(-margin, -margin, margin, margin)
 
 
 @dataclass
@@ -524,8 +535,10 @@ class SchematicView(QGraphicsView):
                 second = QPointF(max(pin.x() for pin in pins), max(pin.y() for pin in pins))
             else:
                 first, second = self.mapped(a), self.mapped(b)
-            margin_x, margin_y = (24, 24) if part.kind == "K" else (8, 14)
-            bounds = QRectF(first, second).normalized().adjusted(-margin_x, -margin_y, margin_x, margin_y)
+            if part.kind == "K":
+                bounds = switch_bounds(a, b, turns).translated(self.offset)
+            else:
+                bounds = QRectF(first, second).normalized().adjusted(-8, -14, 8, 14)
             handle = scene.addRect(
                 bounds, QPen(Qt.PenStyle.NoPen), QBrush(QColor(0, 0, 0, 0))
             )
@@ -698,6 +711,9 @@ class SchematicView(QGraphicsView):
             if part.name not in names:
                 continue
             turns = layout.rotations.get(part.name, 0)
+            if part.kind == "K":
+                self.selection_items.append(self.scene().addRect(switch_bounds(a, b, turns).translated(offset), pen))
+                continue
             height = (package_half_height(part, layout.pin_grid) + 0.2 if part.kind == "H"
                       else pin_offset(POT_PIN_OFFSET, layout.pin_grid) if part.kind == "P" else 0.8)
             corners = ((min(a[0], b[0]), min(a[1], b[1]) - height),
@@ -1366,7 +1382,7 @@ class SchematicView(QGraphicsView):
         elif part.kind == "K":
             # Two contacts and a lever distinguish a manual switch from the
             # four-terminal, voltage-controlled switch model above.
-            end = 0.65
+            end = SWITCH_CONTACT_OFFSET
             path([(-end, 0), (end, 0 if part.closed else 0.48)])
             for xx in (-end, end):
                 path([(xx + 0.07 * math.cos(math.tau * i / 16),
