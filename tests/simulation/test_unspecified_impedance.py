@@ -81,6 +81,11 @@ class UnspecifiedImpedanceTest(unittest.TestCase):
             circuit = compile_circuit(source)
             self.assert_missing(lambda: analyze(circuit))
 
+    def test_multiline_group_value_and_placeholder_before_closing_marker(self):
+        circuit = compile_circuit("(parallel)\nR1 =\n10\nZ1 =\n(end parallel)")
+        self.assertEqual([entry[2] for entry in circuit.groups[0].entries], [10, None])
+        self.assert_missing(lambda: analyze(circuit), line=4)
+
     def test_multiple_missing_components_are_named_together(self):
         circuit = compile_circuit("Z1() between(a,0);\nZ2() between(b,0);")
         self.assert_missing(lambda: analyze(circuit), "Z1, Z2", line=1)

@@ -329,13 +329,29 @@ def _block_rows(line, depth):
     return "\n".join(rows), depth
 
 
-# Split on structural boundaries rather than raw punctuation so calls and quoted paths are
-# kept intact. The original line accompanies every normalized statement.
+_EMPTY_PART_ASSIGNMENT = re.compile(
+    rf"(?:^|[;{{}}])\s*[{''.join(UNITS)}][A-Za-z0-9_]*\s*=\s*$", re.I,
+)
+_ASSIGNMENT_START = re.compile(r"[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*\s*=(?!=)")
+_LEGACY_END = re.compile(r"\(\s*end\s+", re.I)
+
+
+# Preserve the opening line when joining continued pin lists and expressions.
 def _logical_lines(source):
     """Join continued pin lists/expressions, retaining the opening line number."""
     pending, opened, parentheses = [], 0, 0
     for number, raw in enumerate(source.splitlines(), 1):
         line = raw.split("#", 1)[0].strip()
+        if pending and not parentheses:
+            # A blank component value is a placeholder. Keep it separate from
+            # the next assignment or closing marker, while allowing a value
+            # to continue on its own line.
+            if (line.startswith("}") or _ASSIGNMENT_START.match(line)
+                    or (_LEGACY_END.match(line) and MARKER.match(line))):
+                previous = " ".join(pending)
+                if _EMPTY_PART_ASSIGNMENT.search(previous):
+                    yield opened, previous
+                    pending = []
         if not pending:
             opened = number
         pending.append(line)

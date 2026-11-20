@@ -1911,7 +1911,7 @@ class SchematicView(QGraphicsView):
                     part = next((part for part in self.circuit.components if part.name == drag.name), None)
                     if part and part.kind == 'P':
                         self.potentiometer_requested.emit(drag.name)
-                    elif part and part.kind == 'K':
+                    elif part and part.kind == 'K' and drag.caption is None:
                         self.switch_requested.emit(drag.name)
         else:
             if drag.control:
