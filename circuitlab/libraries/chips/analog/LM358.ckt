@@ -1,8 +1,30 @@
-# LM358 | 8-pin package | pin 1 first.
-# Ideal op-amp channels. Supply, rail limits, offset and bandwidth are omitted.
-# Datasheet: https://www.ti.com/lit/ds/symlink/lm358.pdf
 
-chip LM358(out1, minus1, plus1, vminus, plus2, minus2, out2, vplus) {  # Keep the package pin order while the internal parts define the modeled signal behavior.
-    op1(plus1, minus1, out1);  # Ideal amplifier: the feedback connections determine this channel's behavior.
-    op2(plus2, minus2, out2);  # Ideal amplifier: the feedback connections determine this channel's behavior.
+# LM358 - Dual Operational Amplifier
+# 8-pin package, datasheet pin order
+
+chip LM358(out1, minus1, plus1, vminus,
+           plus2, minus2, out2, vplus) {
+
+    # Two independent amplifier channels
+    op1(plus1, minus1, out1, vplus, vminus);
+    op2(plus2, minus2, out2, vplus, vminus);
+
+    # Shared amplifier characteristics
+    analog (op1, op2) {
+        gain = 100000;
+        gbw = 0.7MHz;
+        slew = 0.3V/us;
+        offset = 3mV;
+
+        common.min = vminus;
+        common.max = vplus - 1.5V;
+
+        output.min = vminus + 5mV;
+        output.max = vplus - 1.5V;
+    }
+
+    # Shared chip power consumption
+    analog {
+        supply.current.total = 0.7mA;
+    }
 }

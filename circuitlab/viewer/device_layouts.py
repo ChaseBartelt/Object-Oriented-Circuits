@@ -148,6 +148,9 @@ class DeviceLayoutDialog(QDialog):
                 "Drag parts, wires, pin ends and labels. Click a nested block to edit its own default. "
                 "Apply saves this device only; layouts saved in individual circuits take priority."
             )
+            if circuit.model_issues:
+                self.message.setText("Topology preview is available. Numerical model is incomplete: " +
+                                     circuit.model_issues[0].message)
 
     def edit_nested(self, index):
         instance = self.preview.circuit.instances[index]

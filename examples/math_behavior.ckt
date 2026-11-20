@@ -1,0 +1,22 @@
+# LT1677 Inverting Amplifier
+# Expected gain = -1
+include("@chips/converters/LT1677.ckt");
+
+# Amplifier power rails
+Vpos(5V) between(vcc, 0);
+Vneg(-5V) between(vee, 0);
+
+# Independent input signal
+Vin(2V) between(vin, 0);
+
+main {
+    Sbutton(closed) between(vin, signal);
+
+    R2(10k) between(signal, inverting);
+    R1(10k) between(output, inverting);
+
+    LT1677(trim1, inverting, 0, vee,
+           nc5, output, vcc, trim8);
+
+    measure = V output 0;
+}

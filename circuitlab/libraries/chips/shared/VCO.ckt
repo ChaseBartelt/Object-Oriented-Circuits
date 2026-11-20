@@ -1,0 +1,35 @@
+
+# VCO - Voltage-Controlled Oscillator
+# Reusable analog oscillator with clock output
+
+chip VCO(control, clock, vcc, gnd) {
+
+    analog {
+        # User-configurable properties
+        property control.min = 0V;
+        property control.max = 5V;
+
+        property frequency.min = 2MHz;
+        property frequency.max = 6MHz;
+
+        property clock.duty = 0.5;
+
+        # Convert control voltage into frequency
+        frequency = clamp(
+            frequency.min +
+            (V(control, gnd) - control.min) /
+            (control.max - control.min) *
+            (frequency.max - frequency.min),
+            frequency.min,
+            frequency.max
+        );
+
+        # Integrate frequency to maintain oscillator phase
+        phase = integrate(frequency, time);
+
+        # Generate a square-wave clock
+        V(clock, gnd) =
+            square(phase, clock.duty) *
+            V(vcc, gnd);
+    }
+}

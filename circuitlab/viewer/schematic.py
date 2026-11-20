@@ -514,10 +514,10 @@ class SchematicView(QGraphicsView):
             counts[part.kind] += 1
             name = labels[part.name]
             if len(name[0]) > 24:
-                prefix = "U" if part.kind == "O" else part.kind
+                prefix = "U" if part.kind in {"O", "A"} else part.kind
                 name = [f"{prefix}#{counts[part.kind]}", *name[1:]]
             pos, alignment = self.symbol(part, a, b, top)
-            powered_amp = part.kind == "O" and bool(part.vplus and part.vminus)
+            powered_amp = part.kind in {"O", "A"} and bool(part.vplus and part.vminus)
             if part.kind == "P":
                 height = pin_offset(POT_PIN_OFFSET, self.pin_grid)
                 first, second = self.mapped((a[0], a[1] - height)), self.mapped((b[0], b[1] + height))
@@ -548,6 +548,8 @@ class SchematicView(QGraphicsView):
                     pos, alignment = (x - (1.5 if powered_amp else padding if part.kind == "P" else 0.61), y), "right"
                 else:
                     pos, alignment = (x, y + (1.65 if powered_amp else padding if part.kind == "P" else 0.65)), "center"
+                if part.kind == "A":
+                    pos, alignment = (x, y + .1), "center"
             self.symbol_turn = None
             component_captions.append((name, pos, ("component", part.name), alignment))
         for pos in layout.grounds:
@@ -1270,6 +1272,8 @@ class SchematicView(QGraphicsView):
     # Draw device-specific contacts and their labels from the same anchor geometry used
     # by routing and rotation; decorative glyphs do not introduce new electrical terminals.
     def symbol(self, part, a, b, top):
+        if part.kind == "A":
+            return self.audio_symbol(part, a, b, top)
         if part.kind == "O":
             x, y = a
 
@@ -1417,6 +1421,30 @@ class SchematicView(QGraphicsView):
         self.lines([(tip[0] + .25 * dx + .12 * dy, tip[1] + .25 * dy - .12 * dx),
                     tip, (tip[0] + .25 * dx - .12 * dy, tip[1] + .25 * dy + .12 * dx)])
         return ((a[0] + b[0]) / 2, y + offset + 0.2), "center"
+
+    def audio_symbol(self, part, a, b, top):
+        """Eight physical contacts; behavioral properties stay in the source."""
+        x, y = a
+        body, tip = x + 1.0, b[0] - .5
+        height = .95
+        self.lines([(body, y + height), (body, y - height), (tip, y), (body, y + height)])
+        pins = list(symbol_pins(part, a, b, top, grid=self.pin_grid))
+        for sign, (_, pin) in zip(("+", "-"), pins[:2]):
+            self.lines([pin, (body, pin[1])])
+            self.label(sign, (body + .35, pin[1]), INK, alignment="right")
+        self.lines([(tip, y), b])
+        for caption, (net, pin) in zip(("V+", "V-", "GAIN1", "GAIN8", "BYPASS"), pins[3:]):
+            direction = 1 if pin[1] > y else -1
+            edge = direction * height * (tip - pin[0]) / (tip - body)
+            lead = self.lines([(pin[0], y + edge), pin])
+            lead.setData(0, "node")
+            lead.setData(1, net)
+            lead.setZValue(1.1)
+            lead.setToolTip(f"{caption} · {net}")
+            self.net_items[net].append(lead)
+            self.label(caption, (pin[0], pin[1] + .15 * direction), NET, ("node", net),
+                       alignment="bottom" if direction < 0 else "center")
+        return ((a[0] + b[0]) / 2, y + .1), "center"
 
     def transistor_symbol(self, part, a, b):
         x, y = a

@@ -29,7 +29,7 @@ _CONDITIONAL = re.compile(r"(if|else\s+if|for|while)\s*\((.*)\)\s*\{", re.I)
 _DO = re.compile(r"do\s*\{", re.I)
 _DO_TEST = re.compile(r"while\s*\((.*)\)\s*;", re.I)
 _ELSE = re.compile(r"else\s*\{", re.I)
-_DEVICE_BLOCK = re.compile(r"(?:battery|transistor)\s", re.I)
+_DEVICE_BLOCK = re.compile(r"(?:(?:battery|transistor|opamp)\s|(?:analog|digital)\s*(?::\s*math)?\s*[\s{])", re.I)
 _INTERPOLATION_START = "${"
 _INTERPOLATION = re.compile(r"\$\{([^{}]*)\}")
 # Expressions contain only decimal integers, identifiers, supported
@@ -530,8 +530,17 @@ class _Blocks:
             # Collect them opaquely to their closing brace instead of consuming them
             # as declarations/updates in the surrounding static scope.
             elif _DEVICE_BLOCK.match(text):
-                fields = []
-                while self.next and self.next[0] != "}":
+                fields, field_depth = [], 0
+                # Analog properties blocks are nested electrical data too.
+                # Their close must not end the surrounding model or expose
+                # following local assignments to the compile-time scope.
+                while self.next:
+                    if self.next[0] == "}":
+                        if not field_depth:
+                            break
+                        field_depth -= 1
+                    elif self.next[0].endswith("{"):
+                        field_depth += 1
                     fields.append(self.take())
                 if self.next is None:
                     raise _value_error(row, "Close the electrical block with }.")

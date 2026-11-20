@@ -11,6 +11,7 @@ from circuitlab.language.control_flow import expand_digital_loops
 from circuitlab.language.digital_switch import expand_switches, normalize_switch_labels
 from circuitlab.language.digital_declarations import normalize_wire_declarations
 from circuitlab.language.pin_banks import expand_pin_banks, pin_bank_names
+from circuitlab.language.math_blocks import digital_math_rows
 from circuitlab.model.graph import CircuitError
 from circuitlab.language.syntax import CHIP, source_rows
 
@@ -425,7 +426,7 @@ def compile_chips(source: str):
             body.append((statement, body_line))
         else:
             raise CircuitError(f'Close chip "{name}" with }}.', line)
-        body = normalize_wire_declarations(body, pins)
+        body = normalize_wire_declarations(digital_math_rows(body), pins)
         verilog, directions = _module(name, pins, body, line)
         statements = tuple(text for text, _ in body)
         modules.append((name, directions, statements, verilog))

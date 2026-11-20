@@ -14,13 +14,23 @@ from math import sqrt
 from circuitlab.model.graph import (
     Circuit,
     CircuitError,
+    ChipProperty,
     Component,
+    ModelIssue,
+    OpAmpModel,
+    ComparatorInstance,
+    ComparatorModel,
+    AudioAmpModel,
     Probe,
     Pulse,
     WireTap,
     ground_references,
 )
 from circuitlab.math.equations import solve_known
+from circuitlab.language.opamps import MODEL_ASSIGNMENT, ModelSetting, model_parameter, needs_supplies, parameter_name, resolve_model
+from circuitlab.language.math_blocks import compile_scope_equations, remap_equation
+from circuitlab.language.properties import (PROPERTIES_BRACE, PROPERTY_DECLARATION,
+                                           declared_property_value, validate_property_name)
 from circuitlab.math.numbers import real, scalar
 from circuitlab.math.numbers import set_known as set_known
 from circuitlab.math.quantities import QUANTITIES
@@ -36,7 +46,12 @@ from circuitlab.language.syntax import (
     CALL,
     FREQUENCY,
     INLINE,
+    MATH_BRACE,
+    MATH_INLINE,
     OP,
+    OPAMP_BRACE,
+    OPAMP_DECLARATION,
+    OVERRIDE,
     PART_PLACEMENT,
     PLACEMENT,
     PULSE,
@@ -185,7 +200,7 @@ def _group_voltage(known, mode, label):
 
 # Translate each bound row in source order, then attach locations to the final components.
 # Connector validation includes schematic-only terminals without adding numerical unknowns.
-def compile_program(program, mode, *, render_only=False):
+def compile_program(program, mode, *, render_only=False, model_preview=False):
     """Read elaborated statements and resolve their electrical graph."""
     mode = mode.lower()
     # The document elaborator supplies the text used for mode detection.
@@ -195,7 +210,7 @@ def compile_program(program, mode, *, render_only=False):
         mode = analysis_mode(program.mode_source)
     if mode not in {"dc", "ac", "mixed", "transient"}:
         raise CircuitError(f"Unknown analysis mode {mode!r}.")
-    compiler = Compiler(mode)
+    compiler = Compiler(mode, render_only=render_only or model_preview)
     # Preserve drawing/instance metadata before reading electrical statements.
     # Connector names also count as named nets when choosing graph elaboration.
     connectors = program.connectors
@@ -245,6 +260,8 @@ def compile_program(program, mode, *, render_only=False):
         {part.name: origins[part.order] for part in circuit.components if part.order in origins}
         for origins in (owners, lines, paths)
     )
+    compiler.bind_comparators()
+    compiler.apply_supply_totals()
     return circuit
 
 
@@ -255,14 +272,25 @@ class Compiler:
     # active is a group index; pending amps/transistors and grouped sources
     # wait for finalization. This "transient" mode means the quantity-based
     # RC/RL model, distinct from running a DC/AC graph in the time simulator.
-    def __init__(self, mode):
+    def __init__(self, mode, *, render_only=False):
         self.circuit = Circuit(mode)
+        self.render_only = render_only
         self.order = 0
         self.mode = mode
         self.active = None
         self.amp = None
         self.battery = None
         self.amps = []
+        self.opamp_config = None
+        self.model_settings = []
+        self.default_declarations = set()
+        self.pending_override = False
+        self.audios = []
+        self.math_block = None
+        self.properties_open = None
+        self.property_rows = []
+        self.math_rows = []
+        self.supply_totals = []
         self.transistor = None
         self.transistors = []
         self.sources = []
@@ -304,6 +332,117 @@ class Compiler:
     def read(self, text, line, binding):
         """Consume a statement in the current device, source, or group context."""
         text = text.removesuffix(";").rstrip()
+        if self.math_block is not None:
+            digital, opened, priority = self.math_block
+            declaration = PROPERTY_DECLARATION.fullmatch(text)
+            if self.properties_open is not None:
+                if text == "}":
+                    self.properties_open = None
+                else:
+                    assignment = MODEL_ASSIGNMENT.fullmatch(text)
+                    if declaration:
+                        validate_property_name(declaration[1])
+                        self.property_rows.append((binding, declaration[1], declaration[3], line, priority, declaration[2]))
+                        return
+                    if not assignment:
+                        raise CircuitError("Use name = value inside properties { ... }.")
+                    validate_property_name(assignment[1])
+                    self.property_rows.append((binding, assignment[1], assignment[2], line, priority))
+            elif PROPERTIES_BRACE.fullmatch(text):
+                self.properties_open = line
+            elif text == "}":
+                self.math_block = None
+            elif declaration:
+                validate_property_name(declaration[1])
+                self.property_rows.append((binding, declaration[1], declaration[3], line, priority, declaration[2]))
+            elif not digital and (field := MODEL_ASSIGNMENT.fullmatch(text)):
+                if parameter_name(field[1]) == "supply_current_total":
+                    try:
+                        current = real(scalar(field[2], "A"))
+                        if current < 0:
+                            raise CircuitError("supply.current.total must be nonnegative.")
+                        self.supply_totals.append((binding, current, line, priority))
+                    except CircuitError as error:
+                        if not self.render_only:
+                            raise
+                        self.defer_model_issue(error.message, line, binding.path, field[1], field[2], owner=binding.instance)
+                    return
+                if parameter_name(field[1]) in {"bandwidth", "slew"} or field[1].casefold().startswith("supply."):
+                    message = f'Anonymous analog model property "{field[1]}" is not yet implemented for simulation.'
+                    if not self.render_only:
+                        raise CircuitError(message, line, path=binding.path)
+                    self.defer_model_issue(message, line, binding.path, field[1], field[2], owner=binding.instance)
+                else:
+                    self.add_equation(text, digital, binding, line, priority)
+            else:
+                self.add_equation(text, digital, binding, line, priority)
+            return
+        if self.opamp_config is not None:
+            setting = self.opamp_config
+            if text == "}":
+                self.model_settings.append(setting)
+                self.opamp_config = None
+            else:
+                field = MODEL_ASSIGNMENT.fullmatch(text)
+                if not field:
+                    raise CircuitError("Use parameter = value inside an analog model declaration.")
+                key = parameter_name(field[1])
+                if key in setting.origins:
+                    raise CircuitError(f'Model parameter "{key.replace("_", ".")}" is already declared.')
+                setting.origins[key] = line, binding.path
+                setting.raws[key] = field[2]
+                try:
+                    setting.fields[key] = model_parameter(key, field[2])
+                except CircuitError as error:
+                    if not self.render_only:
+                        raise
+                    self.defer_model_issue(error.message, line, binding.path, field[1], field[2], owner=binding.instance)
+            return
+        if OVERRIDE.fullmatch(text):
+            if self.pending_override:
+                raise CircuitError("Use one @override annotation per model block.")
+            self.pending_override = True
+            return
+        math_block = MATH_BRACE.fullmatch(text)
+        math_inline = MATH_INLINE.fullmatch(text) if not OPAMP_BRACE.fullmatch(text) else None
+        if math_block or math_inline:
+            if self.group or self.battery or self.amp or self.transistor or self.opamp_config or self.mode == "transient":
+                raise CircuitError("Put mathematical behavior in a steady-state circuit, chip, or main.")
+            digital = (math_block or math_inline)[1].casefold() == "digital"
+            priority = 2 if binding.model_patch else 1 if self.pending_override else 0
+            self.pending_override = False
+            if math_block:
+                self.math_block = digital, line, priority
+            else:
+                self.add_equation(math_inline[2], digital, binding, line, priority)
+            return
+        # Configuration blocks own their braces and fields, independently of the
+        # legacy (opamp ...) pin-connection block below. Keep declarations scoped
+        # by the same binding.part() identity as their connection calls.
+        declaration = OPAMP_BRACE.fullmatch(text) or OPAMP_DECLARATION.fullmatch(text)
+        if declaration:
+            if self.amp or self.battery or self.group or self.transistor or self.mode == "transient":
+                raise CircuitError("Declare op amps at the top level or in a circuit method/main.")
+            raw = declaration[1].strip()
+            raw = raw[1:-1] if raw.startswith("(") else raw
+            local = parse_wires(raw)
+            if (not all(re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name) for name in local)
+                    or len({name.casefold() for name in local}) != len(local)):
+                raise CircuitError("List distinct component identifiers in an analog model block.")
+            targets = tuple(binding.part(name).casefold() for name in local)
+            setting = ModelSetting(targets, {}, {}, self.pending_override, binding.model_patch, line, binding.path,
+                                   owner=binding.instance, locals=local)
+            self.pending_override = False
+            if text.endswith("{"):
+                self.opamp_config = setting
+            else:
+                if any(target in self.default_declarations for target in targets):
+                    raise CircuitError("Op amp is already declared in this scope.")
+                self.default_declarations.update(targets)
+                self.model_settings.append(setting)
+            return
+        if self.pending_override:
+            raise CircuitError("Put @override directly above an analog or digital model block.")
         # An open transistor block owns every following field, including its }.
         # Handle it before generic brace/group parsing so its close cannot end
         # a surrounding electrical block by mistake.
@@ -315,8 +454,8 @@ class Compiler:
             r"\(\s*opamp\s+([A-Za-z][A-Za-z0-9_]*)\s*\)", text, re.I
         )
         # Accept the compact call or the older named (opamp ...) block. Compact
-        # calls have exactly three signal pins or five pins including both rails;
-        # bind every identifier before staging the ideal device.
+        # Arity selects a 3-pin ideal amplifier, its powered 5-pin form, or
+        # an 8-pin audio core. The common first five pins retain their order.
         if (call and OP.fullmatch(call[1])) or amp_name:
             if self.amp or self.battery or self.group or self.mode == "transient":
                 raise CircuitError(
@@ -327,13 +466,21 @@ class Compiler:
             else:
                 try:
                     pins = parse_wires(call[2])
-                    if len(pins) not in {3, 5}:
-                        raise CircuitError("Use three signal pins and optionally both supply pins.")
-                    pins = map(binding.wire, pins)
-                    self.add_amp(binding.part(call[1]), *pins)
+                    if len(pins) not in {3, 5, 8}:
+                        raise CircuitError("Use 3, 5, or 8 pins.")
+                    pins = tuple(map(binding.wire, pins))
+                    if len(pins) == 8:
+                        plus, minus, out, high, low, gain1, gain8, bypass = pins
+                        self.audios.append(Component(binding.part(call[1]), "A", out, low,
+                            label=binding.part(call[1]), in_plus=plus, in_minus=minus,
+                            vplus=high, vminus=low, gain1=gain1, gain8=gain8, bypass=bypass, order=self.order))
+                        self.circuit.named_wires.update(pins)
+                    else:
+                        self.add_amp(binding.part(call[1]), *pins)
                 except CircuitError:
                     raise CircuitError(
-                        "Use op1(in+, in-, out) or op1(in+, in-, out, vplus, vminus)."
+                        "Use op1(in+, in-, out), op1(in+, in-, out, vplus, vminus), "
+                        "or op1(in+, in-, out, vplus, vminus, gain1, gain8, bypass)."
                     ) from None
             return
         amp_end = bool(re.fullmatch(r"\(\s*end\s+opamp\s*\)", text, re.I))
@@ -623,9 +770,245 @@ class Compiler:
             return
         self.node_row(text, binding)
 
-    # Stage an ideal O device with separate sensing pins and output branch.
+    # Defer equation lowering until every property default/patch is known.
+    def add_equation(self, text, digital, binding, line, priority=0):
+        self.math_rows.append((text, digital, binding, line, priority))
+
+    def defer_model_issue(self, message, line=None, path=None, parameter="", raw="", *, owner=None):
+        """A layout may retain unfinished behavior; analysis must reject it."""
+        issue = ModelIssue(message, line, path, parameter, raw, owner)
+        if issue not in self.circuit.model_issues:
+            self.circuit.model_issues.append(issue)
+
+    def apply_supply_totals(self):
+        """Allocate a chip's shared bias draw once across its powered channels.
+
+        Explicit per-channel currents are retained. Any remaining total is
+        divided equally among channels whose current was left at its default.
+        Other device types need an explicit numerical supply-load model.
+        """
+        circuit = self.circuit
+        totals = {}
+        allocated = set()
+        for binding, current, line, priority in self.supply_totals:
+            scope = binding.scope, binding.instance
+            choices = totals.setdefault(scope, {})
+            if priority in choices and choices[priority][0] != current:
+                raise CircuitError("Conflicting overrides for supply.current.total.", line, path=binding.path)
+            choices[priority] = current, line, binding
+        for (_, owner), choices in totals.items():
+            total, line, binding = choices[max(choices)]
+            members = {owner}
+            if owner is not None:
+                for index, instance in enumerate(circuit.instances):
+                    if instance.parent in members:
+                        members.add(index)
+            modeled_members = {name for cmp in circuit.comparators for name in cmp.members}
+            channels = [part for part in circuit.components if part.kind in {"O", "A"}
+                        and part.name not in modeled_members
+                        and (owner is None or circuit.owners.get(part.name) in members)]
+            channels += [cmp for cmp in circuit.comparators if owner is None or cmp.owner in members]
+            explicit = {part.name for part in channels if any(
+                part.name.casefold() in setting.targets and "supply_current" in setting.fields
+                for setting in self.model_settings)}
+            explicit.update(part.name for part in channels if isinstance(part, ComparatorInstance) and part.explicit_supply)
+            fixed = sum((part.model.supply_current if isinstance(part, ComparatorInstance) else
+                         part.opamp.supply_current if part.kind == "O" and part.opamp else
+                         part.audio.supply_current if part.kind == "A" and part.audio else 0)
+                        for part in channels if part.name in explicit)
+            free = [part for part in channels if part.name not in explicit]
+            remainder = total - fixed
+            tolerance = 1e-9 * max(total, fixed, 1e-15)
+            message = ""
+            if allocated.intersection(part.name for part in channels):
+                message = "Overlapping chip supply.current.total scopes are not supported; configure each channel group once."
+            elif not channels and total:
+                message = "supply.current.total needs a numerical supply-load model for this chip's device types."
+            elif remainder < -tolerance:
+                message = "supply.current.total is less than the explicitly configured channel currents."
+            elif not free and abs(remainder) > tolerance:
+                message = "supply.current.total cannot be allocated: every channel already has an explicit supply.current."
+            elif total and any(not (part.vplus and part.vminus) for part in channels):
+                message = "supply.current.total needs both supply pins on each amplifier channel."
+            if message:
+                if not self.render_only:
+                    raise CircuitError(message, line, path=binding.path)
+                self.defer_model_issue(message, line, binding.path, "supply.current.total", str(total), owner=binding.instance)
+                continue
+            allocated.update(part.name for part in channels)
+            if not free:
+                continue
+            share = max(0.0, remainder) / len(free)
+            free_names = {part.name for part in free}
+            updated = []
+            for part in circuit.components:
+                if part.name in free_names:
+                    if part.kind == "O":
+                        part = replace(part, opamp=replace(part.opamp or OpAmpModel(), supply_current=share))
+                    elif part.audio is not None:
+                        part = replace(part, audio=replace(part.audio, supply_current=share))
+                updated.append(part)
+            circuit.components = updated
+            circuit.comparators = [replace(cmp, model=replace(cmp.model,supply_current=share))
+                                   if cmp.name in free_names else cmp for cmp in circuit.comparators]
+
+    def comparator_matches(self, setting):
+        """Match explicitly configured six-terminal open-collector methods."""
+        names = {name.casefold() for name in setting.locals}
+        matches = []
+        for index, instance in enumerate(self.circuit.instances):
+            pins = dict(instance.pins)
+            required = {"plus","minus","collector","emitter","vminus"}
+            if (instance.parent == setting.owner and instance.name.casefold() in names
+                    and len(pins) == 6 and required <= pins.keys()
+                    and ("vcc" in pins or "vplus" in pins)):
+                matches.append(index)
+        return matches
+
+    def bind_comparators(self):
+        """Keep the physical display graph, binding a numerical macro separately."""
+        circuit = self.circuit
+        settings_by_owner = {}
+        for setting in self.model_settings:
+            for owner in self.comparator_matches(setting):
+                settings_by_owner.setdefault(owner,[]).append(setting)
+        for owner, settings in settings_by_owner.items():
+            instance = circuit.instances[owner]
+            descendants = {owner}
+            for index, child in enumerate(circuit.instances):
+                if child.parent in descendants:
+                    descendants.add(index)
+            members = [p for p in circuit.components if circuit.owners.get(p.name) in descendants]
+            pins = {name:circuit.resolve_wire(net) for name,net in instance.pins}
+            output = next((p for p in members if circuit.owners.get(p.name) == owner and p.kind == "Q"
+                           and p.p == pins["collector"] and p.n == pins["emitter"]),None)
+            try:
+                if output is None:
+                    raise CircuitError("An open-collector method needs its own collector/emitter output transistor.")
+                name = "@comparator:" + output.name
+                configured = [replace(setting,targets=tuple(name.casefold() if local.casefold() == instance.name.casefold()
+                                                            else target for local,target in zip(setting.locals,setting.targets)))
+                              for setting in settings]
+                configured = self.preview_settings(configured,name,ComparatorModel)
+                model = resolve_model(configured,name,comparator=True)
+                member_names = {p.name for p in members}
+                terminals = set(pins.values()) | {"0"}
+                internals = {net for p in members for net in p.terminal_nets} - terminals
+                outside = {net for p in circuit.components if p.name not in member_names for net in p.terminal_nets}
+                outside.update(net for eq in circuit.behavior for net in (eq.output,eq.reference,*eq.inputs))
+                outside.update(circuit.resolve_wire(net) for net in circuit.connector_pins)
+                outside.update(tap.net for tap in circuit.wire_taps)
+                if internals & outside:
+                    raise CircuitError("Behavioral comparator internals cannot be connected externally; use the declared method pins.")
+                circuit.comparators.append(ComparatorInstance(
+                    name,owner,output.name,pins["plus"],pins["minus"],pins["collector"],pins["emitter"],
+                    pins.get("vcc",pins.get("vplus")),pins["vminus"],tuple(p.name for p in members),
+                    frozenset(internals),model,settings[0].line,settings[0].path,
+                    any("supply_current" in setting.fields for setting in settings)))
+            except CircuitError as error:
+                origin = settings[-1]
+                if not self.render_only:
+                    raise CircuitError(error.message,error.line or origin.line,error.code,path=error.path or origin.path) from None
+                self.defer_model_issue(error.message,error.line or origin.line,error.path or origin.path)
+
+    def preview_settings(self, settings, name, model_class):
+        if not self.render_only:
+            return settings
+        result = []
+        allowed = set(model_class.__dataclass_fields__)
+        for setting in settings:
+            if name.casefold() not in setting.targets:
+                result.append(setting)
+                continue
+            fields = {}
+            for key,value in setting.fields.items():
+                target = "gain_default" if model_class is AudioAmpModel and key == "gain" else key
+                if target in allowed:
+                    fields[key] = value
+                else:
+                    line,path = setting.origins.get(key,(setting.line,setting.path))
+                    self.defer_model_issue(f'Parameter "{key.replace("_",".")}" is not supported by {model_class.__name__}.',
+                                           line,path,key.replace("_","."),setting.raws.get(key,str(value)))
+            result.append(replace(setting,fields=fields))
+        return result
+
+    def compile_math(self):
+        """Resolve property patches before substituting constants in equations."""
+        scopes = {}
+        for entry in self.property_rows:
+            binding, name, raw, line, priority = entry[:5]
+            annotation = entry[5] if len(entry) > 5 else None
+            properties = scopes.setdefault((binding.scope, binding.instance), {})
+            properties.setdefault(name, []).append((priority, raw, line, binding, annotation))
+        values = {}
+        unresolved = {}
+        for scope, properties in scopes.items():
+            resolved = values.setdefault(scope, {})
+            for name, entries in properties.items():
+                defaults = [entry for entry in entries if entry[0] == 0]
+                if len(defaults) != 1:
+                    _, _, line, binding, _ = (defaults[-1] if defaults else entries[-1])
+                    message = (f'Custom property "{name}" is already declared.' if defaults else
+                               f'Cannot override unknown custom property "{name}".')
+                    raise CircuitError(message, line, path=binding.path)
+                _, raw, line, binding, annotation = defaults[0]
+                try:
+                    default, unit = declared_property_value(raw, annotation)
+                except CircuitError as error:
+                    if not self.render_only:
+                        raise CircuitError(error.message, line, path=binding.path) from None
+                    self.defer_model_issue(error.message, line, binding.path, name, raw, owner=binding.instance)
+                    unresolved.setdefault(scope, set()).add(name)
+                    continue
+                choices = {0: (default, line, binding)}
+                invalid = False
+                for priority, raw, line, binding, change_annotation in entries:
+                    if not priority:
+                        continue
+                    try:
+                        value, _ = declared_property_value(raw, change_annotation, unit=unit,
+                                                          base_annotation=annotation)
+                    except CircuitError as error:
+                        if not self.render_only:
+                            raise CircuitError(error.message, line, path=binding.path) from None
+                        self.defer_model_issue(error.message, line, binding.path, name, raw, owner=binding.instance)
+                        unresolved.setdefault(scope, set()).add(name)
+                        invalid = True
+                        continue
+                    if priority in choices and choices[priority][0] != value:
+                        raise CircuitError(f'Conflicting overrides for custom property "{name}".', line, path=binding.path)
+                    choices[priority] = value, line, binding
+                if invalid:
+                    continue
+                value, line, binding = choices[max(choices)]
+                resolved[name] = value
+                self.circuit.properties.append(ChipProperty(name, value, unit, binding.scope,
+                                                            binding.instance, line, binding.path))
+        scoped_rows = {}
+        row_order = {}
+        for index, row in enumerate(self.math_rows):
+            binding = row[2]
+            scoped_rows.setdefault((binding.scope, binding.instance), []).append(row)
+            row_order[id(row)] = index
+        compiled = []
+        for scope, rows in scoped_rows.items():
+            issues = [] if self.render_only else None
+            equations = compile_scope_equations(rows, values.get(scope, {}), issues=issues,
+                                                 unresolved=unresolved.get(scope, ()))
+            for issue in issues or ():
+                self.defer_model_issue(issue.message, issue.line, issue.path, owner=scope[1])
+            for equation in equations:
+                source_index = int(equation.name.removeprefix("@math"))
+                compiled.append((row_order[id(rows[source_index])], equation))
+        # Resolving each dependency scope need not reorder the source's
+        # public voltage equations or their established numerical node order.
+        for _, equation in sorted(compiled, key=lambda item: item[0]):
+            equation = replace(equation, name=f"@math{len(self.circuit.behavior)}")
+            self.circuit.behavior.append(equation)
+            self.circuit.named_wires.update((equation.output, equation.reference, *equation.inputs))
+
+    # Stage an O device with separate sensing pins and output branch.
     # Its provisional output return is 0; finish() can select a named domain.
-    # Optional rail identifiers are retained as schematic metadata, not limits.
     def add_amp(self, name, plus, minus, out, vplus="", vminus=""):
         self.amps.append(
             Component(
@@ -1185,8 +1568,14 @@ class Compiler:
         c = self.circuit
         # Close every syntactic state before interpreting electrical connectivity.
         # Opening lines retained in the pending records locate missing terminators.
+        if self.math_block is not None:
+            raise CircuitError("Close the mathematical behavior block with }.", self.math_block[1])
         if self.amp:
             raise CircuitError("Missing (end opamp).", self.amp[1])
+        if self.opamp_config is not None:
+            raise CircuitError("Close the analog model block with }.", self.opamp_config.line, path=self.opamp_config.path)
+        if self.pending_override:
+            raise CircuitError("Put @override directly above an analog or digital model block.")
         if self.transistor:
             name, line, _ = self.transistor
             raise CircuitError(f"Close transistor {name} with }}.", line)
@@ -1198,6 +1587,7 @@ class Compiler:
                 f"Missing closing marker for {self.group.name or self.group.mode}.",
                 self.group.line,
             )
+        self.compile_math()
         if self.inline_chain is not None:
             self.connect_inline_chain()
         if (
@@ -1275,10 +1665,47 @@ class Compiler:
         # names against final part names/labels. Resolve tap aliases before
         # selecting each ideal amplifier's return domain.
         labels = {name.casefold() for e in c.components for name in (e.name, e.label)}
+        targets = {part.name.casefold() for part in (*self.amps, *self.audios)}
+        targets.update(target for setting in self.model_settings if self.comparator_matches(setting)
+                       for target in setting.targets)
+        for setting in self.model_settings:
+            if setting.fields and any(name not in targets for name in setting.targets):
+                message = ("An analog model targets an unsupported method or a component without connections: " +
+                           ", ".join(name for name in setting.targets if name not in targets))
+                if not self.render_only:
+                    raise CircuitError(message, setting.line, path=setting.path)
+                self.defer_model_issue(message, setting.line, setting.path)
+                for key,value in setting.fields.items():
+                    line,path = setting.origins.get(key,(setting.line,setting.path))
+                    self.defer_model_issue(message,line,path,key.replace("_","."),setting.raws.get(key,str(value)))
         for amp in self.amps:
+            configured = [setting for setting in self.model_settings if amp.name.casefold() in setting.targets]
+            if configured:
+                configured = self.preview_settings(configured,amp.name,OpAmpModel)
+                try:
+                    model = resolve_model(configured, amp.name)
+                    if needs_supplies(model) and not (amp.vplus and amp.vminus):
+                        origin = configured[-1]
+                        raise CircuitError("Supply draw and rail-relative model limits need both supply pins.", origin.line, path=origin.path)
+                    amp = replace(amp, opamp=model)
+                except CircuitError as error:
+                    if not self.render_only:
+                        raise
+                    self.defer_model_issue(error.message, error.line, error.path)
             if amp.name.casefold() in labels:
                 raise CircuitError("Give each op amp a unique component name.")
             labels.add(amp.name.casefold())
+            c.components.append(amp)
+        for amp in self.audios:
+            if amp.name.casefold() in labels:
+                raise CircuitError("Give each op amp a unique component name.")
+            labels.add(amp.name.casefold())
+            try:
+                amp = replace(amp, audio=resolve_model(self.preview_settings(self.model_settings,amp.name,AudioAmpModel), amp.name, audio=True))
+            except CircuitError as error:
+                if not self.render_only:
+                    raise
+                self.defer_model_issue(error.message, error.line, error.path)
             c.components.append(amp)
         for part, line in self.transistors:
             if part.name.casefold() in labels:
@@ -1289,9 +1716,21 @@ class Compiler:
             c.components.append(part)
         if c.wire_taps:
             self.resolve_tap_names()
+        driven = {}
+        aliases = {tap.name: tap.net for tap in c.wire_taps}
+        c.behavior = [remap_equation(eq, lambda net: resolve_alias(net, aliases)) for eq in c.behavior]
+        for eq in c.behavior:
+            if eq.output in driven:
+                previous = driven[eq.output]
+                if eq.priority == previous.priority:
+                    raise CircuitError(f'Multiple mathematical drivers or conflicting overrides for "{eq.output}".', eq.line, path=eq.path)
+                if eq.priority < previous.priority:
+                    continue
+            driven[eq.output] = eq
+        c.behavior = list(driven.values())
         if self.amps and c.grounds != {"0"}:
             self.connect_amp_returns()
-        if render_only and not c.components and not c.instances:
+        if render_only and not c.components and not c.instances and not c.behavior:
             raise CircuitError(
                 "Enter a circuit with component rows or series/parallel blocks to render it."
             )
@@ -1391,6 +1830,9 @@ class Compiler:
                 wiper=resolve_alias(part.wiper, aliases),
                 vplus=resolve_alias(part.vplus, aliases),
                 vminus=resolve_alias(part.vminus, aliases),
+                gain1=resolve_alias(part.gain1, aliases),
+                gain8=resolve_alias(part.gain8, aliases),
+                bypass=resolve_alias(part.bypass, aliases),
             )
             for part in c.components
         ]

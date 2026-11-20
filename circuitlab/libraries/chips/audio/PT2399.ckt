@@ -1,7 +1,37 @@
-# PT2399 | 16-pin package | pin 1 first.
-# Pinout only. Clock-controlled audio conversion and delay memory need a model.
-# Datasheet: https://www.princeton.com.tw/en-us/Products/Multi-Media-Audio/Echo-Processor/EP-PT2399
 
-chip PT2399(vcc, ref, analog_gnd, digital_gnd, clk_out, vco, cc1, cc0, op1_out, op1_in, op2_in, op2_out, lpf2_in, lpf2_out, lpf1_out, lpf1_in) {  # Package pinout only: numerical behavior requires an additional model.
-    model = unavailable;  # Allow a schematic preview while refusing a numerical solve without a model.
+# PT2399 - Digital Echo Processor
+# 16-pin package, datasheet pin order
+# Proposed simplified behavioral model
+
+chip PT2399(vcc, ref, analog_gnd, digital_gnd,
+            clk_out, vco, cc1, cc0,
+            op1_out, op1_in, op2_in, op2_out,
+            lpf2_in, lpf2_out, lpf1_out, lpf1_in) {
+
+    # Analog characteristics
+    analog {
+        property delay.time = 170ms;
+
+        supply.voltage.min = 4.5V;
+        supply.voltage.max = 5.5V;
+        supply.current.total = 15mA;
+
+        V(ref, analog_gnd) =
+            V(vcc, analog_gnd) / 2;
+    }
+
+    # Internal digital audio memory
+    digital {
+        property memory.capacity = 44kbit;
+        property reset.time = 400ms;
+
+        # Proposed time-domain behavior
+        sampled = ADC(V(lpf1_out, ref));
+        delayed = delay(sampled, delay.time);
+    }
+
+    # Simplified reconstructed output
+    analog {
+        V(lpf2_out, ref) = DAC(delayed);
+    }
 }

@@ -69,7 +69,7 @@ def analyze(circuit, backend=None):
     equations = dict(circuit.equations)
     # Quantity-only inputs use equation rules rather than a node matrix.
     # Ports and explicit probes require a connected component graph instead.
-    if not circuit.components:
+    if not circuit.components and not circuit.behavior:
         if mode == "mixed" or circuit.port or circuit.probes:
             raise CircuitError("Enter connected components and sources.")
         values, notes, derived = solve_known(mode, known, circuit.model)
@@ -208,8 +208,10 @@ def diagnostics(source, result):
     parts = result.circuit.components
     # Ideal op-amp inputs sense voltage without drawing input current; they
     # should not be mistaken for an accidentally unused resistor-bank node.
-    inputs = {pin for p in parts if p.kind == "O" for pin in (p.in_plus, p.in_minus)}
-    for node in result.circuit.nodes:
+    inputs = {pin for p in parts if p.kind in {"O", "A"} for pin in (p.in_plus, p.in_minus)}
+    inputs.update(net for cmp in result.circuit.comparators
+                  for net in (cmp.plus,cmp.minus,cmp.collector,cmp.emitter,cmp.vplus,cmp.vminus))
+    for node in result.circuit.simulation_nodes:
         if node == "0" or node in inputs:
             continue
         # Find every component touching this node, then look at the other ends.
@@ -477,6 +479,9 @@ def add_probes(result, network, ac, backend):
             )
             if i is None:
                 raise CircuitError(f'Unknown component "{target}".')
+            if c.components[i].name in network.unavailable_components:
+                raise CircuitError("This internal schematic component is not resolved by the comparator macromodel; probe its declared terminals instead.",
+                                   probe.line,"UnavailableModelProbe")
             # A potentiometer exposes current entering its high terminal; its two
             # internal resistor legs have already been folded into one public component.
             if kind == "I":
@@ -491,6 +496,7 @@ def add_probes(result, network, ac, backend):
                 # For AC, report real (average) power rather than the full complex power.
                 # A potentiometer's result includes dissipation from both resistor legs.
                 equation = ("P = P_high_leg + P_low_leg" if c.components[i].kind == "P" else
+                            "P = collector sink power + comparator bias power" if c.components[i].name in network.modeled_components else
                             "P = Re(V x conj(I))" if ac else "P = V x I")
                 reading = (
                     f"Measured power of {target}",
@@ -502,6 +508,9 @@ def add_probes(result, network, ac, backend):
         else:
             # Voltage and equivalent-resistance/impedance probes use canonical node names.
             resolved = tuple(map(c.resolve_wire, targets))
+            if any(node in network.unavailable_nodes for node in resolved):
+                raise CircuitError("Comparator internal voltages are unavailable in the behavioral model; probe its declared terminals instead.",
+                                   probe.line,"UnavailableModelProbe")
             # Require existing nodes. Different aliases of one net may measure 0 V,
             # but they cannot define a two-terminal equivalent resistance.
             if (

@@ -6,6 +6,7 @@
     { "include": "#comments" },
     { "include": "#strings" },
     { "include": "#interpolation" },
+    { "include": "#model-properties" },
     { "include": "#declarations" },
     { "include": "#control" },
     { "include": "#properties" },
@@ -57,8 +58,38 @@
         { "include": "#expression" }
       ]
     },
+    "model-properties": {
+      "begin": "(?i)\\b(properties)\\s*(\\{)",
+      "beginCaptures": { "1": { "name": "storage.type.ooc" }, "2": { "name": "punctuation.section.block.begin.ooc" } },
+      "end": "\\}",
+      "endCaptures": { "0": { "name": "punctuation.section.block.end.ooc" } },
+      "patterns": [
+        { "include": "#comments" },
+        { "name": "variable.other.property.ooc", "match": "[A-Za-z][A-Za-z0-9_]*(?:\\.[A-Za-z][A-Za-z0-9_]*)*(?=\\s*=)" },
+        { "include": "#numbers" },
+        { "include": "#operators" },
+        { "include": "#punctuation" }
+      ]
+    },
     "declarations": {
       "patterns": [
+        {
+          "match": "\\b(property)\\s+([A-Za-z][A-Za-z0-9_]*(?:\\.[A-Za-z][A-Za-z0-9_]*)*)(?:\\s*(:)\\s*([A-Za-zµμΩ°]+(?:/[A-Za-zµμ]+)?))?(?=\\s*=)",
+          "captures": {
+            "1": { "name": "storage.type.ooc" },
+            "2": { "name": "variable.other.property.ooc" },
+            "3": { "name": "punctuation.separator.ooc" },
+            "4": { "name": "storage.type.ooc" }
+          }
+        },
+        {
+          "match": "(?i)\\b(analog|digital)\\b(?:\\s*(:)\\s*(math)\\b)?",
+          "captures": {
+            "1": { "name": "storage.type.ooc" },
+            "2": { "name": "punctuation.separator.ooc" },
+            "3": { "name": "keyword.other.property.ooc" }
+          }
+        },
         {
           "match": "\\b(const)\\s+([A-Za-z_][A-Za-z0-9_]*)",
           "captures": {
@@ -80,7 +111,7 @@
           }
         },
         {
-          "match": "(?i)\\b(battery|transistor)\\b\\s+([A-Za-z][A-Za-z0-9_]*)(?=\\s*[(\\{]|\\$\\{)",
+          "match": "(?i)\\b(battery|transistor|opamp)\\b\\s+([A-Za-z][A-Za-z0-9_]*)(?=\\s*[(\\{;]|\\$\\{)",
           "captures": {
             "1": { "name": "storage.type.ooc" },
             "2": { "name": "entity.name.function.component.ooc" }
@@ -234,7 +265,7 @@
           }
         },
         {
-          "match": "(?i)(?:^|(?<=[;{:]))\\s*(wire|ground|measure|model|port|base|collector|emitter|type|Vneg)(?=\\s*=)",
+          "match": "(?i)(?:^|(?<=[;{:]))\\s*(wire|ground|measure|model|port|base|collector|emitter|type|Vneg|gain(?:[._](?:default|max|resistor))?|bandwidth|gbw|slew|offset|delay[._](?:rise|fall)|response[._]time|supply[._]current(?:[._]total)?|output[._](?:min|max|bias|type|low[._]at4mA)|bypass[._]resistance|common[._](?:min|max|rejection|impedance))(?=\\s*=)",
           "captures": {
             "1": { "name": "keyword.other.property.ooc" }
           }
@@ -267,7 +298,7 @@
     },
     "digital-functions": {
       "name": "support.function.ooc",
-      "match": "\\bsevenseg(?=\\s*\\()"
+      "match": "\\b(?:sevenseg|integrate|delay|transition|square|abs|sqrt|sin|cos|tan|exp|log|log10|floor|ceil|pow|min|max|clamp|ifelse)(?=\\s*\\()"
     },
     "calls": {
       "patterns": [
@@ -314,7 +345,7 @@
       "match": "\\b[A-Za-z_][A-Za-z0-9_]*\\b"
     },
     "numbers": {
-      "match": "(?<![A-Za-z0-9_.])([+−-]?(?:[0-9]+(?:_[0-9]+)*(?:\\.[0-9]*(?:_[0-9]+)*)?|\\.[0-9]+(?:_[0-9]+)*)(?:[eE][+-]?[0-9]+)?[ij]?)(?:[ \\t]*([pnuµμmkMG]?(?:V(?:rms|pk|pp)?|A(?:rms|pk|pp)?|ohms?|Ω|F|H|Hz|s|W|J|C|VA|var|Nm|rad/s|deg|°)|[pnuµμmkMG]|%))?(?=cos\\s*\\(|[^A-Za-z0-9_.]|$)",
+      "match": "(?<![A-Za-z0-9_.])([+−-]?(?:[0-9]+(?:_[0-9]+)*(?:\\.[0-9]*(?:_[0-9]+)*)?|\\.[0-9]+(?:_[0-9]+)*)(?:[eE][+-]?[0-9]+)?[ij]?)(?:[ \\t]*([pnuµμmkMG]?(?:V/(?:[munµμ]?s)|V(?:rms|pk|pp)?|A(?:rms|pk|pp)?|ohms?|Ω|F|H|Hz|s|W|J|C|VA|var|Nm|rad/s|deg|dB|°)|[pnuµμmkMG]|%))?(?=cos\\s*\\(|[^A-Za-z0-9_.]|$)",
       "captures": {
         "1": { "name": "constant.numeric.ooc" },
         "2": { "name": "constant.other.unit.ooc" }

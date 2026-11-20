@@ -1,7 +1,26 @@
-# TL071 | 8-pin package | pin 1 first.
-# Ideal op-amp channels. Supply, rail limits, offset and bandwidth are omitted.
-# Datasheet: https://www.ti.com/lit/ds/symlink/tl071.pdf
 
-chip TL071(offset1, minus, plus, vminus, offset2, out, vplus, nc) {  # Keep the package pin order while the internal parts define the modeled signal behavior.
-    op1(plus, minus, out);  # Ideal amplifier: the feedback connections determine this channel's behavior.
+# TL071 - Low-Noise JFET-Input Op Amp
+# Standard 8-pin PDIP / SOIC
+
+chip TL071(nc1, minus, plus, vminus,
+           nc5, out, vplus, nc8) {
+
+    op1(plus, minus, out, vplus, vminus);
+
+    analog op1 {
+        gain = 200000;
+        gbw = 5.25MHz;
+        slew = 20V/us;
+        offset = 3mV;
+
+        common.min = vminus + 3V;
+        common.max = vplus;
+
+        output.min = vminus + 1.5V;
+        output.max = vplus - 1.5V;
+    }
+
+    analog {
+        supply.current.total = 1.4mA;
+    }
 }

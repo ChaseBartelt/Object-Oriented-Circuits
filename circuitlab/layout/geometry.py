@@ -65,7 +65,7 @@ def symbol_pins(part, a, b, top, *, grid=0):
     if part.kind == "H":
         for _, net, left, offset in package_pins(part, grid):
             yield net, ((a if left else b)[0], a[1] + offset)
-    elif part.kind == "O":
+    elif part.kind in {"O", "A"}:
         offset = pin_offset(0.35, grid)
         plus, minus = (offset, -offset) if top == "+" else (-offset, offset)
         yield part.in_plus, (a[0], a[1] + plus)
@@ -76,6 +76,11 @@ def symbol_pins(part, a, b, top, *, grid=0):
             center = (a[0] + b[0]) / 2
             yield part.vplus, (center, a[1] + power_offset)
             yield part.vminus, (center, a[1] - power_offset)
+        if part.kind == "A":
+            gain_offset = pin_offset(1.75, grid)
+            yield part.gain1, (a[0] + 1.5, a[1] + gain_offset)
+            yield part.gain8, (a[0] + 3.0, a[1] + gain_offset)
+            yield part.bypass, (a[0] + 3.0, a[1] - gain_offset)
     elif part.kind == "Q":
         offset = pin_offset(BJT_PIN_OFFSET, grid)
         yield part.p, (b[0], b[1] + offset)
@@ -166,14 +171,14 @@ def component_pins(parts, flipped=(), reversed_parts=()):
     pins = [
         (i, e.p, e.kind != "O" and i not in reversed_parts, 0.0)
         for i, e in enumerate(parts)
-        if e.kind not in {"Q", "H", "S", "P"}
+        if e.kind not in {"Q", "H", "S", "P", "A"}
     ]
     pins += [
         (i, e.in_plus, True, -0.35 if i in flipped else 0.35)
         if e.kind == "O"
         else (i, e.n, i in reversed_parts, 0.0)
         for i, e in enumerate(parts)
-        if e.kind not in {"Q", "H", "S", "P"}
+        if e.kind not in {"Q", "H", "S", "P", "A"}
     ]
     pins += [
         (i, e.in_minus, True, 0.35 if i in flipped else -0.35)
@@ -181,7 +186,14 @@ def component_pins(parts, flipped=(), reversed_parts=()):
         if e.kind == "O"
     ]
     for i, part in enumerate(parts):
-        if part.kind == "O" and part.vplus:
+        if part.kind == "A":
+            sign = -1 if i in flipped else 1
+            pins.extend(((i, part.in_plus, True, sign * .35),
+                         (i, part.in_minus, True, -sign * .35), (i, part.p, False, 0),
+                         (i, part.vplus, True, 1.25), (i, part.vminus, True, -1.25),
+                         (i, part.gain1, True, 1.75), (i, part.gain8, False, 1.75),
+                         (i, part.bypass, False, -1.75)))
+        elif part.kind == "O" and part.vplus:
             # Side hints choose routing gutters; the physical power contacts
             # remain centered above and below the triangle.
             pins.extend(((i, part.vplus, True, 1.25), (i, part.vminus, True, -1.25)))
@@ -200,8 +212,10 @@ def component_pins(parts, flipped=(), reversed_parts=()):
 # sit at the triangle center above and below the signal path.
 def grid_terminal(part, a, b, left, offset):
     """Resolve a routing pin hint to its physical contact on a grid symbol."""
-    if part.kind == "O" and part.vplus and abs(offset) == 1.25:
+    if part.kind in {"O", "A"} and part.vplus and abs(offset) == 1.25:
         return (a[0] + b[0]) / 2, a[1] + offset
+    if part.kind == "A" and abs(offset) == 1.75:
+        return a[0] + (1.5 if left else 3.0), a[1] + offset
     return min(a[0], b[0]) if left else max(a[0], b[0]), a[1] + offset
 
 

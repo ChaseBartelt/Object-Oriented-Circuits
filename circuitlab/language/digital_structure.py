@@ -15,6 +15,7 @@ from circuitlab.language.control_flow import ExpansionBudget, expand_control_flo
 from circuitlab.language.digital_switch import expand_switches, normalize_switch_labels
 from circuitlab.language.digital_declarations import normalize_wire_declarations
 from circuitlab.language.pin_banks import expand_pin_banks
+from circuitlab.language.math_blocks import digital_math_rows
 from circuitlab.language.syntax import CHIP, DIGITAL_MAIN, source_rows
 from circuitlab.model.graph import CircuitError, MethodInstance
 
@@ -210,6 +211,7 @@ def _definitions(source):
             pins = _pin_list(chip[2], line)
             # Loop/switch lowering uses text/line pairs. Restore origin fields by the
             # retained source line when converting those generated rows back to triples.
+            body = digital_math_rows(body)
             origins = {number: origin for _, number, origin in body}
             # First unroll chip-local static for loops and lower digital switches.
             # Signal-dependent if/clock behavior remains for the behavioral compiler;

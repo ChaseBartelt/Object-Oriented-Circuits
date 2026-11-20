@@ -27,6 +27,12 @@ def hood_levels(circuit, expanded):
         if name in expanded and method.model_available:
             levels[name] = []
 
+    # An internal math definition may have no drawable electrical parts.
+    # Its visible enclosing package must survive both valid behavior and
+    # source-located incomplete behavior, even after lowering omits equations.
+    behavior_groups = {children[eq.owner] for eq in circuit.behavior if eq.owner is not None}
+    issue_groups = {children[issue.owner] for issue in circuit.model_issues if issue.owner is not None}
+
     usage = defaultdict(Counter)
     totals = Counter()
     for part in circuit.components:
@@ -47,7 +53,8 @@ def hood_levels(circuit, expanded):
         inside = usage[name]
         usage[parent].update(inside)
         contents = levels.get(name, members)
-        if not contents and not method.body and method.model_available and name not in expanded:
+        if (not contents and not method.body and method.model_available and name not in expanded
+                and name not in behavior_groups and name not in issue_groups):
             continue
         pins = tuple((pin, circuit.resolve_wire(net)) for pin, net in method.pins)
         exposed = {net for _, net in pins}
@@ -68,7 +75,7 @@ def hood_levels(circuit, expanded):
         if name is None and len(parts) == len(circuit.components) and all(
             part is original for part, original in zip(parts, circuit.components)
         ):
-            yield name, circuit, (), ()
+            yield name, replace(circuit, behavior=[]) if circuit.behavior else circuit, (), ()
             continue
         parts.sort(key=lambda part: part.order)
         names = {part.name for part in parts if part.kind != "H"}
@@ -78,6 +85,6 @@ def hood_levels(circuit, expanded):
             for _, net in part.package_pins
         )) if method else ()
         yield name, replace(
-            circuit, components=parts, groups=[],
+            circuit, components=parts, groups=[], behavior=[],
             wire_taps=[tap for tap in circuit.wire_taps if tap.component in names],
         ), method.body if method else (), boundary

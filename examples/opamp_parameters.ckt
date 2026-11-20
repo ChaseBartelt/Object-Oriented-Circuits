@@ -1,0 +1,12 @@
+# LT1677's internal opamp declaration overrides the ideal defaults.
+include("LT1677");
+
+battery Positive { V=5; wire=vcc; }
+battery Negative { Vneg=5; wire=vee; }
+Vsignal(1) between(input,0);
+
+Rin(10k) between(input,minus);
+Rfeedback(10k) between(out,minus);
+Rload(10k) between(out,0);
+main { LT1677(0,minus,0,vee,0,out,vcc,0); }
+measure = V out 0;

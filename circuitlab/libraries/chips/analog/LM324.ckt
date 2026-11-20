@@ -1,10 +1,29 @@
-# LM324 | 14-pin package | pin 1 first.
-# Ideal op-amp channels. Supply, rail limits, offset and bandwidth are omitted.
-# Datasheet: https://www.ti.com/lit/ds/symlink/lm324.pdf
 
-chip LM324(out1, minus1, plus1, vplus, plus2, minus2, out2, out3, minus3, plus3, vminus, plus4, minus4, out4) {  # Keep the package pin order while the internal parts define the modeled signal behavior.
-    op1(plus1, minus1, out1);  # Ideal amplifier: the feedback connections determine this channel's behavior.
-    op2(plus2, minus2, out2);  # Ideal amplifier: the feedback connections determine this channel's behavior.
-    op3(plus3, minus3, out3);  # Ideal amplifier: the feedback connections determine this channel's behavior.
-    op4(plus4, minus4, out4);  # Ideal amplifier: the feedback connections determine this channel's behavior.
+# LM324 - Quad Operational Amplifier
+# 14-pin package, datasheet pin order
+
+chip LM324(out1, minus1, plus1, vplus,
+           plus2, minus2, out2,
+           out3, minus3, plus3, vminus,
+           plus4, minus4, out4) {
+
+    # Four independent amplifier channels
+    op1(plus1, minus1, out1, vplus, vminus);
+    op2(plus2, minus2, out2, vplus, vminus);
+    op3(plus3, minus3, out3, vplus, vminus);
+    op4(plus4, minus4, out4, vplus, vminus);
+
+    # Apply common characteristics to each op-amp
+    analog (op1, op2, op3, op4) {
+        gain = 100000;
+        gbw = 1.2MHz;
+        slew = 0.5V/us;
+        offset = 3mV;
+
+        # Optional common-mode settings and proposed output limits:
+        # common.min = vminus;
+        # common.max = vplus - 1.5V;
+        # output.min = vminus + 5mV;
+        # output.max = vplus - 1.5V;
+    }
 }

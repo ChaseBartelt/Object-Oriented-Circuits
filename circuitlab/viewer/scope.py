@@ -148,7 +148,7 @@ class Oscilloscope(QWidget):
 
     def update_visibility(self):
         circuit = self.circuit
-        supported = circuit is not None and circuit.mode in {"dc", "ac", "mixed"} and bool(circuit.components)
+        supported = circuit is not None and circuit.mode in {"dc", "ac", "mixed"} and bool(circuit.components or circuit.behavior)
         self.setVisible(supported and self.panel_visible)
         return supported
 
@@ -167,13 +167,13 @@ class Oscilloscope(QWidget):
             self.initial.clear()
             self.initial.addItem("None", None)
             if supported:
-                self.node.addItems(net for net in circuit.nodes if net not in circuit.grounds)
+                self.node.addItems(net for net in circuit.simulation_nodes if net not in circuit.grounds)
                 index = self.node.findText(previous[0])
                 if index < 0:
                     index = self.node.findText("out")
                 self.node.setCurrentIndex(max(0, index))
                 for part in circuit.components:
-                    if part.kind == "C":
+                    if part.kind == "C" and part.name not in circuit.modeled_members:
                         self.initial.addItem(part.label, part.name)
                 self.initial.setCurrentIndex(max(0, self.initial.findData(previous[1])))
                 try:

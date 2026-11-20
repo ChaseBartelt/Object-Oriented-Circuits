@@ -5,6 +5,8 @@
 
 import re
 from dataclasses import dataclass, replace
+from circuitlab.language.opamps import MODEL_ASSIGNMENT
+from circuitlab.language.properties import PROPERTIES_BRACE, PROPERTY_DECLARATION
 from itertools import chain
 
 from circuitlab.language.control_flow import (
@@ -24,8 +26,11 @@ from circuitlab.language.syntax import (
     DEFAULT_TERMINALS,
     INLINE,
     MAIN,
+    MATH_BRACE,
+    MATH_INLINE,
     NET_METHODS,
     OP,
+    OPAMP_BRACE,
     OVERRIDE,
     PARAMETER_TARGET,
     PART_ARGUMENT,
@@ -197,10 +202,13 @@ def expand_main(rows: list[SourceRow], instances: list[MethodInstance], *, impor
         openings = [start]
         for i in range(start + 1, len(rows)):
             text, line, _ = rows[i]
-            # @Override belongs immediately before a top-level gate declaration,
-            # never inside main, a reusable method, or one of their nested blocks.
+            # Inside a method, annotations may patch behavior/settings only;
+            # replacement gate declarations remain a top-level construct.
             if OVERRIDE.fullmatch(text):
-                raise CircuitError("Put @Override above a top-level gate definition.", line)
+                following = rows[i + 1][0] if i + 1 < len(rows) else ""
+                if not (OPAMP_BRACE.fullmatch(following) or MATH_BRACE.fullmatch(following)
+                        or MATH_INLINE.fullmatch(following)):
+                    raise CircuitError("Put @Override above a top-level gate definition or a model block.", line)
             # An exact closing row ends the innermost accepted block. Return only
             # when the original section opener has also been closed.
             if text == "}":
@@ -212,8 +220,11 @@ def expand_main(rows: list[SourceRow], instances: list[MethodInstance], *, impor
                 # bodies inside a method. Named section declarations must remain top-level;
                 # replace interpolation placeholders only for this shape recognition.
                 shape = _INTERPOLATION_PLACEHOLDER.sub("_", text)
+                if PROPERTIES_BRACE.fullmatch(shape) and MATH_BRACE.fullmatch(rows[openings[-1]][0]):
+                    openings.append(i)
+                    continue
                 if is_control_block(text) or any(
-                    header.fullmatch(shape) for header in (INLINE, BATTERY_BRACE, TRANSISTOR)
+                    header.fullmatch(shape) for header in (INLINE, BATTERY_BRACE, TRANSISTOR, OPAMP_BRACE, MATH_BRACE)
                 ):
                     openings.append(i)
                     continue
@@ -225,7 +236,7 @@ def expand_main(rows: list[SourceRow], instances: list[MethodInstance], *, impor
         # Use a recognized block label where available, or the section name.
         opener = rows[openings[-1]]
         block = (INLINE.fullmatch(opener[0]) or BATTERY_BRACE.fullmatch(opener[0])
-                 or TRANSISTOR.fullmatch(opener[0]))
+                 or TRANSISTOR.fullmatch(opener[0]) or OPAMP_BRACE.fullmatch(opener[0]))
         label = block[1] if block else name
         raise CircuitError(f'Close "{label}" with }}.', opener[1])
 
@@ -238,6 +249,27 @@ def expand_main(rows: list[SourceRow], instances: list[MethodInstance], *, impor
     # keys by full gate pin count so one arity can be replaced independently.
     # counts is populated during calls to give sibling instances unique names.
     definitions, overrides, counts = {}, {}, {}
+    chip_patches = {}
+
+    def model_patch(body):
+        """A chip override may modify models, never its physical connections."""
+        depth = 0
+        for text, line, origin in body:
+            if depth:
+                if text == "}":
+                    depth -= 1
+                elif text.endswith("{") and depth == 1 and PROPERTIES_BRACE.fullmatch(text):
+                    depth += 1
+                elif text.endswith("{"):
+                    raise CircuitError("Chip property overrides cannot add topology or nested blocks.", line, path=origin.path)
+                elif (not MODEL_ASSIGNMENT.fullmatch(text) and not PROPERTY_DECLARATION.fullmatch(text)
+                      and not re.match(r"(?:V\s*\(.*\)|let\s+[A-Za-z][A-Za-z0-9_]*)\s*=", text)):
+                    raise CircuitError("Use model property/equation assignments in a chip override.", line, path=origin.path)
+            elif OPAMP_BRACE.fullmatch(text) or MATH_BRACE.fullmatch(text):
+                depth = 1
+            elif not (OVERRIDE.fullmatch(text) or MATH_INLINE.fullmatch(text)):
+                raise CircuitError("A chip override may change analog/digital models, not pins or connections.", line, path=origin.path)
+        return [(text, line, replace(origin, model_patch=True)) for text, line, origin in body]
     # Remove reusable definitions from executable rows, while retaining the
     # ordinary statements on either side of main in their original order.
     before, after = [], []
@@ -260,8 +292,20 @@ def expand_main(rows: list[SourceRow], instances: list[MethodInstance], *, impor
             else:
                 text = ""
         match = SECTION.fullmatch(text)
-        if annotation and (not match or match[1].lower() != "gate"):
-            raise CircuitError("Put @Override directly above a gate definition.", annotation)
+        if annotation and (OPAMP_BRACE.fullmatch(text) or MATH_BRACE.fullmatch(text) or MATH_INLINE.fullmatch(text)):
+            j = end(i, "model") if text.endswith("{") else i
+            (before if i < start else after).extend(rows[i - 1:j + 1])
+            i = j + 1
+            continue
+        if annotation and (not match or match[1].lower() not in {"gate", "chip"}):
+            raise CircuitError("Put @Override directly above a gate definition, chip property patch, or model block.", annotation)
+        if annotation and match[1].lower() == "chip":
+            if match[3] is not None:
+                raise CircuitError("A chip override inherits the original pins; omit its parameter list.", line, path=origin.path)
+            j = end(i, match[2])
+            chip_patches.setdefault(match[2].casefold(), []).extend(model_patch(rows[i + 1:j]))
+            i = j + 1
+            continue
         # Locally declared reusable net methods and implicit-terminal named groups
         # need a main block. Imported definitions and annotated gate overrides
         # are exempt; explicit-terminal legacy groups may remain ordinary source.
@@ -379,6 +423,10 @@ def expand_main(rows: list[SourceRow], instances: list[MethodInstance], *, impor
             definitions[key] = method
         i = j + 1
 
+    for key in chip_patches:
+        if key not in definitions or definitions[key].kind != "chip":
+            raise CircuitError(f'Load the original chip "{key}" before overriding its properties.')
+
     # Share static-expansion work limits across main and every nested method
     # invocation. Per-call variable environments remain separate even though
     # all invocations charge against this one compilation budget.
@@ -388,13 +436,20 @@ def expand_main(rows: list[SourceRow], instances: list[MethodInstance], *, impor
     # invocation's wire/value mappings; active is the current call ancestry,
     # not a global visited set, so repeated sibling calls remain legal.
     def expand(body, parent, active, *, top_level=False):
-        transistor = False
+        opaque_depth = 0
         for text, line, origin in body:
             # Use each body row's source file while retaining the current invocation's
             # scope and bindings. Imported method bodies therefore report their own
             # definition file, while call-site metadata can still identify the caller.
-            if parent.path != origin.path:
-                parent = replace(parent, path=origin.path)
+            if parent.path != origin.path or parent.model_patch != origin.model_patch:
+                parent = replace(parent, path=origin.path, model_patch=origin.model_patch)
+            # Device/math bodies own every nested properties block and local
+            # declaration. Do not interpret `let` there as static control flow
+            # or stop passthrough at the first inner closing brace.
+            if opaque_depth or any(header.fullmatch(text) for header in (TRANSISTOR, OPAMP_BRACE, MATH_BRACE)):
+                yield text, line, parent
+                opaque_depth += text.count("{") - text.count("}")
+                continue
             # Static control flow needs an invocation context: main or a circuit
             # method. It cannot execute among ordinary top-level electrical rows.
             if top_level and is_control_statement(text):
@@ -403,13 +458,6 @@ def expand_main(rows: list[SourceRow], instances: list[MethodInstance], *, impor
                     line,
                     path=origin.path,
                 )
-            # Forward a braced transistor definition as an intact sequence. Its field
-            # rows belong to the device parser, not the reusable-call dispatcher.
-            # The closing row ends this passthrough mode.
-            if transistor or TRANSISTOR.fullmatch(text):
-                yield text, line, parent
-                transistor = text != "}"
-                continue
             # Only whole call-shaped statements are candidates for method expansion.
             # Leave component placements, assignments, braces, and built-in opamp
             # calls for electrical construction rather than interpreting them here.
@@ -526,6 +574,8 @@ def expand_main(rows: list[SourceRow], instances: list[MethodInstance], *, impor
             # Analysis/export code can later reject the retained unavailable model.
             if not instances[-1].model_available:
                 continue
+            if kind == "chip" and key in chip_patches:
+                child = [*child, *chip_patches[key]]
             # Create a fresh callee binding. Explicit wire mappings connect to the
             # caller; all other local names are qualified by scope downstream.
             # Only typed calls made in main inherit its implicit-chain context.

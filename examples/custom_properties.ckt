@@ -1,0 +1,23 @@
+chip MyAmplifier(input, out, gnd) {
+    analog {
+        properties {
+            gain = 10;
+            offset = 2mV;
+            output.max = 12V;
+        }
+        V(out, gnd) = min(
+            gain * V(input, gnd) + offset,
+            output.max
+        );
+    }
+}
+
+@override
+chip MyAmplifier {
+    analog {
+        properties { gain = 20; output.max = 15V; }
+    }
+}
+
+Vsignal(0.5V) between(input, 0);
+main { MyAmplifier(input, out, 0); }

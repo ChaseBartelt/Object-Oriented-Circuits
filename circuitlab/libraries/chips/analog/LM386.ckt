@@ -1,15 +1,22 @@
-# LM386 | 8-pin package | pin 1 first.
-# Ideal small-signal gain of 20 around half supply. Gain and bypass pins are passive.
-# Datasheet: https://www.ti.com/lit/ds/symlink/lm386.pdf
 
-chip LM386(gain1, minus, plus, gnd, out, vcc, bypass, gain8) {  # Keep the package pin order while the internal parts define the modeled signal behavior.
-    RVTop(10k) between(vcc, mid);
-    RVBottom(10k) between(mid, gnd);
-    op1(mid, feedback, bias);  # Ideal amplifier: the feedback connections determine this channel's behavior.
-    RLoop(1k) between(bias, feedback);
-    R1(1k) between(plus, pos_mix);
-    R2(20k) between(bias, pos_mix);
-    R3(1k) between(minus, neg_mix);
-    R4(20k) between(out, neg_mix);
-    op2(pos_mix, neg_mix, out);  # Ideal amplifier: the feedback connections determine this channel's behavior.
+# LM386 - Low Voltage Audio Power Amplifier
+# 8-pin package, datasheet pin order
+
+chip LM386(gain1, minus, plus, gnd,
+           out, vcc, bypass, gain8) {
+
+    # Eight-terminal amplifier
+    op1(plus, minus, out, vcc, gnd,
+        gain1, gain8, bypass);
+
+    analog op1 {
+        gain.default = 20;
+        gain.max = 200;
+        gain.resistor = 1.35k;
+
+        output.bias = 0.5;
+        output.type = power_amplifier;
+
+        supply.current = 4mA;
+    }
 }

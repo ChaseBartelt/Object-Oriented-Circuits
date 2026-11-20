@@ -1,0 +1,24 @@
+# Preserve the LM324 pinout/connections while customizing its model.
+include("LM324");
+
+@override
+chip LM324 {
+    analog (op1, op2, op3, op4) {
+        gbw = 2MHz;
+        slew = 1V/us;
+    }
+    @override
+    analog op3 { offset = 5mV; }
+}
+
+Vsignal(2V) between(input, 0);
+Vpositive(5V) between(pos, 0);
+Vnegative(-5V) between(neg, 0);
+
+main {
+    # Four voltage followers, in the original 14-pin package order.
+    LM324(out1, out1, input, pos,
+          0, out2, out2,
+          out3, out3, 0, neg,
+          0, out4, out4);
+}

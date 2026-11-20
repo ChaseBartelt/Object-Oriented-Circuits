@@ -4,6 +4,7 @@
 # and rank checks distinguish contradictory constraints from a floating, nonunique solution.
 
 import math
+from dataclasses import replace
 
 import numpy as np
 from scipy import linalg
@@ -11,6 +12,9 @@ from scipy import linalg
 from circuitlab.model.graph import CircuitError, ground_references
 from circuitlab.model.potentiometer import expand_potentiometers
 from circuitlab.math.results import Network, SimulationBackend, fold_potentiometers
+from circuitlab.math.behavioral import expand_math, fold_math, linear_form
+from circuitlab.math.audio import expand_audio, fold_audio
+from circuitlab.math.opamps import common_inputs, common_inverse, common_results, has_output_limits, validate_common_ranges
 
 
 # Scale rows and columns before solving. A small singular value identifies a rank problem;
@@ -90,7 +94,34 @@ class NodalBackend:
     def solve(self, circuit, *, ac, frequency=None, port=None):
         # A schematic placeholder is missing data, not a zero-valued element.
         # Validate it before topology/frequency errors can obscure that problem.
+        circuit.require_models()
         circuit.require_values()
+        original = circuit
+        if circuit.comparators:
+            if ac or port:
+                raise CircuitError("Behavioral comparators require native DC or time simulation; AC/port linearization is not implemented.",
+                                   code="UnsupportedComponent")
+            from circuitlab.math.nonlinear import TimeDomain
+            components = [replace(p,value=p.dc) if circuit.mode == "mixed" and p.kind in "VI" else p
+                          for p in circuit.components]
+            return TimeDomain(replace(circuit,mode="dc",components=components)).operating_point()
+        limited = next((p for p in circuit.components if p.kind == "O" and has_output_limits(p.opamp)), None)
+        if limited is not None:
+            if ac or port:
+                raise CircuitError("Op-amp output limits require DC or time simulation. "
+                                   "Use SPICE for AC linearization around a biased operating point or port analysis.",
+                                   circuit.component_lines.get(limited.name), "UnsupportedComponent",
+                                   path=circuit.component_files.get(limited.name))
+            # The DC portion of a mixed design uses offsets, not AC waveform
+            # peaks. TimeDomain otherwise interprets mixed sources instantaneously.
+            components = [replace(p, value=p.dc) if circuit.mode == "mixed" and p.kind in "VI" else p
+                          for p in circuit.components]
+            from circuitlab.math.nonlinear import TimeDomain
+
+            return TimeDomain(replace(circuit, mode="dc", components=components)).operating_point()
+        audio_circuit = expand_audio(circuit)
+        circuit = audio_circuit
+        circuit = expand_math(circuit)
         # Replace each potentiometer with its high/wiper and wiper/low legs.
         # Endpoint legs become exact zero-volt constraints. Keep the index map
         # so public currents/powers can later be folded into source component order.
@@ -98,7 +129,9 @@ class NodalBackend:
         # Q is a native BJT and S a voltage-controlled switch. A manual schematic
         # switch is kind K, already represented by its selected contact resistance
         # and therefore handled by the ordinary linear stamps.
-        nonlinear = any(part.kind in {"Q", "S"} for part in parts)
+        nonlinear = any(part.kind in {"Q", "S"} or
+                        (part.kind == "B" and linear_form(part.behavior.tree) is None)
+                        for part in parts)
         # A specified complex Z is a frequency-domain element with no DC or
         # time-domain realization. Require a pure AC design and keep it separate
         # from native nonlinear devices; this code does not linearize their bias point.
@@ -114,13 +147,17 @@ class NodalBackend:
         # folding. Small-signal AC and port equivalents are not inferred here.
         if nonlinear:
             if ac or port or circuit.mode != "dc":
+                if any(part.kind == "B" for part in parts):
+                    raise CircuitError("Nonlinear/digital math requires DC or time simulation; "
+                                       "AC and port analysis require affine analog equations.",
+                                       code="UnsupportedComponent")
                 raise CircuitError("Use DC for the built-in nonlinear operating point. "
                                    "Run AC time-domain waveforms in the Results oscilloscope; "
                                    "use SPICE for small-signal AC or port analysis.",
                                    code="UnsupportedComponent")
             from circuitlab.math.nonlinear import TimeDomain
 
-            return TimeDomain(circuit).operating_point()
+            return TimeDomain(original).operating_point()
         # Branch arrays follow this expanded order. Names must be unique ignoring
         # case so result lookup and later folding cannot select the wrong branch.
         names = tuple(e.name for e in parts)
@@ -142,11 +179,13 @@ class NodalBackend:
                 "Enter frequency for AC capacitors and inductors.",
                 code="MissingFrequency",
             )
+        if ac and frequency is None and any(e.kind == "O" and e.opamp and e.opamp.bandwidth for e in parts):
+            raise CircuitError("Enter frequency for AC op-amp bandwidth.", code="MissingFrequency")
         if frequency is not None and (not np.isfinite(frequency) or frequency <= 0):
             raise CircuitError("AC frequency must be positive.")
         # Use the compiled node order for all returned voltage arrays. Expanded
         # potentiometer legs reuse the existing high, wiper, and low node names.
-        nodes = circuit.nodes
+        nodes = tuple(dict.fromkeys((*original.nodes, *circuit.nodes)))
         index = {name: i for i, name in enumerate(nodes)}
         # The op amp's output branch conducts. Its input pins only sense voltage.
         # Reference domains follow branch p/n connections. Op-amp input and supply
@@ -154,7 +193,10 @@ class NodalBackend:
         # Choose one anchor per connected domain; separate named returns are not
         # all forcibly shorted together or assigned the same physical potential.
         references = ground_references(
-            circuit.grounds, ((part.p, part.n) for part in parts)
+            circuit.grounds, [*((part.p, part.n) for part in parts),
+                             *((p.vplus, p.vminus) for p in parts
+                               if p.kind == "O" and p.opamp and p.opamp.supply_current),
+                             *((p, n) for part in parts for p, n, _ in common_inputs(part))]
         )
         # Keep the unused standard reference out of the matrix. If 0 appears
         # only as an input pin, it is still a valid explicit voltage reference.
@@ -170,6 +212,11 @@ class NodalBackend:
         incidence = np.zeros((len(nodes), len(parts)))
         y = np.zeros(len(parts), complex)
         currents = np.zeros(len(parts), complex)
+        supply_load = np.zeros(len(nodes), complex)
+        quiescent = {}
+        controlled = []
+        loading = np.zeros((len(unknown), len(unknown)), complex)
+        loading_scale = np.zeros_like(loading, dtype=float)
         # Admittance y and prescribed currents start at zero. constrained lists
         # branches requiring an extra current unknown; senses and targets give
         # their voltage equations, which need not sense their own output terminals.
@@ -192,7 +239,7 @@ class NodalBackend:
                 if circuit.mode == "mixed" and not ac and kind in "VI"
                 else part.value
             )
-            if kind not in {"R", "K", "C", "L", "X", "Z", "V", "I", "O"}:
+            if kind not in {"R", "K", "C", "L", "X", "Z", "V", "I", "O", "B", "G"}:
                 raise CircuitError(
                     f"Unsupported component type {kind}.", code="UnsupportedComponent"
                 )
@@ -206,9 +253,9 @@ class NodalBackend:
             # Ideal voltage sources, op-amp outputs, and DC inductors cannot be
             # represented by a finite branch admittance. Give each a current unknown
             # and a voltage constraint. A DC inductor is an exact zero-volt branch.
-            if kind in "VO" or (kind == "L" and not ac):
+            if kind in "VOB" or (kind == "L" and not ac):
                 constrained.append(k)
-                row = incidence[:, k].copy()
+                row = incidence[:, k].astype(complex)
                 # An ideal op amp enforces V(in+)-V(in-)=0, while its unknown output
                 # current flows through p/n. Its input pins draw no stamped current.
                 # Optional supply pins do not add rail clipping to this ideal model.
@@ -216,14 +263,46 @@ class NodalBackend:
                     row[:] = 0
                     row[index[part.in_plus]] += 1
                     row[index[part.in_minus]] -= 1
+                    rejection = common_inverse(part.opamp)
+                    row[index[part.in_plus]] += rejection / 2
+                    row[index[part.in_minus]] += rejection / 2
+                    row[index[part.n]] -= rejection
+                    for high, low, resistance in common_inputs(part):
+                        shunt = np.zeros(len(nodes))
+                        shunt[index[high]] += 1
+                        shunt[index[low]] -= 1
+                        stamp = np.outer(shunt[unknown], shunt[unknown]) / resistance
+                        loading += stamp
+                        loading_scale += abs(stamp)
+                    if part.opamp:
+                        inverse = part.opamp.inverse_gain
+                        if ac and part.opamp.bandwidth:
+                            inverse += 1j * frequency / part.opamp.bandwidth
+                        row -= inverse * incidence[:, k]
+                if kind == "B":
+                    constant, coefficients = linear_form(part.behavior.tree)
+                    for net, coefficient in coefficients.items():
+                        row[index[net]] -= coefficient
                 senses.append(row[unknown])
                 # Independent voltage sources set their specified voltage difference;
                 # an op-amp input difference and a DC inductor drop both target zero.
-                targets.append(value if kind == "V" else 0)
+                targets.append((0 if ac else constant) if kind == "B" else value if kind == "V" else
+                               (-part.opamp.offset if kind == "O" and part.opamp and not ac else 0))
+                if kind == "O" and part.opamp and part.opamp.supply_current:
+                    iq = 0.0 if ac else part.opamp.supply_current
+                    high, low = index[part.vplus], index[part.vminus]
+                    supply_load[high] += iq
+                    supply_load[low] -= iq
+                    quiescent[k] = high, low, iq
             # A current source contributes its prescribed p->n current to the KCL
             # right-hand side; its branch voltage remains determined by the network.
             elif kind == "I":
                 currents[k] = value
+            elif kind == "G":
+                sense = np.zeros(len(nodes))
+                sense[index[part.in_plus]] += 1
+                sense[index[part.in_minus]] -= 1
+                controlled.append((k, value, sense))
             # Resistor/contact current is y*(Vp-Vn), with y=1/R. Manual switch state
             # was already converted to a finite on/off resistance by the compiler.
             elif kind in {"R", "K"}:
@@ -290,8 +369,14 @@ class NodalBackend:
         scale = np.block(
             [[(abs(a) * abs(y)) @ abs(a).T, abs(cols)], [abs(rows), zeros]]
         )
+        matrix[:len(unknown), :len(unknown)] += loading
+        scale[:len(unknown), :len(unknown)] += loading_scale
+        for k, gm, sense in controlled:
+            stamp = gm * np.outer(a[:, k], sense[unknown])
+            matrix[:len(unknown), :len(unknown)] += stamp
+            scale[:len(unknown), :len(unknown)] += abs(stamp)
         try:
-            result = solve_system(matrix, np.r_[-a @ currents, targets], scale)
+            result = solve_system(matrix, np.r_[-a @ currents - supply_load[unknown], targets], scale)
         except CircuitError as error:
             # For DC rank failures, check a more specific return-path problem: a
             # named ground may belong to a reference domain topologically but connect
@@ -329,11 +414,17 @@ class NodalBackend:
         voltages[unknown] = result[: len(unknown)]
         branch_v = incidence.T @ voltages
         currents += y * branch_v
+        for k, gm, sense in controlled:
+            currents[k] += gm * (sense @ voltages)
         currents[constrained] = result[len(unknown) :]
         # Passive sign convention: positive real power is absorbed when current
         # enters p. For RMS AC phasors this is complex power P+jQ; the same
         # formula reduces to signed V*I for real DC values.
         branch_power = branch_v * currents.conj()
+        terminal_current = {}
+        for k, (high, low, iq) in quiescent.items():
+            branch_power[k] += (voltages[high] - voltages[low]) * iq
+            terminal_current[parts[k].name] = (0, 0, currents[k], -currents[k], iq, -iq)
         # Postprocessing can overflow even when node voltages/current unknowns
         # were finite, for example in V*conj(I). Reject unusable branch results.
         if not all(np.isfinite(x).all() for x in (branch_v, currents, branch_power)):
@@ -351,7 +442,11 @@ class NodalBackend:
             branch_power,
             frequency,
             references=references,
+            terminal_current=terminal_current,
         )
+        network = common_results(network, parts, ac=ac)
+        if not ac:
+            validate_common_ranges(original, dict(zip(nodes, voltages)))
         # The original solve supplies the open-port voltage. Compute the port
         # impedance with a separate unit-current experiment on the same linear
         # system; do not alter or overwrite the actual operating-point results.
@@ -390,7 +485,7 @@ class NodalBackend:
                 network.equivalent_issue = (
                     "The port impedance is below numerical precision."
                 )
-                return fold_potentiometers(network, circuit, potentiometers)
+                return fold_audio(fold_math(fold_potentiometers(network, circuit, potentiometers), audio_circuit), original)
             # An exactly zero port impedance still permits storing Vth and Zth, but
             # does not define a unique finite Norton/short-circuit current. Store None
             # for that current rather than dividing by zero.
@@ -405,4 +500,4 @@ class NodalBackend:
             }
         # Sum expanded leg powers and restore the original component names and
         # terminal-current interpretation before callers index public branch arrays.
-        return fold_potentiometers(network, circuit, potentiometers)
+        return fold_audio(fold_math(fold_potentiometers(network, circuit, potentiometers), audio_circuit), original)

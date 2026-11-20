@@ -1,0 +1,14 @@
+# The LM386 package contains an ordinary eight-argument op1(...) call.
+# Open gain pins use gain 20; Cgain increases the gain for AC/time signals.
+include("LM386");
+
+Vsignal(10mV) between(input, 0);
+Vpower(6V) between(vcc, 0);
+
+main {
+    LM386(gain1, 0, input, 0, out, vcc, bypass, gain8);
+    Cgain(10uF) between(gain1, gain8);
+    Cbypass(1uF) between(bypass, 0);
+    Coutput(250uF) between(out, speaker);
+    Rload(8) between(speaker, 0);
+}

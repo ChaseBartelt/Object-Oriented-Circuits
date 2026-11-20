@@ -74,6 +74,47 @@ class OscilloscopeTest(unittest.TestCase):
         self.assertFalse(scope.timer.isActive())
         self.assertIsNone(scope.simulation)
 
+    def test_math_only_stateful_chip_runs_and_preserves_history_after_a_value_edit(self):
+        scope = self.scope
+        source = "analog {property rate=1; local=integrate(rate,time); V(out)=local;}"
+        scope.set_circuit(compile_circuit(source))
+        self.assertFalse(scope.isHidden())
+        self.assertEqual([scope.node.itemText(i) for i in range(scope.node.count())], ["out"])
+        scope.run.click()
+        self.collect_batch()
+        scope.pause()
+        scope.pending[1].result(timeout=5)
+        scope.finish_batch()
+        before = tuple(scope.waveform.samples)
+        elapsed = scope.simulation.time
+        self.assertTrue(before)
+        self.assertAlmostEqual(before[-1][1], elapsed)
+        scope.set_circuit(compile_circuit(source.replace("rate=1", "rate=2")), preserve_state=True)
+        self.assertAlmostEqual(scope.simulation.time, elapsed)
+        self.assertEqual(tuple(scope.waveform.samples), before)
+        scope.toggle()
+        self.collect_batch()
+        for time, value in tuple(scope.waveform.samples)[len(before):]:
+            self.assertAlmostEqual(value, elapsed + 2*(time-elapsed))
+
+    def test_comparator_scope_exposes_public_nodes_and_omits_unsolved_interior_controls(self):
+        source = ('include("LM393");\nVpower(5V) between(pos,0);\n'
+                  'Vin(1.5V) between(input,0);\nVref(1V) between(reference,0);\n'
+                  'R1(1k) between(pos,out);\nR2(1k) between(pos,out2);\n'
+                  'main {LM393(out,reference,input,0,input,reference,out2,pos);}')
+        circuit = compile_circuit(source)
+        self.scope.set_circuit(circuit)
+        available = {self.scope.node.itemText(i) for i in range(self.scope.node.count())}
+        internals = set().union(*(part.internal_nodes for part in circuit.comparators))
+        self.assertTrue({"out", "out2", "input", "pos"} <= available)
+        self.assertFalse(available & internals)
+        self.assertEqual(self.scope.initial.count(), 1)
+        self.scope.node.setCurrentText("out")
+        self.scope.run.click()
+        self.collect_batch()
+        self.assertTrue(self.scope.waveform.samples)
+        self.assertTrue(all(value > 4.9 for _,value in self.scope.waveform.samples))
+
     def test_step_tracks_new_frequency_but_preserves_adjustment_on_value_edits(self):
         scope = self.scope
         scope.set_circuit(compile_circuit(SOURCE.replace("1k; wire", "100; wire")))

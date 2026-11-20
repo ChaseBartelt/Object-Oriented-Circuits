@@ -5,6 +5,7 @@
 
 import math
 import warnings
+from itertools import chain
 
 import numpy as np
 from scipy import linalg
@@ -13,6 +14,12 @@ from circuitlab.model.graph import CircuitError, ground_references
 from circuitlab.model.potentiometer import expand_potentiometers
 from circuitlab.math.equations import solve_known
 from circuitlab.math.results import Network, fold_potentiometers
+from circuitlab.math.behavioral import equation_value, expand_math, fold_math
+from circuitlab.math.behavior_state import BehaviorState
+from circuitlab.math.audio import expand_audio, fold_audio
+from circuitlab.math.comparators import expand_comparators, fold_comparators, validate_comparator_ranges
+from circuitlab.math.opamps import (common_inputs, common_inverse, common_results,
+                                   has_output_limits, validate_common_ranges, validate_output_limits)
 
 # Generic room-temperature Ebers–Moll parameters.
 # All native BJTs share these idealized parameters; named SPICE models
@@ -66,8 +73,11 @@ class TimeDomain:
         # Expand potentiometers into electrical legs, retaining a map for reports.
         # The generated leg count/type can change at end stops, so live state
         # transfer below uses identities rather than assuming fixed array indexes.
-        self.parts, self.potentiometers = expand_potentiometers(circuit)
-        self.nodes = circuit.nodes
+        self.comparator_circuit = expand_comparators(circuit)
+        self.audio_circuit = expand_audio(self.comparator_circuit)
+        self.expanded_circuit = expand_math(self.audio_circuit)
+        self.parts, self.potentiometers = expand_potentiometers(self.expanded_circuit)
+        self.nodes = tuple(dict.fromkeys((*self.comparator_circuit.nodes, *self.expanded_circuit.nodes)))
         # step=None builds a DC-bias system: capacitors are open and inductors
         # have zero voltage drop. A positive step h builds backward-Euler storage
         # companions; their history terms are supplied on each advance.
@@ -89,7 +99,7 @@ class TimeDomain:
         self.frequency = source_frequency(circuit)
         if len({part.name.casefold() for part in self.parts}) != len(self.parts):
             raise CircuitError("Give each component a unique name before simulating.")
-        if any(part.kind not in {"R", "K", "C", "L", "V", "I", "O", "Q", "S"} for part in self.parts):
+        if any(part.kind not in {"R", "K", "C", "L", "V", "I", "O", "Q", "S", "B", "G"} for part in self.parts):
             raise CircuitError("Use R, C, L, voltage/current sources, ideal op amps, BJTs, or switches in time simulation.")
         if any(part.kind == "Q" and part.model for part in self.parts):
             raise CircuitError("Named BJT models require SPICE. Omit the model to use the built-in generic transistor.")
@@ -98,13 +108,22 @@ class TimeDomain:
         # Choose one voltage reference per detected domain. Q/S terminal sets
         # participate in that domain detection; ideal op amps use only their
         # output branch p/n here, so sensing pins do not join return domains.
-        self.references = ground_references(circuit.grounds, (
-            part.terminal_nets if part.kind in {"Q", "S"} else (part.p, part.n)
-            for part in self.parts
+        connections = (
+            terminals for part in self.parts for terminals in (
+                (part.terminal_nets,) if part.kind in {"Q", "S"} else
+                ((part.p, part.n), (part.vplus, part.vminus))
+                if part.kind == "O" and part.opamp and part.opamp.supply_current else
+                ((part.p, part.n),)
+            )
+        )
+        # Finite common input impedances connect their sensing nodes to return.
+        self.references = ground_references(circuit.grounds, chain(
+            connections, ((p, n) for part in self.parts for p, n, _ in common_inputs(part)),
         ))
         self.references.setdefault("0", "0")
         self.unknown = [i for i, net in enumerate(self.nodes) if self.references.get(net) != net]
         indices = {net: i for i, net in enumerate(self.nodes)}
+        self.node_rows = {self.nodes[index]: row for row, index in enumerate(self.unknown)}
         # Here incidence is branch-by-node: each row gives Vp-Vn when multiplied
         # by the full node-voltage vector. This orientation also makes capacitor
         # history arrays naturally indexable by expanded component position.
@@ -113,7 +132,7 @@ class TimeDomain:
         # Voltage sources, ideal op-amp outputs, and inductors require branch-current
         # unknowns. rows maps their component indexes to full matrix/state positions.
         self.voltage_rows = [
-            i for i, part in enumerate(self.parts) if part.kind in {"V", "O", "L"}
+            i for i, part in enumerate(self.parts) if part.kind in {"V", "O", "L", "B"}
         ]
         rows = {i: len(self.unknown) + n for n, i in enumerate(self.voltage_rows)}
         size = len(self.unknown) + len(rows)
@@ -134,6 +153,11 @@ class TimeDomain:
         self.ac_current = {}
         self.transistors = []
         self.switches = []
+        self.opamps = []
+        self.output_limits = {}
+        self.quiescent = []
+        self.behavioral = []
+        self.controlled = []
         self.direct_current = np.zeros(len(self.parts))
         self.conductance = np.zeros(len(self.parts))
         self.base_current = {}
@@ -164,17 +188,28 @@ class TimeDomain:
                 if (self.frequency is None and value.imag) or (circuit.mode == "mixed" and part.dc.imag):
                     raise CircuitError(f"{part.label} requires a real DC value.")
                 if self.frequency is not None:
-                    source = part.dc.real if circuit.mode == "mixed" else 0
-                    peak = math.sqrt(2) * value
+                    source = part.dc.real if circuit.mode == "mixed" or part.dc_only else 0
+                    peak = 0j if part.dc_only else math.sqrt(2) * value
                     if not math.isfinite(peak.real) or not math.isfinite(peak.imag):
                         raise CircuitError(f"{part.label} peak source value exceeds the numeric range.")
             # Sense in_plus minus in_minus without assigning input-pin current.
             # The ideal op amp constrains this voltage to zero; a controlled switch
             # uses it to determine output conductance. Op-amp supply pins do not clip output.
-            if part.kind in {"O", "S"}:
+            if part.kind in {"O", "S", "G"}:
                 sense = np.zeros(len(self.nodes))
                 sense[indices[part.in_plus]] += 1
                 sense[indices[part.in_minus]] -= 1
+                if part.kind == "O":
+                    rejection = common_inverse(part.opamp)
+                    sense[indices[part.in_plus]] += rejection / 2
+                    sense[indices[part.in_minus]] += rejection / 2
+                    sense[indices[part.n]] -= rejection
+                    for high, low, resistance in common_inputs(part):
+                        shunt = np.zeros(len(self.nodes))
+                        shunt[indices[high]] += 1
+                        shunt[indices[low]] -= 1
+                        shunt = shunt[self.unknown]
+                        self.matrix[:len(line), :len(line)] += np.outer(shunt, shunt) / resistance
             # R and manual switch K contribute G=1/R. For a capacitor and finite h,
             # backward Euler gives i_new=(C/h)*(v_new-v_old): stamp C/h here and
             # place +(C/h)*v_old on the KCL RHS during advance_once().
@@ -191,6 +226,9 @@ class TimeDomain:
                 self.direct_current[i] = source
                 if self.frequency is not None and value:
                     self.ac_current[i] = peak
+            elif part.kind == "G":
+                self.matrix[:len(line), :len(line)] += source * np.outer(line, sense[self.unknown])
+                self.controlled.append((i, source, sense))
             # A voltage-defined branch adds its unknown current to node KCL. Its
             # extra equation is either a specified branch voltage, ideal op-amp input
             # equality, or the implicit inductor relation.
@@ -199,6 +237,40 @@ class TimeDomain:
                 self.matrix[:len(line), row] = line
                 if part.kind == "O":
                     self.matrix[row, :len(line)] = sense[self.unknown]
+                    if part.opamp:
+                        model = part.opamp
+                        memory = 1 / math.tau / model.bandwidth / step if model.bandwidth and step else 0.0
+                        inverse = model.inverse_gain + memory
+                        self.matrix[row, :len(line)] -= inverse * line
+                        self.target[row] = -model.offset
+                        signal, output = np.zeros(size), np.zeros(size)
+                        signal[:len(line)] = sense[self.unknown]
+                        output[:len(line)] = line
+                        self.opamps.append((i, row, signal, output, inverse, memory, model))
+                        if has_output_limits(model):
+                            def bound_projection(limit):
+                                if limit is None:
+                                    return None
+                                gradient = np.zeros(size)
+                                for net, coefficient in ((part.vplus, limit.vplus), (part.vminus, limit.vminus)):
+                                    if coefficient:
+                                        if net in self.node_rows:
+                                            gradient[self.node_rows[net]] += coefficient
+                                        if part.n in self.node_rows:
+                                            gradient[self.node_rows[part.n]] -= coefficient
+                                return limit.constant, gradient
+                            self.output_limits[i] = (bound_projection(model.output_min),
+                                                     bound_projection(model.output_max))
+                        if model.supply_current:
+                            high, low = indices[part.vplus], indices[part.vminus]
+                            supply = np.zeros(len(self.nodes))
+                            supply[high] += 1
+                            supply[low] -= 1
+                            self.target[:len(line)] -= model.supply_current * supply[self.unknown]
+                            self.quiescent.append((i, high, low, model.supply_current))
+                elif part.kind == "B":
+                    self.matrix[row, :len(line)] = line
+                    self.behavioral.append((i, row, part.behavior))
                 else:
                     self.matrix[row, :len(line)] = line
                     if part.kind == "V":
@@ -210,7 +282,7 @@ class TimeDomain:
                     # For an inductor, v_new=(L/h)*(i_new-i_old). The row therefore has
                     # coefficient -L/h on i_new and later RHS -(L/h)*i_old. With no step,
                     # the diagonal stays zero and this becomes the exact DC short constraint.
-                    elif step:
+                    elif part.kind == "L" and step:
                         self.inductors[row] = value.real / step
                         self.matrix[row, row] = -self.inductors[row]
             # Pad voltage projections to the complete state size. Their auxiliary
@@ -258,6 +330,10 @@ class TimeDomain:
         self.state = np.zeros(size)
         self.previous_capacitor_voltage = np.zeros(len(self.parts))
         self.half_step = None
+        # Include generated model equations as well as source-level math.
+        self.behavior_state = BehaviorState(step=step, equations=(
+            part.behavior for part in self.parts if part.kind == "B" and part.behavior is not None
+        ))
 
     # Compare named terminal identities rather than declaration order, allowing value-only
     # source edits to preserve physical simulation history.
@@ -268,7 +344,29 @@ class TimeDomain:
         # changed connections or reference declarations.
         def terminals(model):
             return sorted((part.name, part.kind, part.terminal_nets) for part in model.components)
-        return circuit.grounds == self.circuit.grounds and terminals(circuit) == terminals(self.circuit)
+        def equations(model):
+            return sorted((eq.name, eq.output, eq.reference, eq.inputs) for eq in model.behavior)
+        def state_operations(model):
+            def visit(tree):
+                if tree[0] == "state":
+                    yield tree[2], tree[1]
+                for child in tree[1:]:
+                    if isinstance(child, tuple) and child and isinstance(child[0], str):
+                        yield from visit(child)
+            equations = (*model.behavior,
+                         *(part.behavior for part in model.components if part.kind == "B" and part.behavior))
+            return {state for eq in equations for state in visit(eq.tree)}
+        def comparators(model):
+            # A modeled comparator replaces its drawn interior only during numerical
+            # expansion. Adding/removing that model changes solver nodes even if the
+            # original transistor drawing has exactly the same named connections.
+            return sorted((part.name, part.plus, part.minus, part.collector, part.emitter,
+                           part.vplus, part.vminus, part.members, sorted(part.internal_nodes))
+                          for part in model.comparators)
+        return (circuit.grounds == self.circuit.grounds and terminals(circuit) == terminals(self.circuit)
+                and equations(circuit) == equations(self.circuit)
+                and comparators(circuit) == comparators(self.circuit)
+                and state_operations(circuit) == state_operations(self.circuit))
 
     # Reuse stored capacitor voltage and inductor current only when the topology agrees.
     # A source/value change must not invent a new initial condition for an already running circuit.
@@ -318,6 +416,15 @@ class TimeDomain:
         capacitors = {self.parts[index].name: self.previous_capacitor_voltage[index] for index in self.capacitors}
         for index in updated.capacitors:
             updated.previous_capacitor_voltage[index] = capacitors.get(updated.parts[index].name, 0.0)
+        # Op-amp pole/slew history is output voltage and uses the same branch
+        # history array. Preserve it by identity when parameters or step change.
+        amplifier_voltage = {self.parts[i].name: self.previous_capacitor_voltage[i]
+                             for i, *_ in self.opamps}
+        for i, *_ in updated.opamps:
+            updated.previous_capacitor_voltage[i] = amplifier_voltage.get(updated.parts[i].name, 0.0)
+        updated.behavior_state = self.behavior_state.clone(step=updated.step, equations=(
+            part.behavior for part in updated.parts if part.kind == "B" and part.behavior is not None
+        ))
         return updated
 
     # Set the pre-step capacitor history used by the next implicit equation.
@@ -376,6 +483,59 @@ class TimeDomain:
                 # The output branch distributes current into KCL; gradient describes how
                 # that current changes with each state unknown, giving an outer-product stamp.
                 derivative += np.outer(branch, gradient)
+        # A backward-Euler pole gives error - inverse*vout = rhs. Slew
+        # limiting replaces that equation with a bound on this step's output.
+        # With infinite gain/bandwidth, projection expresses the ideal limit
+        # without choosing a finite default DC gain.
+        for i, row, signal, output, inverse, memory, model in self.opamps:
+            limited = i in self.output_limits
+            rate_limited = self.step is not None and model.slew is not None
+            if not limited and not rate_limited:
+                continue
+            voltage = output @ state
+            drive = signal @ state - rhs[row]
+            # For ideal gain, the fixed point y=clip(y+error,L,U) expresses
+            # exact saturation complementarity without inventing finite gain.
+            # Project the full constraint error rather than open-loop gain.
+            # Dividing by 1/A creates a vanishingly narrow inactive interval
+            # for high-gain feedback amplifiers and makes Newton rail-hop.
+            desired = (voltage + drive) / (1 + inverse)
+            lower, upper, lower_gradient, upper_gradient = -math.inf, math.inf, None, None
+            if limited:
+                low, high = self.output_limits[i]
+                if low is not None:
+                    lower, lower_gradient = low[0] + low[1] @ state, low[1]
+                if high is not None:
+                    upper, upper_gradient = high[0] + high[1] @ state, high[1]
+            if rate_limited:
+                previous = self.previous_capacitor_voltage[i]
+                center = np.clip(previous, lower, upper)
+                center_gradient = lower_gradient if previous < lower else upper_gradient if previous > upper else None
+                change = model.slew * self.step
+                if center - change > lower:
+                    lower, lower_gradient = center - change, center_gradient
+                if center + change < upper:
+                    upper, upper_gradient = center + change, center_gradient
+            bound, gradient = ((lower, lower_gradient) if desired < lower else
+                               (upper, upper_gradient) if desired > upper else (None, None))
+            if bound is not None:
+                residual[row] = voltage - bound
+                if jacobian:
+                    derivative[row] = output if gradient is None else output - gradient
+        if self.behavioral:
+            voltage = np.zeros(len(self.nodes))
+            voltage[self.unknown] = state[:len(self.unknown)]
+            values = dict(zip(self.nodes, voltage))
+            for i, row, equation in self.behavioral:
+                result, gradient = equation_value(equation, values, self.time + (self.step or 0),
+                                                   state=self.behavior_state)
+                residual[row] = self.incidence[i, self.unknown] @ state[:len(self.unknown)] - result
+                if jacobian:
+                    derivative[row] = 0
+                    derivative[row, :len(self.unknown)] = self.incidence[i, self.unknown]
+                    for net, coefficient in gradient.items():
+                        if net in self.node_rows:
+                            derivative[row, self.node_rows[net]] -= coefficient
         return residual, derivative
 
     # Require the nonlinear residual to converge before treating the candidate as a valid sample.
@@ -423,10 +583,14 @@ class TimeDomain:
             # Backtrack by halving the proposed correction. Accept non-increasing
             # residual within tiny roundoff slack, or a residual already below tolerance.
             # Failure to find an acceptable trial rejects this Newton attempt.
-            for _ in range(14):
+            for _ in range(40 if self.output_limits else 14):
                 trial = state + scale * delta
                 trial_error = np.linalg.norm(self.evaluate(trial, matrix, rhs)[0], np.inf)
-                if trial_error < error * (1 + 1e-8) or trial_error < 2e-10:
+                # A steep amplifier can otherwise bounce between equal-error
+                # opposite rails forever. Limited models require actual merit
+                # reduction; unchanged models retain their existing tolerance.
+                improvement = 1 - 1e-4 * scale if self.output_limits else 1 + 1e-8
+                if trial_error < error * improvement or trial_error < 2e-10:
                     state = trial
                     break
                 scale /= 2
@@ -438,7 +602,36 @@ class TimeDomain:
     # gmin continuation are fallback starting strategies; they do not replace
     # the requirement to converge against the original equations.
     def solve(self, rhs):
-        state = self.iterate(self.state, rhs)
+        guess = self.state
+        if self.behavioral or self.output_limits:
+            # Seed grounded independent drives before evaluating log/division/etc.
+            # This changes Newton guesses, never accepted capacitor/amp history.
+            guess = self.state.copy()
+            for n, i in enumerate(self.voltage_rows):
+                if self.parts[i].kind == "V":
+                    line = self.incidence[i, self.unknown]
+                    contacts = np.flatnonzero(line)
+                    if len(contacts) == 1:
+                        guess[contacts[0]] = rhs[len(self.unknown) + n] / line[contacts[0]]
+        state = self.iterate(guess, rhs)
+        if state is None and self.output_limits:
+            # An ideal open-loop input difference may make the initial
+            # unsaturated Jacobian inconsistent. Start on the indicated
+            # physical rail, then let the same equations verify saturation
+            # or return a feedback amplifier to its interior solution.
+            saturated = guess.copy()
+            for i, row, signal, output, inverse, _, _ in self.opamps:
+                if i not in self.output_limits:
+                    continue
+                voltage = output @ saturated
+                error = signal @ saturated - inverse * voltage - rhs[row]
+                low, high = self.output_limits[i]
+                bound = high if error > 0 else low if error < 0 else None
+                part = self.parts[i]
+                if bound is not None and part.p in self.node_rows:
+                    target = bound[0] + bound[1] @ saturated
+                    saturated[self.node_rows[part.p]] += target - voltage
+            state = self.iterate(saturated, rhs)
         if state is None and self.step is None:
             state = self.bias_from_capacitors(rhs)
         if state is None:
@@ -457,9 +650,13 @@ class TimeDomain:
                     )
         # Commit only a converged state and restore omitted reference-node voltages
         # as zero in the full node array returned to the sampler.
-        self.state = state
         voltage = np.zeros(len(self.nodes))
         voltage[self.unknown] = state[:len(self.unknown)]
+        validate_common_ranges(self.comparator_circuit, dict(zip(self.nodes, voltage)))
+        validate_output_limits(self.comparator_circuit, dict(zip(self.nodes, voltage)))
+        validate_comparator_ranges(self.circuit, dict(zip(self.nodes, voltage)))
+        self.behavior_state.commit(dict(zip(self.nodes, voltage)), self.time + (self.step or 0))
+        self.state = state
         return voltage
 
     def bias_from_capacitors(self, rhs):
@@ -495,7 +692,7 @@ class TimeDomain:
         except CircuitError as error:
             if (
                 error.code != "NonlinearConvergence" or self.step is None
-                or remaining_halvings == 0 or not (self.transistors or self.switches)
+                or remaining_halvings == 0 or not (self.transistors or self.switches or self.opamps or self.behavioral)
             ):
                 raise
         # Cache a freshly stamped h/2 simulator. C/h and L/h depend on step size,
@@ -511,6 +708,9 @@ class TimeDomain:
         half.target[:] = self.target
         half.state = self.state
         half.previous_capacitor_voltage = self.previous_capacitor_voltage
+        half.behavior_state = self.behavior_state.clone(step=half.step, equations=(
+            part.behavior for part in half.parts if part.kind == "B" and part.behavior is not None
+        ))
         # Both half intervals must succeed, with recursive refinement if needed.
         # The second begins from the first's committed state. Commit their endpoint
         # back to the parent only after the whole requested interval completes.
@@ -519,6 +719,9 @@ class TimeDomain:
         self.time += self.step
         self.state = half.state
         self.previous_capacitor_voltage = half.previous_capacitor_voltage
+        self.behavior_state = half.behavior_state.clone(step=self.step, equations=(
+            part.behavior for part in self.parts if part.kind == "B" and part.behavior is not None
+        ))
         return voltage
 
     def advance_once(self):
@@ -553,6 +756,8 @@ class TimeDomain:
         # Its old current is already stored at the same auxiliary state row.
         for row, impedance in self.inductors.items():
             rhs[row] = -impedance * self.state[row]
+        for i, row, _, _, _, memory, _ in self.opamps:
+            rhs[row] -= memory * self.previous_capacitor_voltage[i]
         voltage = self.solve(rhs)
         # After a successful solve, store the new branch voltages for the next
         # interval. This array covers all branches for simple indexing; only
@@ -581,11 +786,17 @@ class TimeDomain:
         # Voltage-source/op-amp/inductor currents come from auxiliary unknowns;
         # controlled switches and BJTs are evaluated from their device laws below.
         currents = self.direct_current + self.conductance * branch_v
+        for i, gm, sense in self.controlled:
+            currents[i] += gm * (sense @ voltage)
         phase = self.source_phase(self.time)
         for i, peak in self.ac_current.items():
             currents[i] += (peak * phase).real
         currents[self.voltage_rows] = self.state[len(self.unknown):]
         power = branch_v * currents
+        terminal_current = {}
+        for i, high, low, iq in self.quiescent:
+            power[i] += (voltage[high] - voltage[low]) * iq
+            terminal_current[self.parts[i].name] = (0, 0, currents[i], -currents[i], iq, -iq)
         for i, branch, control in self.switches:
             currents[i], _ = self.switch_current(i, branch, control, self.state)
             power[i] = branch_v[i] * currents[i]
@@ -605,7 +816,10 @@ class TimeDomain:
         network = Network(
             self.nodes, tuple(part.name for part in self.parts), voltage, branch_v, currents,
             power, None, references=self.references, base_current=self.base_current,
+            terminal_current=terminal_current,
         )
+        network = common_results(network, self.parts)
         # Fold generated leg currents/powers back into original component order,
         # retaining potentiometer terminal-current details for probes and reports.
-        return fold_potentiometers(network, self.circuit, self.potentiometers)
+        return fold_comparators(fold_audio(fold_math(fold_potentiometers(network, self.expanded_circuit, self.potentiometers),
+                                    self.audio_circuit), self.comparator_circuit), self.circuit)

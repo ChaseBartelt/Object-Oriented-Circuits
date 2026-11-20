@@ -1,8 +1,30 @@
-# TL072 | 8-pin package | pin 1 first.
-# Ideal op-amp channels. Supply, rail limits, offset and bandwidth are omitted.
-# Datasheet: https://www.ti.com/lit/ds/symlink/tl072.pdf
 
-chip TL072(out1, minus1, plus1, vminus, plus2, minus2, out2, vplus) {  # Keep the package pin order while the internal parts define the modeled signal behavior.
-    op1(plus1, minus1, out1);  # Ideal amplifier: the feedback connections determine this channel's behavior.
-    op2(plus2, minus2, out2);  # Ideal amplifier: the feedback connections determine this channel's behavior.
+# TL072 - Dual Low-Noise JFET-Input Op Amp
+# 8-pin package, datasheet pin order
+
+chip TL072(out1, minus1, plus1, vminus,
+           plus2, minus2, out2, vplus) {
+
+    # Two independent amplifier channels
+    op1(plus1, minus1, out1, vplus, vminus);
+    op2(plus2, minus2, out2, vplus, vminus);
+
+    # Shared amplifier characteristics
+    analog (op1, op2) {
+        gain = 200000;
+        gbw = 5.25MHz;
+        slew = 20V/us;
+        offset = 3mV;
+
+        common.min = vminus + 3V;
+        common.max = vplus;
+
+        output.min = vminus + 1.5V;
+        output.max = vplus - 1.5V;
+    }
+
+    # Total supply current for both channels
+    analog {
+        supply.current.total = 2.8mA;
+    }
 }

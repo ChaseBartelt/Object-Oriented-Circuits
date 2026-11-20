@@ -1,7 +1,37 @@
-# LM13700 | 16-pin package | pin 1 first.
-# Pinout only. Current-controlled transconductance and buffers need a model.
-# Datasheet: https://www.ti.com/lit/ds/symlink/lm13700.pdf
 
-chip LM13700(bias1, diode1, plus1, minus1, ota_out1, vminus, buffer_in1, buffer_out1, buffer_out2, buffer_in2, vplus, ota_out2, minus2, plus2, diode2, bias2) {  # Package pinout only: numerical behavior requires an additional model.
-    model = unavailable;  # Allow a schematic preview while refusing a numerical solve without a model.
+# LM13700 - Dual Operational Transconductance Amplifier
+# 16-pin package, datasheet pin order
+# Preliminary behavioral model
+
+chip LM13700(bias1, diode1, plus1, minus1,
+             ota_out1, vminus, buffer_in1, buffer_out1,
+             buffer_out2, buffer_in2, vplus, ota_out2,
+             minus2, plus2, diode2, bias2) {
+
+    # Channel 1 - Darlington output buffer
+    transQBuf1A(buffer_in1, vplus, buf_mid1, npn);
+    transQBuf1B(buf_mid1, vplus, buffer_out1, npn);
+
+    # Channel 2 - Darlington output buffer
+    transQBuf2A(buffer_in2, vplus, buf_mid2, npn);
+    transQBuf2B(buf_mid2, vplus, buffer_out2, npn);
+
+    # Two current-controlled OTA stages
+    analog {
+        property thermal.voltage = 26mV;
+
+        I(vminus, ota_out1) =
+            I(bias1) * tanh(
+                (V(plus1) - V(minus1)) /
+                (2 * thermal.voltage)
+            );
+
+        I(vminus, ota_out2) =
+            I(bias2) * tanh(
+                (V(plus2) - V(minus2)) /
+                (2 * thermal.voltage)
+            );
+    }
+
+    # Linearizing diode pins require additional modeling.
 }

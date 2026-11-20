@@ -1,12 +1,33 @@
-# LM339 | 14-pin package | pin 1 first.
-# Open-collector comparator approximation. Use pull-ups. Input range and offset differ from the IC.
-# Datasheet: https://www.ti.com/lit/ds/symlink/lm339.pdf
+
+# LM339 - Quad Open-Collector Comparator
+# 14-pin package
 
 include("../shared/collectorComparator.ckt");
 
-chip LM339(out2, out1, vplus, minus1, plus1, minus2, plus2, minus3, plus3, minus4, plus4, vminus, out4, out3) {  # Keep the package pin order while the internal parts define the modeled signal behavior.
+chip LM339(out1, out2, vplus, minus2, plus2,
+           minus1, plus1, minus3, plus3,
+           minus4, plus4, vminus, out4, out3) {
+
+    # Four independent comparator channels
     oocCollectorComparator(vplus, vminus, plus1, minus1, out1, vminus);
     oocCollectorComparator(vplus, vminus, plus2, minus2, out2, vminus);
     oocCollectorComparator(vplus, vminus, plus3, minus3, out3, vminus);
     oocCollectorComparator(vplus, vminus, plus4, minus4, out4, vminus);
+
+    # Shared comparator characteristics
+    analog oocCollectorComparator {
+        offset = 2mV;
+        response.time = 1.3us;
+
+        common.min = vminus;
+        common.max = vplus - 1.5V;
+
+        output.type = open_collector;
+        output.low.at4mA = 150mV;
+    }
+
+    # Shared chip power consumption
+    analog {
+        supply.current.total = 0.8mA;
+    }
 }

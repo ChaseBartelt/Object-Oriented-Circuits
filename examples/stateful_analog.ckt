@@ -1,0 +1,26 @@
+# Implicit first-order filter and transport delay, in native time simulation.
+# Use a 10 us scope time step, watch out or delayed, and run for several ms.
+# Properties, local expressions and history add no schematic symbols.
+
+chip Filter(input, out, delayed, gnd) {
+    analog {
+        properties {
+            tau = 1ms;
+            transport.time = 300us;
+        }
+        property initial: V = 0V;
+
+        error = V(input, gnd) - V(out, gnd);
+        V(out, gnd) = integrate(error / tau, initial);
+        V(delayed, gnd) = delay(V(input, gnd), transport.time);
+    }
+}
+
+Vinput(pulse(0, 2V, 1ms, 10us, 10us, 2ms, 5ms)) between(input, 0);
+
+main {
+    Filter(input, out, delayed, 0);
+    Rload(10k) between(out, 0);
+    Rdelay(10k) between(delayed, 0);
+    measure = V out 0;
+}

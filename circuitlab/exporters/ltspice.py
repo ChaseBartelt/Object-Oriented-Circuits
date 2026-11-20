@@ -10,12 +10,12 @@ from itertools import combinations
 
 from circuitlab.model.graph import CircuitError
 from circuitlab.layout.hierarchy import METHOD_PREFIX, hood_levels
-from circuitlab.layout.geometry import BJT_PIN_OFFSET, package_pins, pin_offset, rotate_point, symbol_pins, wire_axis
+from circuitlab.layout.geometry import BJT_PIN_OFFSET, Layout, add_wire, package_pins, pin_offset, rotate_point, symbol_pins, wire_axis
 from circuitlab.layout.checks import segments_intersect
 from circuitlab.math.report import component_labels
 from circuitlab.layout.routing import fast_layout
 from circuitlab.exporters.spice import (
-    OPAMP_MODEL, POWERED_OPAMP_MODEL, SpiceNames, opamp_subcircuit, spice_circuit,
+    OPAMP_MODEL, POWERED_OPAMP_MODEL, SpiceNames, math_source_lines, opamp_subcircuit, spice_circuit,
 )
 from circuitlab.layout.wire_edit import route_anchors, wire_graph
 
@@ -27,6 +27,26 @@ SYMBOLS = {
     "V": ("voltage", 0, 16, 96),
     "I": ("current", 0, 0, 80),
 }
+
+# One CELL symbol is shared by every audio model. Its order matches the
+# source call, so gain/bypass contacts remain real nets in exported sheets.
+AUDIO_SYMBOL_NAME = "ec_audamp_core"
+AUDIO_PINS = (("plus", 0, -16, "LEFT"), ("minus", 0, 16, "LEFT"),
+              ("out", 160, 0, "RIGHT"), ("vplus", 80, -64, "TOP"),
+              ("vminus", 80, 64, "BOTTOM"), ("gain1", 48, -96, "TOP"),
+              ("gain8", 128, -96, "TOP"), ("bypass", 128, 96, "BOTTOM"))
+
+
+def audio_symbol():
+    lines = ["Version 4", "SymbolType CELL", "SYMATTR Prefix X",
+             "LINE Normal 32 -40 32 40", "LINE Normal 32 40 144 0", "LINE Normal 144 0 32 -40",
+             "LINE Normal 0 -16 32 -16", "LINE Normal 0 16 32 16", "LINE Normal 144 0 160 0",
+             "LINE Normal 80 -64 80 -24", "LINE Normal 80 64 80 24",
+             "LINE Normal 48 -96 48 -34", "LINE Normal 128 -96 128 -6",
+             "LINE Normal 128 96 128 6", "TEXT 40 -16 Left 1 +", "TEXT 40 16 Left 1 -"]
+    for order, (name, x, y, side) in enumerate(AUDIO_PINS, 1):
+        lines.extend((f"PIN {x} {y} {side} 8", f"PINATTR PinName {name}", f"PINATTR SpiceOrder {order}"))
+    return "\n".join([*lines, ""])
 
 
 @dataclass(frozen=True)
@@ -45,11 +65,19 @@ def export_hierarchy(circuit, layout, details=None):
     details = details or {}
     expanded = {f"{METHOD_PREFIX}{index}" for index in range(len(circuit.instances))}
     levels = {name: (view, boundary) for name, view, _, boundary in hood_levels(circuit, expanded)}
+    behaviors = defaultdict(list)
+    for equation in circuit.behavior:
+        owner = equation.owner
+        while owner is not None and f"{METHOD_PREFIX}{owner}" not in levels:
+            owner = circuit.instances[owner].parent
+        behaviors[None if owner is None else f"{METHOD_PREFIX}{owner}"].append(equation)
     packages = {
         part.name: part for view, _ in levels.values() for part in view.components
         if part.name.startswith(METHOD_PREFIX)
     }
     blocks, files = {}, {}
+    if any(part.kind == "A" for part in circuit.components):
+        files[f"{AUDIO_SYMBOL_NAME}.asy"] = audio_symbol()
     instances = SpiceNames(*(part.name for part in spice.parts.values()))
 
     def native_symbols(drawing):
@@ -62,7 +90,7 @@ def export_hierarchy(circuit, layout, details=None):
         if name is None:
             continue
         view, boundary = levels[name]
-        if not view.components:
+        if not view.components and not behaviors[name]:
             continue
         package = packages[name]
         drawing = details.get(name)
@@ -70,6 +98,11 @@ def export_hierarchy(circuit, layout, details=None):
             part.name for part in view.components
         }:
             drawing = fast_layout(view, component_labels(view), boundary=boundary)
+        if not view.components:
+            # A mathematical package has ports and behavior, but no fake devices.
+            drawing = Layout(boundary={net: (0, -2 * row) for row, net in enumerate(boundary)})
+            for net, (x, y) in drawing.boundary.items():
+                add_wire(drawing, net, (x, y), (x + 1, y))
         drawing = native_symbols(drawing)
         names = SpiceNames(*spice.nodes.values())
         # Port names belong to this sheet. Reuse a readable pin name when available.
@@ -85,11 +118,11 @@ def export_hierarchy(circuit, layout, details=None):
                 ports[net] = port
             pins.append((net, port, 0 if left else 320, round(-4 * offset) * 16))
         nodes = {
-            net: (names.claim(mapped) if mapped.casefold() in used_ports.used else mapped)
+            net: (mapped if net == "0" else names.claim(mapped) if mapped.casefold() in used_ports.used else mapped)
             for net, mapped in spice.nodes.items()
         }
         nodes.update(ports)
-        local = replace(spice, nodes=nodes)
+        local = replace(spice, nodes=nodes, behavior_lines=math_source_lines(behaviors[name], nodes))
         sheet, _ = _export_drawing(
             drawing, local, blocks=blocks, ports=ports, aliases=aliases, commands=False
         )
@@ -102,7 +135,8 @@ def export_hierarchy(circuit, layout, details=None):
         files[f"{stem}.asc"] = sheet
         files[f"{stem}.asy"] = symbol
 
-    sheet, used_labels = _export_drawing(native_symbols(layout), spice, blocks=blocks)
+    top = replace(spice, behavior_lines=math_source_lines(behaviors[None], spice.nodes))
+    sheet, used_labels = _export_drawing(native_symbols(layout), top, blocks=blocks)
     return sheet, files, used_labels
 
 
@@ -121,6 +155,8 @@ def _block_symbol(label, pins):
 
 def export_schematic(circuit, layout):
     """Serialize the rendered circuit with the same electrical nets as SPICE."""
+    if any(part.kind == "A" for part in circuit.components):
+        raise CircuitError("Use hierarchical LTspice export for eight-pin audio amplifiers so their .asy symbol is saved too.")
     return _export_drawing(layout, spice_circuit(circuit))
 
 
@@ -268,6 +304,15 @@ def _schematic(layout, spice, scale, *, pin_flags=False, blocks, ports, aliases,
                 pin(net, terminal, anchor=anchor, bends=((terminal[0], point(anchor)[1]),))
         elif model is None:
             raise CircuitError(f"Cannot export the empty block {part.label}.")
+        elif part.kind == "A":
+            x, y = a
+            if b[0] < x + 176:
+                raise GridConflict
+            origin, symbol, rotation = (x + 16, y), AUDIO_SYMBOL_NAME, "R0"
+            for (net, anchor), (_, px, py, _) in zip(
+                    symbol_pins(part, start, end, top, grid=layout.pin_grid), AUDIO_PINS):
+                terminal = origin[0] + px, origin[1] + py
+                pin(net, terminal, anchor=anchor, bends=((terminal[0], point(anchor)[1]),))
         elif model.kind == "X":
             x, y = a
             if b[0] < x + 112:
@@ -347,7 +392,15 @@ def _schematic(layout, spice, scale, *, pin_flags=False, blocks, ports, aliases,
             f"SYMATTR InstName {block.instance if block else model.name}",
         ))
         if not block:
-            symbols.append(f"SYMATTR Value {_display_value(model)}")
+            value = _display_value(model)
+            if part.kind == "O" and model.value not in {OPAMP_MODEL, POWERED_OPAMP_MODEL}:
+                # The behavioral core uses output/return first; opamp2 uses five
+                # physical contacts, so select its explicit pin-order adapter.
+                if part.vplus and part.n != "0":
+                    raise CircuitError("Export a parameterized op amp with a named output return "
+                                       "as a SPICE netlist; opamp2 has no separate return contact.")
+                value += "_ASC"
+            symbols.append(f"SYMATTR Value {value}")
             if model.kind == "L":
                 symbols.append(f"SYMATTR SpiceLine {model.extra.strip()}")
             elif model.kind in "VI" and model.extra:
@@ -430,6 +483,7 @@ def _schematic(layout, spice, scale, *, pin_flags=False, blocks, ports, aliases,
     if pin_flags:
         lines.append(f"TEXT {left} {bottom + 64} Left 2 ;Matching net labels connect.")
     directives = [spice.directive] if commands else []
+    directives.extend(spice.behavior_lines)
     if commands:
         directives.extend(f"{name} {node} 0 DC 0" for name, node in spice.references)
         if any(part.kind == "X" and part.value == OPAMP_MODEL for part in spice.parts.values()):

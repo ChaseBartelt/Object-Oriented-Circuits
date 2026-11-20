@@ -11,6 +11,7 @@ from circuitlab.language.builder import Compiler, compile_program
 from circuitlab.language.document import compile_document, elaborate_document
 from circuitlab.model.graph import CircuitError
 from circuitlab.math.numbers import set_known
+from circuitlab.language.math_blocks import remap_equation
 from circuitlab.language.syntax import INCLUDE, NET_METHODS, OVERRIDE, SECTION, analysis_mode, has_chip, source_rows
 
 # Locate the bundled definitions relative to this module in the installed
@@ -240,7 +241,10 @@ def compile_linked(source, path, mode, *, render_only=False, read_source=None):
     circuits = []
     for path, program in programs.items():
         try:
-            circuit = compile_program(program, mode)
+            # An included executable may be empty before the merge, so defer
+            # numerical model validation without requiring a drawable graph
+            # in each individual file.
+            circuit = compile_program(program, mode, model_preview=render_only)
             # If symbolic group reduction would hide graph structure, rebuild without
             # that reduction for rendering or a multi-circuit merge. Connector wiring
             # must be applied to the explicit component topology.
@@ -279,7 +283,7 @@ def compile_linked(source, path, mode, *, render_only=False, read_source=None):
     result = replace(
         root, mode=combined_mode, components=[], known={}, probes=[], port=None, grounds=set(), named_wires=set(),
         wire_taps=[], instances=[], owners={}, component_lines={}, component_files={}, groups=[],
-        grouped=False, reduce_groups=False, connector_pins=tuple(sorted(shared)),
+        grouped=False, reduce_groups=False, connector_pins=tuple(sorted(shared)), behavior=[], properties=[], model_issues=[], comparators=[],
     )
     # Process circuits in discovery order. Only declared connector nets are
     # exposed; remaining names in each child receive a unique file prefix.
@@ -314,6 +318,23 @@ def compile_linked(source, path, mode, *, render_only=False, read_source=None):
         # current combined length so parents and component owners can be shifted
         # into the merged instance list without pointing into another file.
         base = len(result.instances)
+        result.comparators.extend(replace(
+            cmp,name=part_name(cmp.name),owner=base+cmp.owner,output_name=part_name(cmp.output_name),
+            plus=net(cmp.plus),minus=net(cmp.minus),collector=net(cmp.collector),emitter=net(cmp.emitter),
+            vplus=net(cmp.vplus),vminus=net(cmp.vminus),members=tuple(map(part_name,cmp.members)),
+            internal_nodes=frozenset(map(net,cmp.internal_nodes))) for cmp in circuit.comparators)
+        for issue in circuit.model_issues:
+            issue = replace(issue, owner=base + issue.owner if issue.owner is not None else None)
+            if issue not in result.model_issues:
+                result.model_issues.append(issue)
+        result.properties.extend(replace(prop, scope=part_name(prop.scope) if index else prop.scope,
+                                         owner=base + prop.owner if prop.owner is not None else None)
+                                 for prop in circuit.properties)
+        result.behavior.extend(remap_equation(
+            equation, net, name=part_name(equation.name),
+            owner=base + equation.owner if equation.owner is not None else None,
+            state_key=part_name,
+        ) for equation in circuit.behavior)
         for part in circuit.components:
             name = part_name(part.name)
             # Copy the component with qualified identity and the terminal fields
@@ -324,6 +345,8 @@ def compile_linked(source, path, mode, *, render_only=False, read_source=None):
                 p=net(part.p), n=net(part.n), base=net(part.base),
                 wiper=net(part.wiper),
                 in_plus=net(part.in_plus), in_minus=net(part.in_minus),
+                vplus=net(part.vplus), vminus=net(part.vminus),
+                gain1=net(part.gain1), gain8=net(part.gain8), bypass=net(part.bypass),
             ))
             # Carry source maps under the new part name. Prefer the original source
             # path, which may name a reusable definition instead of this executable.

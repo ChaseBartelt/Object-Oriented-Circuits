@@ -9,6 +9,7 @@ from math import degrees, pi, sqrt
 from circuitlab.math.numbers import format_value
 from circuitlab.math.quantities import QUANTITIES
 from circuitlab.language.syntax import UNITS
+from circuitlab.model.graph import AudioAmpModel, OpAmpModel
 
 
 # Build display text from a DC offset and an already-converted AC peak.
@@ -38,6 +39,8 @@ def pin_rows(result, pins):
     # that are absent from this solved graph, preserving the caller's order.
     for node, name in pins.items():
         if node not in result.network.nodes:
+            if node in result.network.unavailable_nodes:
+                rows.append((name,"Behavioral comparator interior","Not resolved by the numerical macromodel"))
             continue
 
         # Each row is (caption, explanation, rendered value). Prefix it with the
@@ -86,6 +89,14 @@ def pin_rows(result, pins):
             indices = {part_name: i for i, part_name in enumerate(network.names)}
             for part in result.circuit.components:
                 part_name = (part.label or part.name).replace("_", " ")
+                if part.name in network.unavailable_components:
+                    continue
+                if part.name in network.modeled_terminals:
+                    for role,net,amps in network.modeled_terminals[part.name]:
+                        if net == node:
+                            add(f"{tag}{part_name} {role} current",f"Behavioral comparator: into {role}",
+                                format_value(amps,"A",ac))
+                    continue
                 # A potentiometer has three distinct terminal currents entering the
                 # device. Use its high/wiper/low mapping rather than assigning one branch
                 # current to all terminals. Tied nets can legitimately match several pins.
@@ -112,16 +123,33 @@ def pin_rows(result, pins):
                     continue
                 # Ideal op-amp input pins draw zero current. If this same net also touches
                 # an output branch terminal, the generic branch rows below still apply.
+                if part.kind == "A":
+                    values = network.terminal_current.get(part.name, ())
+                    roles = ("in+", "in−", "output", "V+", "V-", "gain1", "gain8", "bypass")
+                    for role, net, amps in zip(roles, part.terminal_nets, values):
+                        if net == node:
+                            add(f"{tag}{part_name} {role} current", f"Into {role}",
+                                format_value(amps, "A", ac))
+                    continue
                 if part.kind == "O":
-                    for terminal, net in (
+                    if part.opamp and part.opamp.supply_current:
+                        terminal = network.terminal_current.get(part.name)
+                        if terminal:
+                            for role, net, amps in zip(("V+", "V-"), (part.vplus, part.vminus), terminal[-2:]):
+                                if net == node:
+                                    add(f"{tag}{part_name} {role} current", f"Into {role}",
+                                        format_value(amps, "A", ac))
+                    for input_index, (terminal, net) in enumerate((
                         ("in+", part.in_plus),
                         ("in−", part.in_minus),
-                    ):
+                    )):
                         if net == node:
+                            inputs = network.terminal_current.get(part.name)
+                            loaded = part.opamp and part.opamp.common_impedance is not None and inputs
                             add(
                                 f"{tag}{part_name} {terminal} current",
-                                "Ideal op-amp input",
-                                "0 A",
+                                "Common input impedance" if loaded else "Ideal op-amp input",
+                                format_value(inputs[input_index], "A", ac) if loaded else "0 A",
                             )
                 if node not in (part.p, part.n):
                     continue
@@ -267,6 +295,12 @@ def result_rows(result):
         )
         for p in c.components:
             name = p.label or p.name
+            if p.name in network.unavailable_components:
+                add(name,"Internal schematic component","Resolved by the comparator macromodel",provided=True)
+                continue
+            if p.name in network.modeled_components:
+                add(name+" model","Behavioral output stage",network.modeled_components[p.name],provided=True)
+                continue
             # Report original potentiometer resistance and position, not generated
             # leg definitions. Position is stored as a fraction and displayed as percent.
             if p.kind == "P":
@@ -289,7 +323,35 @@ def result_rows(result):
                 continue
             # The op-amp definition is an ideal voltage constraint. Its output voltage
             # and solved current are reported separately in the branch section.
+            if p.kind == "A":
+                add(prefix + name + " model", "Eight-pin gain/bypass model", "Behavioral audio amplifier", provided=True)
+                for key, unit in (("gain_default", ""), ("gain_max", ""), ("gain_resistor", "ohm"),
+                                  ("output_bias", ""), ("supply_current", "A"), ("bypass_resistance", "ohm")):
+                    add(prefix + name + " " + key.replace("_", "."), "Declared model/default",
+                        getattr(p.audio or AudioAmpModel(), key), unit, provided=True)
+                continue
             if p.kind == "O":
+                if p.opamp is not None and p.opamp != OpAmpModel():
+                    add(prefix + name + " model", "Vout = A(s) × (V(in+) − V(in−) + offset)",
+                        "Behavioral op amp", provided=True)
+                    for key, unit in (("gain", ""), ("bandwidth", "Hz"), ("slew", "V/s"),
+                                      ("offset", "V"), ("supply_current", "A")):
+                        value = getattr(p.opamp, key)
+                        add(prefix + name + " " + key.replace("_", "."), "Declared model/default",
+                            "Ideal/unlimited" if value is None else value, unit, provided=True)
+                    for key in ("common_min", "common_max"):
+                        limit = getattr(p.opamp, key)
+                        add(prefix + name + " " + key.replace("_", "."), "Model validity range",
+                            limit.source() if limit is not None else "Unrestricted", provided=True)
+                    for key in ("output_min", "output_max"):
+                        limit = getattr(p.opamp, key)
+                        add(prefix + name + " " + key.replace("_", "."), "Output saturation bound",
+                            limit.source() if limit is not None else "Unlimited", provided=True)
+                    for key, unit in (("common_rejection", "dB"), ("common_impedance", "ohm")):
+                        value = getattr(p.opamp, key)
+                        add(prefix + name + " " + key.replace("_", "."), "Declared model/default",
+                            "Ideal/infinite" if value is None else value, unit, provided=True)
+                    continue
                 add(
                     prefix + name + " model",
                     "V(in+) = V(in-)",
@@ -340,6 +402,13 @@ def result_rows(result):
             network.branch_power,
         ):
             name = prefix + (p.label if c.grouped else p.name)
+            if p.name in network.unavailable_components:
+                continue
+            if p.name in network.modeled_components:
+                add(name+" collector-emitter voltage", "Behavioral comparator output",v,"V",is_ac)
+                add(name+" collector current", "Current into open collector",i,"A",is_ac)
+                add(name+" power", "Collector sink + comparator bias draw",power,"W",is_ac)
+                continue
             if p.kind == "P":
                 # A pot's high-low voltage is not enough to reconstruct its three currents.
                 # Use stored terminal currents and the backend's sum of both leg powers,
@@ -363,7 +432,7 @@ def result_rows(result):
             # Op-amp branch voltage is output relative to its assigned return p.n.
             # Branch current enters the output terminal toward that return; it can
             # be negative while the amplifier supplies a load.
-            if p.kind == "O":
+            if p.kind in {"O", "A"}:
                 add(
                     name + " output voltage" + basis,
                     f"Vout = V(out) - V({p.n})",
@@ -378,7 +447,16 @@ def result_rows(result):
                     "A",
                     is_ac,
                 )
-                add(name + " input currents", "I(in+) = I(in-) = 0", "0 A")
+                if p.kind == "O" and p.opamp and p.opamp.common_impedance is not None:
+                    terminal = network.terminal_current[p.name]
+                    for label, amps in zip(("in+", "in−"), terminal[:2]):
+                        add(name + " " + label + " current", "Common input impedance", amps, "A", is_ac)
+                else:
+                    add(name + " input currents", "I(in+) = I(in-) = 0", "0 A")
+                if p.kind == "A":
+                    add(name + " power", "Sum of terminal powers", power, "W", is_ac)
+                elif p.opamp and (p.opamp.supply_current or p.opamp.common_impedance is not None):
+                    add(name + " power", "Output branch + input/supply draw", power, "W", is_ac)
                 continue
             # A voltage source already has its specified voltage in the definitions;
             # a current source already has its specified current. Suppress those
@@ -534,7 +612,7 @@ def component_labels(circuit):
             continue
         # Op amps, package pinouts, and controlled switches keep their name-only
         # caption here; their symbol/pin roles carry meaning beyond a scalar value.
-        if p.kind in {"O", "H", "S"}:
+        if p.kind in {"O", "H", "S", "A"}:
             continue
         # A schematic may show a named SPICE model even when the native solver
         # cannot run it. Preserve polarity and optional model name as caption lines.

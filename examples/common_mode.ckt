@@ -1,0 +1,13 @@
+Vsignal(1V) between(input, 0);
+Vpositive(5V) between(pos, 0);
+Vnegative(-5V) between(neg, 0);
+
+main {
+    op1(input, out, out, pos, neg);
+    analog op1 {
+        common.min = vminus + 3V;
+        common.max = vplus;
+        common.rejection = 100dB;
+        common.impedance = 1G;
+    }
+}

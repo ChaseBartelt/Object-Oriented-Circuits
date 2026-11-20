@@ -1,0 +1,22 @@
+include("@chips/converters/LT1677.ckt");
+
+Vpos(2V) between(vcc, 0);
+Vneg(-5V) between(vee, 0);
+
+main{
+    Sbutton(closed) between(vcc, signal);
+    R2(10k) between(signal, inverting);
+
+    R1(10k) between(output, inverting);
+
+    # LT1677 physical pin order
+    LT1677(trim1, inverting, 0, vee,
+           nc5, output, vcc, trim8);
+
+    measure = V output 0;
+}
+
+
+# @ooc-layout-begin padding=1
+# {"version":1,"mode":"auto","layouts":[[null,"auto",{"symbols":[["Vpos","V",["vcc","0"],[3.5,-6.5],[3.5,-9.0],"+"],["Vneg","V",["vee","0"],[3.5,-10.25],[3.5,-12.75],"+"],["Sbutton","K",["vcc","signal"],[4.5,-6.5],[8.5,-6.5],"+"],["R2","R",["signal","inverting"],[9.25,-6.5],[13.25,-6.5],"+"],["R1","R",["output","inverting"],[11.5,-8.5],[15.5,-8.5],"+"],["@method:0","H",["trim1","inverting","0","vee","nc5","output","vcc","trim8"],[5.0,-10.25],[11.5,-10.25],"+"]],"wires":{"vcc":[[[3.5,-6.5],[4.5,-6.5]],[[4.5,-7.25],[4.5,-6.5]],[[4.5,-7.25],[12.75,-7.25]],[[11.5,-9.75],[12.75,-9.75]],[[12.75,-9.75],[12.75,-7.25]]],"vee":[[[3.5,-10.25],[4.5,-10.25]],[[4.5,-11.75],[4.5,-10.25]],[[4.5,-11.75],[5.0,-11.75]]],"output":[[[11.5,-10.75],[13.5,-10.75]],[[13.5,-10.75],[13.5,-10.5]]],"0":[[[3.5,-13.0],[3.5,-12.75]],[[3.5,-9.25],[3.5,-9.0]]],"inverting":[[[4.75,-9.75],[4.75,-7.5]],[[4.75,-9.75],[5.0,-9.75]],[[4.75,-7.5],[13.25,-7.5]],[[13.25,-7.5],[13.25,-6.5]],[[13.25,-6.5],[13.5,-6.5]]],"nc5":[[[11.5,-11.75],[12.25,-11.75]]],"trim8":[[[11.5,-8.75],[12.25,-8.75]]],"signal":[[[8.5,-6.5],[9.25,-6.5]]]},"junctions":{},"labels":{},"grounds":[[3.5,-9.25],[3.5,-13.0],[5.0,-10.75]],"ground_names":[],"ground_rotations":[],"connectors":[["trim1",[5.0,-8.75],"trim1",true,false],["nc5",[12.25,-11.75],"nc5",false,true],["trim8",[12.25,-8.75],"trim8",false,false]],"boundary":{},"rotations":{"R1":3},"crossings":[["vcc",[12.75,-9.75],[12.75,-7.25],[-7.5]]],"label_offsets":[[["component","R1"],[1.9708905415713203,-0.0022215865751335465]],[["ground",3.5,-9.25],[0.4876430205949656,0.4266876430205945]]],"pin_grid":0.25}]],"logic":{"schematic":{},"simulation":{}}}
+# @ooc-layout-end

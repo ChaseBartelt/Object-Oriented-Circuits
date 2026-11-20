@@ -87,6 +87,55 @@
     "body": "${1:op1}(${2:in_plus}, ${3:in_minus}, ${4:out}, ${5:vplus}, ${6:vminus});$0",
     "description": "Place an ideal op amp with optional positive and negative supply identifiers."
   },
+  "Op amp ideal defaults": {
+    "prefix": "opamp-default",
+    "body": [
+      "opamp ${1:op1};",
+      "$1(${2:plus}, ${3:minus}, ${4:out});$0"
+    ],
+    "description": "Declare an ideal op amp; an optional block can override its defaults."
+  },
+  "Analog math equation": {
+    "prefix": "analog-math",
+    "body": "analog V(${1:out}) = V(${2:input}) * ${3:10};$0",
+    "description": "Add a voltage equation used by simulation without drawing a source symbol."
+  },
+  "Digital math block": {
+    "prefix": "digital-math",
+    "body": [
+      "digital {",
+      "\t${1:out} = ${2:a} & ${3:b};",
+      "}$0"
+    ],
+    "description": "Add logic behavior without schematic parts; digital chips keep their existing I/O declarations."
+  },
+  "Analog op amp math": {
+    "prefix": "analog-opamp",
+    "body": [
+      "${1:op1}(${2:plus}, ${3:minus}, ${4:out}, ${5:vplus}, ${6:vminus});",
+      "analog $1 {",
+      "\tgain = ${7:19e6};",
+      "\tbandwidth = ${8:7.2MHz};",
+      "\tslew = ${9:2.5V/us};",
+      "\toffset = ${10:20uV};",
+      "}$0"
+    ],
+    "description": "Configure the existing op-amp symbol with a separate optional mathematical model."
+  },
+  "Op amp parameter overrides": {
+    "prefix": "opamp-model",
+    "body": [
+      "opamp ${1:op1} {",
+      "\tgain = ${2:19e6};",
+      "\tbandwidth = ${3:7.2MHz};",
+      "\tslew = ${4:2.5V/us};",
+      "\toffset = ${5:20uV};",
+      "\tsupply.current = ${6:2.75mA};",
+      "}",
+      "$1(${7:plus}, ${8:minus}, ${9:out}, ${10:vplus}, ${11:vminus});$0"
+    ],
+    "description": "Override any op-amp defaults with gain, GBW, slew, offset and quiescent supply current."
+  },
   "Link circuit file": {
     "prefix": "include",
     "body": "include(\"${1:other.ckt}\");$0",
@@ -183,5 +232,85 @@
       "}"
     ],
     "description": "Generate independently scoped chip instances and connections during compilation of main."
+  },
+  "Eight pin audio amplifier": {
+    "prefix": "opamp-audio",
+    "body": [
+      "${1:op1}(${2:plus}, ${3:minus}, ${4:out}, ${5:vplus}, ${6:vminus}, ${7:gain1}, ${8:gain8}, ${9:bypass});",
+      "analog $1 {",
+      "\tgain.default = ${10:20};",
+      "\tgain.max = ${11:200};",
+      "\tgain.resistor = ${12:1.35k};",
+      "\toutput.bias = ${13:0.5};",
+      "\tsupply.current = ${14:4mA};",
+      "}$0"
+    ],
+    "description": "Use an eight-argument op amp for audio, with gain and bypass pins."
+  },
+  "Shared amplifier settings": {
+    "prefix": "analog-group",
+    "body": [
+      "analog (${1:op1}, ${2:op2}) {",
+      "\tgain = ${3:100000};",
+      "\tgbw = ${4:1.2MHz};",
+      "\tslew = ${5:0.5V/us};",
+      "\toffset = ${6:3mV};",
+      "}$0"
+    ],
+    "description": "Apply shared model properties to connected amplifiers."
+  },
+  "Override imported chip model": {
+    "prefix": "override-chip",
+    "body": [
+      "@override",
+      "chip ${1:LM324} {",
+      "\tanalog (${2:op1}, ${3:op2}, ${4:op3}, ${5:op4}) {",
+      "\t\tgbw = ${6:2MHz};",
+      "\t\tslew = ${7:1V/us};",
+      "\t}",
+      "}$0"
+    ],
+    "description": "Patch an included chip model while retaining its original pins and electrical connections."
+  },
+  "Op amp common mode properties": {
+    "prefix": "opamp-common",
+    "body": [
+      "${1:op1}(${2:plus}, ${3:minus}, ${4:out}, ${5:vplus}, ${6:vminus});",
+      "analog $1 {",
+      "\tcommon.min = vminus + ${7:3V};",
+      "\tcommon.max = vplus;",
+      "\tcommon.rejection = ${8:100dB};",
+      "\tcommon.impedance = ${9:1G};",
+      "}$0"
+    ],
+    "description": "Declare common-mode range, CMRR and finite input impedance."
+  },
+  "Stateful analog filter": {
+    "prefix": "analog-state",
+    "body": [
+      "analog {",
+      "\tproperty tau = ${1:1ms};",
+      "\terror = V(${2:input}) - V(${3:out});",
+      "\tV($3) = integrate(error / tau, ${4:0V});",
+      "}$0"
+    ],
+    "description": "Define an implicit first-order filter with local properties and integration; adds no schematic symbols."
+  },
+  "Custom mathematical chip": {
+    "prefix": "chip-math",
+    "body": [
+      "chip ${1:MyAmplifier}(input, out, gnd) {",
+      "\tanalog {",
+      "\t\tproperties {",
+      "\t\t\tgain = ${2:10};",
+      "\t\t\toffset = ${3:2mV};",
+      "\t\t\toutput.max = ${4:12V};",
+      "\t\t}",
+      "\t\tV(out, gnd) = min(gain * V(input, gnd) + offset, output.max);",
+      "\t}",
+      "}",
+      "$0"
+    ],
+    "description": "Define custom model properties with inferred SI units, without schematic components."
   }
 }

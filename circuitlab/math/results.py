@@ -57,6 +57,12 @@ class Network:
     # Optional multi-terminal metadata. For a pot the tuple order is
     # (high, wiper, low), with every current positive entering the device.
     terminal_current: dict[str, tuple] = field(default_factory=dict)
+    # A numerical macromodel need not resolve its separately drawn interior.
+    # Placeholder array slots must never be presented as measured values.
+    unavailable_components: frozenset[str] = frozenset()
+    unavailable_nodes: frozenset[str] = frozenset()
+    modeled_components: dict[str, str] = field(default_factory=dict)
+    modeled_terminals: dict[str, tuple] = field(default_factory=dict)
 
 
 # Sum both leg powers but retain each terminal current, using the same external sign

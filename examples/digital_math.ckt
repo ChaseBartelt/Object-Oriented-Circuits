@@ -1,0 +1,7 @@
+chip Logic(a, b, c, d, out) {
+    a, b, c, d = input;
+    out = output;
+    digital{
+        out = (a & b) | (c ^ d);
+    }
+}

@@ -23,7 +23,7 @@ from circuitlab.exporters.spice import export_spice
 class ChipLibraryTest(unittest.TestCase):
     def test_every_bundled_chip_resolves_by_short_name(self):
         files = list(CHIP_LIBRARY.rglob("*.ckt"))
-        self.assertEqual(len(files), 59)
+        self.assertEqual(len(files), 61)
         for file in files:
             with self.subTest(chip=file.stem):
                 self.assertEqual(include_path(file.stem), file.resolve())

@@ -58,7 +58,14 @@ def fast_layout(circuit, labels, *, boundary=(), shorten=True):
     """Route a small fixed set of placements and skip iterative refinement."""
     parts = circuit.components
     if not parts:
-        return Layout()
+        # Mathematical chips have no internal symbols. Keep their actual
+        # boundary contacts editable/persistable without inventing devices.
+        drawing = Layout()
+        for row, net in enumerate(dict.fromkeys(boundary)):
+            start = 0.0, -2.0 * row
+            drawing.boundary[net] = start
+            add_wire(drawing, net, start, (1.5, start[1]))
+        return drawing
     runs, reversed_parts = series_runs(circuit)
     pins = component_pins(parts, reversed_parts=reversed_parts)
     if not pins:
@@ -666,9 +673,9 @@ def _compact_channels(
         for part, a, b, _ in layout.symbols:
             x, y = (a[0] + b[0]) / 2, (a[1] + b[1]) / 2
             half_height = 0.6 if part.kind == "K" else 0.44
-            if part.kind in {"O", "Q", "P"}:
+            if part.kind in {"O", "Q", "P", "A"}:
                 height = {"Q": BJT_PIN_OFFSET, "P": POT_PIN_OFFSET}.get(
-                    part.kind, 1.4 if part.vplus else 0.73
+                    part.kind, 1.9 if part.kind == "A" else 1.4 if part.vplus else 0.73
                 )
                 body = ((a[0] + 0.08, y - height), (b[0] - 0.08, y + height))
             elif a[0] == b[0]:

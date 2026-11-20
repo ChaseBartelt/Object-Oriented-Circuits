@@ -70,8 +70,8 @@ class DeviceLayoutsTest(unittest.TestCase):
 
     def test_every_library_declaration_previews_and_restores_without_wiring_changes(self):
         devices = library_devices()
-        self.assertEqual(len(devices), 48)  # 40 packages, uA741 wrapper, seven shared circuits
-        self.assertEqual(sum(d.kind == "chip" for d in devices), 41)
+        self.assertEqual(len(devices), 50)  # Includes the behavioral VCO declaration.
+        self.assertEqual(sum(d.kind == "chip" for d in devices), 43)
         self.assertEqual(len({d.key for d in devices}), len(devices))
         pinouts = set()
         for device in devices:
@@ -96,7 +96,7 @@ class DeviceLayoutsTest(unittest.TestCase):
                 bound = self.store.for_instance(circuit.instances[0], view, boundary)
                 self.assertIsNotNone(bound)
                 self.assertTrue(preserves_nets(view, bound))
-        self.assertEqual(pinouts, {"AD633", "LM13700", "PT2399", "ADS1115", "MCP4921", "CD4046B", "XR2206"})
+        self.assertEqual(pinouts, {"ADS1115", "MCP4921", "CD4046B", "XR2206"})
 
     def test_defaults_are_individual_and_keep_existing_gate_settings_and_backups(self):
         gate = default_gate_layout("nand", 2)
