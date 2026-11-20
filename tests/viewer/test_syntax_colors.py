@@ -67,12 +67,20 @@ class SyntaxColorsTest(unittest.TestCase):
 
     def test_existing_components_gate_calls_and_wire_counts_keep_their_colors(self):
         source = "main { i=count; Rload(1k) between(in,w*i); op1(w^,0,w*i); nor(vcc,0,a,y); }"
-        for token in ("Rload", "op1", "nor", "w*i", "w^"):
+        for token in ("Rload", "nor", "w*i", "w^"):
             with self.subTest(token=token):
                 self.assertEqual(self.color(source,token),"#e3b5f5")
         self.assertEqual(self.color(source,"count"),"#659cd7")
         self.assertEqual(self.color("# @param gain is analog","@param"),"#b5d49d")
         self.assertEqual(self.color("@override analog op1 {gain=10;}","@override"),"#f6a652")
+
+    def test_analog_header_targets_match_their_calls(self):
+        for token, header in (("op1", "analog (op1, op2) {"),
+                              ("op2", "analog (op1, op2) {"),
+                              ("oocCollectorComparator", "analog oocCollectorComparator {")):
+            with self.subTest(token=token):
+                self.assertEqual(self.color(f"{token}(a, b, out);", token), "#e6dfa2")
+                self.assertEqual(self.color(header, token), "#e6dfa2")
 
 
 if __name__ == "__main__":

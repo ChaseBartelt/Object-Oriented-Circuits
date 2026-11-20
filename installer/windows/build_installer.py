@@ -85,9 +85,16 @@ def build(args):
     own = stage / "wheel"
     execute([sys.executable, "-m", "pip", "wheel", source, "--no-deps", "--no-build-isolation", "--wheel-dir", own])
     wheels.extend(own.glob("*.whl"))
+    site_packages = runtime / "Lib/site-packages"
     execute([sys.executable, "-m", "pip", "install", "--no-index", "--no-deps", "--no-compile",
-             "--target", runtime / "Lib/site-packages", "--platform", "win_amd64", "--python-version", "3.14",
+             "--target", site_packages, "--platform", "win_amd64", "--python-version", "3.14",
              "--implementation", "cp", "--abi", "cp314", "--only-binary=:all:", *wheels])
+    # The staged interpreter checks its wheel inventory. Compare against the
+    # source as well so an omitted package-data pattern cannot pass that check.
+    for chip in sorted((source / "circuitlab/libraries/chips").rglob("*.ckt")):
+        relative = chip.relative_to(source)
+        if chip.is_file() and not (site_packages / relative).is_file():
+            raise RuntimeError(f"The application wheel omitted {relative.as_posix()}.")
     extension = payload / "extension" / f"ooc-language-{extension_version}.vsix"
     packager = runpy.run_path(str(REPO / "ide/vscode/package_extension.py"))
     packager['build'](extension)

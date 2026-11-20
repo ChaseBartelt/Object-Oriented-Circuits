@@ -17,7 +17,7 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import QCompleter, QPlainTextEdit, QTextEdit, QToolTip, QWidget
 
 from circuitlab.language.gates import GATE_HELP
-from circuitlab.language.syntax import OP, TRANS_CALL
+from circuitlab.language.syntax import OP, OPAMP_BRACE, TRANS_CALL
 from circuitlab.language.wire_counts import COUNT_REFERENCE, is_count_reference
 from circuitlab.tooling.source_info import (
     IDENTIFIER, WIRE_COUNT_DECLARATION, SourceInfo, accepts_calls as _accepts_calls,
@@ -25,9 +25,10 @@ from circuitlab.tooling.source_info import (
 
 INDENT = " " * 4
 BUILTIN_CALL = re.compile(
-    rf"\b(?:{OP.pattern}|{TRANS_CALL.pattern}|{'|'.join(GATE_HELP)})\b(?=\s*\()",
+    rf"\b(?:{TRANS_CALL.pattern}|{'|'.join(GATE_HELP)})\b(?=\s*\()",
     re.I,
 )
+MODEL_HEADER = re.compile(rf"\b{OPAMP_BRACE.pattern}", re.I)
 NUMBER_TOKEN = re.compile(
     r"(?<![\w.])([+−-]?(?:[0-9]+(?:_[0-9]+)*(?:\.[0-9_]*)?|\.[0-9][0-9_]*)"
     r"(?:[eE][+-]?[0-9][0-9_]*)?[ij]?)"
@@ -72,7 +73,7 @@ class CircuitHighlighter(QSyntaxHighlighter):
         (re.compile(r"\b(?:V|I)(?=\s*\()"), "#e6dfa2", 0),
         (NUMBER_TOKEN, "#ffd18b", 1),
         (NUMBER_TOKEN, "#dfb76c", 2),
-        (re.compile(r"\b(?:[RCLXZVIQPS]\d[\w]*|op\d+)\b", re.I), "#e3b5f5", 0),
+        (re.compile(r"\b[RCLXZVIQPS]\d[\w]*\b", re.I), "#e3b5f5", 0),
         (re.compile(r"\b[RCLZVIPS]\w*(?=\s*(?:\([^()]*\)\s*)?between\s*\()", re.I), "#e3b5f5", 0),
         (BUILTIN_CALL, "#e3b5f5", 0),
         (re.compile(r"@override\b", re.I), "#f6a652", 0),
@@ -100,6 +101,9 @@ class CircuitHighlighter(QSyntaxHighlighter):
                 start, end = match.span(group)
                 if start >= 0:
                     paint(start, end, QColor(color))
+        for header in MODEL_HEADER.finditer(code):
+            for target in re.finditer(r"\b[A-Za-z_][A-Za-z0-9_]*\b", header[1]):
+                paint(header.start(1) + target.start(), header.start(1) + target.end(), QColor("#e6dfa2"))
         for declaration in WIRE_COUNT_DECLARATION.finditer(code):
             paint(declaration.start(2), declaration.end(2), QColor("#659cd7"))
         info = SourceInfo(code)

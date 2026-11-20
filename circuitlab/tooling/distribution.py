@@ -15,6 +15,7 @@ import sys
 from circuitlab.language.linked import CHIP_LIBRARY
 
 PRODUCT = "object-oriented-circuits"
+PACKAGE_NAME = "electric-circuits-calculator"
 
 
 def install_root():
@@ -111,23 +112,33 @@ def install_extension(code, vsix, *, user_data=None, extensions_dir=None):
     return result.stdout.strip()
 
 
+def _check_chip_library(files):
+    """Check that the chip definitions listed by the installed wheel are present."""
+    for path in files or ():
+        if path.parts[:3] == ("circuitlab", "libraries", "chips") and path.suffix == ".ckt":
+            relative = Path(*path.parts[3:])
+            if not (CHIP_LIBRARY / relative).is_file():
+                raise RuntimeError(f"The installed chip library is missing {relative.as_posix()}.")
+
+
 # Validate the installed payload through its own interpreter rather than assuming the
 # development environment can import the same dependencies.
 def self_test():
     from circuitlab.tooling.session import CircuitSession
+    package = importlib.metadata.distribution(PACKAGE_NAME)
+    _check_chip_library(package.files)
     session = CircuitSession()
-    session.set_source("V1(12) between(supply, 0);\nR1(2k) between(supply, out);\nR2(1k) between(out, 0);")
+    session.set_source('include("74HC00");\n'
+                       "V1(12) between(supply, 0);\nR1(2k) between(supply, out);\nR2(1k) between(out, 0);")
     session.compile()
     if session.issues or session.solution is None:
         raise RuntimeError("The installed compiler could not solve its test circuit.")
     net = session.solution.network
     if abs(net.voltage[net.nodes.index("out")] - 4) > 1e-8:
         raise RuntimeError("The installed solver returned an incorrect test result.")
-    if len(list(CHIP_LIBRARY.rglob("*.ckt"))) != 59:
-        raise RuntimeError("The installed chip library is incomplete.")
     # Import Qt and the viewer without showing a window during Setup.
     from circuitlab.viewer.window import ViewerWindow
-    return {"ok": True, "version": importlib.metadata.version("electric-circuits-calculator"),
+    return {"ok": True, "version": package.version,
             "python": sys.executable, "library": str(CHIP_LIBRARY)}
 
 
@@ -149,7 +160,7 @@ def main():
     try:
         if args.command == "info":
             answer = {"python": sys.executable, "library": str(CHIP_LIBRARY),
-                      "version": importlib.metadata.version("electric-circuits-calculator")}
+                      "version": importlib.metadata.version(PACKAGE_NAME)}
         elif args.command == "self-test":
             answer = self_test()
         elif args.command == "activate":

@@ -34,7 +34,7 @@
             },
             {
               "name": "support.function.ooc",
-              "match": "(?i)\\b(?:not|buf|and|nand|or|nor|xor|xnor|op[0-9]+|trans[A-Za-z0-9_]+|switch[A-Za-z0-9_]+|pulse)\\b"
+              "match": "(?i)\\b(?:not|buf|and|nand|or|nor|xor|xnor|op[0-9]+|oocCollectorComparator|trans[A-Za-z0-9_]+|switch[A-Za-z0-9_]+|pulse)\\b"
             },
             {
               "name": "support.function.ooc",
@@ -185,7 +185,11 @@
             "4": {
               "patterns": [
                 {
-                  "name": "entity.name.function.component.ooc",
+                  "name": "support.function.ooc",
+                  "match": "(?i)\\b(?:op[0-9]+|oocCollectorComparator)\\b"
+                },
+                {
+                  "name": "entity.name.function.ooc",
                   "match": "\\b[A-Za-z_][A-Za-z0-9_]*\\b"
                 },
                 { "include": "#punctuation" }
@@ -434,7 +438,7 @@
         },
         {
           "name": "support.function.ooc",
-          "match": "(?i)\\b(?:not|buf|and|nand|or|nor|xor|xnor|op[0-9]+|trans[A-Za-z0-9_]+|switch[A-Za-z0-9_]+|pulse)(?=\\s*\\()"
+          "match": "(?i)\\b(?:not|buf|and|nand|or|nor|xor|xnor|op[0-9]+|oocCollectorComparator|trans[A-Za-z0-9_]+|switch[A-Za-z0-9_]+|pulse)(?=\\s*\\()"
         },
         {
           "name": "support.function.ooc",

@@ -3,6 +3,7 @@
 # Identity, containment, checksum, and activation checks must still reject stale or corrupt
 # candidates.
 import hashlib
+from importlib.metadata import PackagePath
 import io
 import json
 from pathlib import Path
@@ -54,6 +55,19 @@ class DistributionTest(unittest.TestCase):
         self.record["product"] = "other"
         self.save()
         with self.assertRaises(ValueError): distribution.read_install(self.root)
+
+    def test_chip_library_checks_wheel_inventory_without_a_fixed_count(self):
+        prefix = "circuitlab/libraries/chips/"
+        files = [PackagePath(prefix + name) for name in ("logic/74HC00.ckt", "analog/NewChip.ckt")]
+        with patch.object(distribution, "CHIP_LIBRARY", self.root):
+            for name in ("logic/74HC00.ckt", "analog/NewChip.ckt"):
+                path = self.root / name
+                path.parent.mkdir(exist_ok=True)
+                path.write_text("# definition", encoding="utf-8")
+            distribution._check_chip_library(files)
+            (self.root / "analog/NewChip.ckt").unlink()
+            with self.assertRaisesRegex(RuntimeError, "analog/NewChip.ckt"):
+                distribution._check_chip_library(files)
 
     def test_activation_preserves_previous_descriptor_if_validation_fails(self):
         before = (self.root / "install.json").read_bytes()

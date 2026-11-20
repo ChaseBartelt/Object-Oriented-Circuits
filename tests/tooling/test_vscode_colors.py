@@ -34,6 +34,7 @@ class RichTextMateColorTest(unittest.TestCase):
                 "    gain=ideal;",
                 "}",
                 "analog oocCollectorComparator {response.time=1.3us;}",
+                "oocCollectorComparator(vplus,vminus,a,b,out,vminus);",
             ],
             "calls": [
                 "R1(1k) between(input,w*i); C1(10nF) between(w^i,0);",
@@ -87,9 +88,10 @@ class RichTextMateColorTest(unittest.TestCase):
         for case,row,text in (("models",1,"common.min"),("models",2,"delay.rise"),
                               ("behavior",4,"output.max")):
             self.assert_scope(case,row,text,"variable.other.property.ooc")
-        self.assert_scope("models",0,"op1","entity.name.function.component.ooc")
-        self.assert_scope("models",0,"op2","entity.name.function.component.ooc")
-        self.assert_scope("models",6,"oocCollectorComparator","entity.name.function.component.ooc")
+        self.assert_scope("models",0,"op1","support.function.ooc")
+        self.assert_scope("models",0,"op2","support.function.ooc")
+        self.assert_scope("models",6,"oocCollectorComparator","support.function.ooc")
+        self.assert_scope("models",7,"oocCollectorComparator","support.function.ooc")
         self.assert_scope("models",3,"open_collector","constant.language.output-type.ooc")
         self.assert_scope("models",4,"ideal","constant.language.model.ooc")
 
