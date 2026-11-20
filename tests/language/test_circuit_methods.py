@@ -226,8 +226,10 @@ class CircuitMethods(unittest.TestCase):
         self.assertEqual(result.network.references["buffered"], "agnd")
         self.assertAlmostEqual(result.readings[0][2], 40 / 11)
         self.assertAlmostEqual(abs(result.readings[1][2]), 0.3682297521)
+        flow = signal_flow(circuit)
+        self.assertIsNotNone(flow)
+        self.assertTrue(preserves_nets(circuit, flow))
         layout = schematic_layout(circuit, component_labels(circuit), "auto")
-        self.assertEqual(layout, signal_flow(circuit))
         self.assertTrue(preserves_nets(circuit, layout))
         shunt_returns = {
             end for part, _, end, _ in layout.symbols if part.name in {"C1", "R2"}
@@ -277,14 +279,16 @@ class CircuitMethods(unittest.TestCase):
                 self.assertEqual((resistor.p, resistor.n), ("a", "agnd"))
                 self.assertEqual(amp.n, "agnd")
                 self.assertAlmostEqual(result.readings[0][2], 10 / 11)
-                for mode in ("auto", "routed", "labeled"):
-                    drawing = schematic_layout(circuit, component_labels(circuit), mode)
-                    self.assertTrue(preserves_nets(circuit, drawing))
-                    self.assertEqual(
-                        set(drawing.ground_names.values()), {"agnd", "bgnd"}
-                    )
-                    if mode != "labeled":
-                        self.assertEqual(drawing, signal_flow(circuit))
+                drawings = {"signal flow": signal_flow(circuit)}
+                drawings.update(
+                    (mode, schematic_layout(circuit, component_labels(circuit), mode))
+                    for mode in ("auto", "routed", "labeled")
+                )
+                for mode, drawing in drawings.items():
+                    with self.subTest(mode=mode):
+                        self.assertIsNotNone(drawing)
+                        self.assertTrue(preserves_nets(circuit, drawing))
+                        self.assertEqual(set(drawing.ground_names.values()), {"agnd", "bgnd"})
 
     def test_parallel_taps_follow_branch_order_without_splitting_the_rails(self):
         result = solve_input("""

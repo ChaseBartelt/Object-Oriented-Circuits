@@ -2,7 +2,7 @@
   "name": "ooc-language",
   "displayName": "Object-Oriented Circuits",
   "description": "Edit, navigate, and check Object-Oriented Circuits (.ckt) files.",
-  "version": "0.8.3",
+  "version": "0.8.7",
   "publisher": "echoingfarts",
   "license": "MIT",
   "engines": { "vscode": "^1.90.0" },

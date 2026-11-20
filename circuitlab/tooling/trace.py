@@ -6,6 +6,8 @@
 import re
 from collections import defaultdict, deque
 
+from circuitlab.language.wire_counts import is_count_reference
+
 
 # Walk the selected electrical net using component identities; the preview can highlight
 # its existing geometry without rewriting source or constructing a replacement circuit.
@@ -37,7 +39,10 @@ def wire_trace(circuit, location, path=None):
             for instance in circuit.instances
             if instance.line == line and instance.name.casefold() == key
             and instance.path in (None, path) and terminal < len(instance.arguments)
-            and instance.arguments[terminal][0] == argument
+            # Counter tokens are expanded before argument binding. Match those
+            # by the existing source call/terminal identity, not by re-running
+            # a counter from an editor hover or comparing its raw spelling.
+            and (instance.arguments[terminal][0] == argument or is_count_reference(argument))
         }
         # A wire on a method call can map to several parts declared in its body.
         for net in circuit.nodes:

@@ -645,7 +645,7 @@ def expand_main(rows: list[SourceRow], instances: list[MethodInstance], *, impor
     # has no private method scope, and each surrounding region is top-level.
     expanded = chain(
         expand(before, Binding(), (), top_level=True),
-        expand(expand_control_flow(rows[start + 1 : stop], budget=budget), Binding(in_main=True), ()),
+        expand(expand_control_flow(rows[start + 1 : stop], budget=budget, allow_wire_counts=True), Binding(in_main=True), ()),
         expand(after, Binding(), (), top_level=True),
     )
     # Consume the lazy generator directly on the legacy path. Iteration is

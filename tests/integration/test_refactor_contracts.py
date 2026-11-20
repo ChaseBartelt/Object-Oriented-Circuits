@@ -1,8 +1,9 @@
 """Compare the reorganized implementation with immutable pre-refactor behavior.
 
 These fixtures capture the audited implementation, not manufacturer accuracy.
-Only source-root paths are normalized; electrical names, values, scopes and
-pin ordering must agree exactly. Numerical outputs use the existing MATLAB
+Source-root paths are normalized, and later fields have explicit expected
+defaults for these fixtures. Electrical names, values, scopes and pin ordering
+must agree exactly. Numerical outputs use the existing MATLAB
 parity suite's tolerances (rtol=1e-9, atol=1e-11).
 """
 # The fixed fixtures are independent historical expectations, not regenerated implementation
@@ -28,10 +29,23 @@ from circuitlab.exporters.spice import spice_netlist
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "refactor"
 EXPECTED = json.loads((FIXTURES / "expectations.json").read_text(encoding="utf-8"))
 
+# These circuits predate the additional device models and result metadata.
+PART_DEFAULTS = {
+    "wiper": "", "position": 0.5, "closed": False, "vplus": "", "vminus": "",
+    "opamp": None, "behavior": None, "audio": None, "gain1": "", "gain8": "",
+    "bypass": "", "dc_only": False,
+}
+NETWORK_DEFAULTS = {
+    "terminal_current": {}, "unavailable_components": [], "unavailable_nodes": [],
+    "modeled_components": {}, "modeled_terminals": {},
+}
+
 
 def encode(value):
     if isinstance(value, complex):
         return {"real": value.real, "imag": value.imag}
+    if isinstance(value, frozenset):
+        return sorted(value)
     if isinstance(value, Path):
         if value.is_relative_to(FIXTURES):
             return "examples/" + value.relative_to(FIXTURES).as_posix()
@@ -74,7 +88,13 @@ class RefactorContractsTest(unittest.TestCase):
             for render_only in (False, True):
                 with self.subTest(circuit=name, render_only=render_only):
                     actual = graph_record(compile_fixture(name, render_only=render_only))
-                    self.assertEqual(actual, expected["graph"])
+                    graph = expected["graph"]
+                    reference = dict(
+                        graph,
+                        parts=[PART_DEFAULTS | part for part in graph["parts"]],
+                        instances=[{"signal_bindings": []} | instance for instance in graph["instances"]],
+                    )
+                    self.assertEqual(actual, reference)
 
     def test_spice_export_preserves_names_values_and_terminal_order(self):
         for name in EXPECTED["cases"]:
@@ -93,7 +113,11 @@ class RefactorContractsTest(unittest.TestCase):
                     "network": asdict(result.network) if result.network else None,
                     "dc_network": asdict(result.dc_network) if result.dc_network else None,
                 })
-                self.assert_numerically_equal(actual, expected["solution"])
+                reference = expected["solution"].copy()
+                for key in ("network", "dc_network"):
+                    if reference[key] is not None:
+                        reference[key] = NETWORK_DEFAULTS | reference[key]
+                self.assert_numerically_equal(actual, reference)
 
     def assert_numerically_equal(self, actual, expected):
         if isinstance(expected, dict):

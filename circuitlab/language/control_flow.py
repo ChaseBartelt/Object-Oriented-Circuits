@@ -9,6 +9,9 @@ from collections import ChainMap
 from dataclasses import dataclass
 
 from circuitlab.model.graph import CircuitError
+from circuitlab.language.wire_counts import (
+    COUNT_DECLARATION, COUNT_REFERENCE, WireCounts, has_count_reference, interpolate_connections,
+)
 
 # Recognize generation-time variables and updates separately from ordinary
 # electrical rows. The emitter decides whether a plain name=value assignment
@@ -182,6 +185,8 @@ def is_control_statement(text):
         or _INCREMENT.fullmatch(statement)
         or _MUTATION.match(statement)
         or _INTERPOLATION_START in statement
+        or COUNT_DECLARATION.fullmatch(statement)
+        or has_count_reference(statement)
     )
 
 
@@ -325,6 +330,8 @@ class _Variable:
         # int and bool declarations keep strict types: bool is intentionally
         # excluded from int despite Python's subclass relationship. let imposes
         # neither of these restrictions and can hold either expression result.
+        if self.type == "count":
+            raise _value_error(row, "Advance a wire counter in a connection with wi* or w*i.")
         if self.type == "int" and type(value) is not int:
             raise _value_error(row, "An int variable requires an integer value.")
         if self.type == "bool" and not isinstance(value, bool):
@@ -626,7 +633,7 @@ class _LoopSignal(Exception):
 
 
 # Substitute generated names using the current static scope while preserving the row origin.
-def _interpolate(row, scope):
+def _interpolate(row, scope, counts=None, *, connections=True):
     text, line, binding = row
 
     # Evaluate only the explicit ${expression} placeholder. Lowercase output
@@ -635,7 +642,15 @@ def _interpolate(row, scope):
         value = _evaluate(_Expression(match[1], row).parse(), scope, row)
         return str(value).lower()
 
-    text = _INTERPOLATION.sub(expand, text)
+    def resolve(token):
+        if COUNT_REFERENCE.fullmatch(token.strip()) is None:
+            return token
+        if counts is None:
+            raise _value_error(row, "Wire counters are available inside main; pass a resolved wire into reusable methods.")
+        return counts.resolve(token, scope, row)
+
+    interpolate = lambda text: _INTERPOLATION.sub(expand, text)
+    text = (interpolate_connections(row, interpolate, resolve) if connections else interpolate(text))
     # The supported placeholders are not nested. A remaining ${ after the
     # single substitution pass indicates an unfinished/unsupported placeholder
     # and must not leak into generated component or net names.
@@ -647,7 +662,7 @@ def _interpolate(row, scope):
 
 
 # Share one expansion budget across nested loops so nesting cannot evade the work limits.
-def _emit_loop(loop, scope, budget):
+def _emit_loop(loop, scope, budget, counts=None):
     # Keep header variables for the life of this loop. Each body execution
     # gets another fresh child map below, allowing body-local declarations to
     # repeat each iteration while updates to outer records remain visible.
@@ -662,7 +677,7 @@ def _emit_loop(loop, scope, budget):
         first_iteration = False
         budget.iteration(loop.row)
         try:
-            yield from _emit(loop.body, local.new_child(), budget)
+            yield from _emit(loop.body, local.new_child(), budget, counts)
         # break exits before the for update; continue falls through to that update
         # and then retests the condition. Both unwind any nested if/structural body
         # before reaching this nearest loop handler.
@@ -673,7 +688,7 @@ def _emit_loop(loop, scope, budget):
             loop.next.apply(local, loop.row)
 
 
-def _emit(statements, scope, budget):
+def _emit(statements, scope, budget, counts=None):
     for statement in statements:
         # Execute only the first selected branch in a fresh lexical map. Its
         # declarations are local, but assignments to existing enclosing records
@@ -681,24 +696,27 @@ def _emit(statements, scope, budget):
         if isinstance(statement, _If):
             for branch in statement.branches:
                 if branch.condition is None or _evaluate(branch.condition, scope, branch.row):
-                    yield from _emit(branch.body, scope.new_child(), budget)
+                    yield from _emit(branch.body, scope.new_child(), budget, counts)
                     break
         elif isinstance(statement, _Loop):
-            yield from _emit_loop(statement, scope, budget)
+            yield from _emit_loop(statement, scope, budget, counts)
         elif isinstance(statement, _LoopControl):
             raise _LoopSignal(statement.breaks)
         # Control wrappers disappear, but an electrical block must keep its opening
         # and closing rows. Count them in the expansion budget along with its contents.
         elif isinstance(statement, _Electrical):
-            yield budget.emitted(_interpolate(statement.start, scope))
+            yield budget.emitted(_interpolate(statement.start, scope, counts))
             # Interpolate raw device fields only. A field name matching a static variable
             # must not accidentally update that variable instead of reaching the builder.
             if statement.device:
+                # Model arithmetic retains its normal * and ^ operators. Only
+                # actual device connection fields may consume wire counters.
+                connections = bool(re.match(r"(?:battery|transistor)\b", statement.start[0], re.I))
                 for row in statement.body:
-                    yield budget.emitted(_interpolate(row, scope))
+                    yield budget.emitted(_interpolate(row, scope, counts, connections=connections))
             else:
                 try:
-                    yield from _emit(statement.body, scope.new_child(), budget)
+                    yield from _emit(statement.body, scope.new_child(), budget, counts)
                 # If break/continue escapes this structural block, emit its closing row
                 # before propagating the signal. Otherwise a partially emitted series/
                 # parallel block would leave the generated electrical syntax unbalanced.
@@ -708,6 +726,20 @@ def _emit(statements, scope, budget):
             yield budget.emitted(statement.end)
         else:
             text = statement[0].removesuffix(";").rstrip()
+            declaration = COUNT_DECLARATION.fullmatch(text)
+            # Preserve legacy assignments from an explicitly declared static
+            # variable named count. The new keyword does not shadow its value.
+            count_value = scope.get(text.partition("=")[2].strip()) if declaration else None
+            if declaration and (count_value is None or count_value.type == "count"):
+                if counts is None:
+                    raise _value_error(statement, "Declare wire counters inside main, not inside a reusable chip or circuit method.")
+                name = declaration["name"]
+                if name.casefold() in {"true", "false"}:
+                    raise _value_error(statement, f'"{name}" is a reserved Boolean literal.')
+                if name in scope.maps[0]:
+                    raise _value_error(statement, f'Declare compile-time variable "{name}" only once per block.')
+                scope[name] = _Variable("count", 0)
+                continue
             assignment = _ASSIGN.fullmatch(text)
             # Explicit declarations/mutations are static actions. A plain assignment
             # is static only when its target already exists in scope; otherwise keep
@@ -720,12 +752,12 @@ def _emit(statements, scope, budget):
             ):
                 _parse_update(text, statement).apply(scope, statement)
             else:
-                yield budget.emitted(_interpolate(statement, scope))
+                yield budget.emitted(_interpolate(statement, scope, counts))
 
 
 # Each method call starts with its own variable scope, preventing one invocation from
 # leaking compile-time variable values into another instance.
-def expand_control_flow(rows, *, budget=None):
+def expand_control_flow(rows, *, budget=None, allow_wire_counts=False):
     """Expand flow in a method invocation and preserve source locations."""
     # Materialize once for opt-in detection. The fast path leaves ordinary
     # legacy rows unchanged when no static feature is present.
@@ -736,4 +768,5 @@ def expand_control_flow(rows, *, budget=None):
     # Each invocation starts with a fresh variable environment. A supplied
     # budget may span many method calls, so independent variable scopes cannot
     # bypass the total work limit by resetting the counters.
-    yield from _emit(_Blocks(rows).parse(), ChainMap(), budget or ExpansionBudget())
+    yield from _emit(_Blocks(rows).parse(), ChainMap(), budget or ExpansionBudget(),
+                     WireCounts() if allow_wire_counts else None)

@@ -5,12 +5,13 @@
 
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
+import math
 from threading import Event
 
-from PySide6.QtCore import QPointF, QRectF, QSignalBlocker, QTimer
+from PySide6.QtCore import QPointF, QRectF, QSignalBlocker, QTimer, Qt, Signal
 from PySide6.QtGui import QColor, QPainter, QPainterPath
 from PySide6.QtWidgets import (
-    QComboBox, QDoubleSpinBox, QFormLayout, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget,
+    QComboBox, QDoubleSpinBox, QFormLayout, QHBoxLayout, QLabel, QPushButton, QSizePolicy, QVBoxLayout, QWidget,
 )
 
 from circuitlab.model.graph import CircuitError
@@ -35,37 +36,163 @@ def sample_batch(simulation, stop):
 
 
 class Waveform(QWidget):
+    voltage_auto_changed = Signal(bool)
+    VOLTAGE_DIVISIONS = 5
+
     def __init__(self):
         super().__init__()
         self.setMinimumHeight(145)
+        self.setMouseTracking(True)
         self.samples = deque(maxlen=600)
+        self.auto_voltage = True
+        self._manual_voltage = None
+        self._voltage_drag = None
+        self.time_label, self.time_scale = "µs", 1e-6
+        self.setToolTip("Drag the left voltage axis up to zoom in or down to zoom out. Double-click it, or use Auto V, to fit the signal again.")
+
+    def plot_area(self):
+        return QRectF(self.rect()).adjusted(78, 24, -15, -25)
+
+    def set_time_unit(self, label, scale):
+        """Change only axis labels; stored sample times always remain seconds."""
+        if not math.isfinite(scale) or scale <= 0:
+            raise ValueError("A time unit must have a finite positive scale.")
+        self.time_label, self.time_scale = label, scale
+        self.update()
+
+    def voltage_bounds(self):
+        """Keep a manual viewport independent of incoming samples and resets."""
+        if not self.auto_voltage and self._manual_voltage is not None:
+            return self._manual_voltage
+        values = [value for _, value in self.samples if math.isfinite(value)]
+        low, high = (min(values), max(values)) if values else (-.5, .5)
+        center = low / 2 + high / 2
+        spread = high - low
+        desired = min(1e308, spread * 1.1) if spread > max(1e-9, abs(center) * 1e-12) else 1.0
+        desired = max(desired, 16 * math.ulp(center))
+        raw_step = desired / self.VOLTAGE_DIVISIONS
+        magnitude = 10 ** math.floor(math.log10(raw_step))
+        step = next(factor * magnitude for factor in (1, 2, 5, 10) if factor * magnitude >= raw_step)
+        return self._centered_bounds(center, step * self.VOLTAGE_DIVISIONS)
+
+    @staticmethod
+    def _centered_bounds(center, span):
+        # Keep finite, distinct bounds even for a large DC offset where adding
+        # half a volt is smaller than one representable floating-point step.
+        span = max(span, 16 * math.ulp(center))
+        ceiling = math.nextafter(math.inf, 0)
+        return max(-ceiling, center - span / 2), min(ceiling, center + span / 2)
+
+    def set_auto_voltage(self, enabled=True):
+        enabled = bool(enabled)
+        if enabled == self.auto_voltage:
+            return
+        if not enabled:
+            self._manual_voltage = self.voltage_bounds()
+        self.auto_voltage = enabled
+        self._voltage_drag = None
+        self.voltage_auto_changed.emit(enabled)
+        self.update()
+
+    def _on_voltage_axis(self, position):
+        area = self.plot_area()
+        return 0 <= position.x() < area.left() and area.top() - 8 <= position.y() <= area.bottom() + 8
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton and self._on_voltage_axis(event.position()):
+            low, high = self.voltage_bounds()
+            self.set_auto_voltage(False)
+            self._voltage_drag = event.position().y(), low, high
+            self.setCursor(Qt.CursorShape.SizeVerCursor)
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if self._voltage_drag is not None:
+            start, low, high = self._voltage_drag
+            center = low / 2 + high / 2
+            factor = math.exp(max(-20, min(20, (event.position().y() - start) / 120)))
+            minimum = max(1e-9, 16 * math.ulp(center))
+            span = max(minimum, min(1e12, (high - low) * factor))
+            self._manual_voltage = self._centered_bounds(center, span)
+            self.update()
+            event.accept()
+            return
+        self.setCursor(Qt.CursorShape.SizeVerCursor if self._on_voltage_axis(event.position())
+                       else Qt.CursorShape.ArrowCursor)
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton and self._voltage_drag is not None:
+            self._voltage_drag = None
+            self.setCursor(Qt.CursorShape.SizeVerCursor if self._on_voltage_axis(event.position())
+                           else Qt.CursorShape.ArrowCursor)
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
+    def mouseDoubleClickEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton and self._on_voltage_axis(event.position()):
+            self.set_auto_voltage(True)
+            event.accept()
+            return
+        super().mouseDoubleClickEvent(event)
+
+    def leaveEvent(self, event):
+        if self._voltage_drag is None:
+            self.unsetCursor()
+        super().leaveEvent(event)
 
     def paintEvent(self, event):
         painter = QPainter(self)
-        painter.fillRect(self.rect(), QColor("#1b2028"))
-        area = QRectF(self.rect()).adjusted(53, 17, -15, -24)
-        painter.setPen(QColor("#697587"))
+        painter.fillRect(self.rect(), QColor("#333333"))
+        area = self.plot_area()
+        if area.width() <= 0 or area.height() <= 0:
+            return
+        painter.fillRect(area, QColor("#2d2d2d"))
+        low, high = self.voltage_bounds()
+        painter.setPen(QColor("#484848"))
+        for division in range(1, self.VOLTAGE_DIVISIONS):
+            y = area.bottom() - division * area.height() / self.VOLTAGE_DIVISIONS
+            painter.drawLine(QPointF(area.left(), y), QPointF(area.right(), y))
+        for division in range(1, 10):
+            x = area.left() + division * area.width() / 10
+            painter.drawLine(QPointF(x, area.top()), QPointF(x, area.bottom()))
+        painter.setPen(QColor("#929292"))
         painter.drawRect(area)
+        painter.setPen(QColor("#dedede"))
+        metrics = painter.fontMetrics()
+        for division in range(self.VOLTAGE_DIVISIONS + 1):
+            value = low + (high - low) * division / self.VOLTAGE_DIVISIONS
+            # Avoid a distracting -0 caused solely by endpoint roundoff.
+            if abs(value) < (high - low) * 1e-12:
+                value = 0.0
+            text = f"{value:.4g} V"
+            y = area.bottom() - division * area.height() / self.VOLTAGE_DIVISIONS
+            label = QRectF(2, y - metrics.height() / 2, area.left() - 10, metrics.height())
+            painter.drawText(label, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, text)
+        painter.drawText(QPointF(area.left(), 16), f"{(high-low)/self.VOLTAGE_DIVISIONS:.3g} V/div")
         if len(self.samples) < 2:
             return
         first, last = self.samples[0][0], self.samples[-1][0]
-        low = min(v for _, v in self.samples)
-        high = max(v for _, v in self.samples)
-        if high - low < 1e-6:
-            low, high = low - 0.5, high + 0.5
-        painter.setPen(QColor("#cbd5e1"))
-        painter.drawText(QPointF(4, area.top() + 5), f"{high:.3g} V")
-        painter.drawText(QPointF(4, area.bottom()), f"{low:.3g} V")
-        painter.drawText(QPointF(area.left(), area.bottom() + 17), f"{first * 1000:.3g} ms")
-        painter.drawText(QPointF(max(area.left(), area.right() - 66), area.bottom() + 17),
-                         f"{last * 1000:.3g} ms")
+        painter.drawText(QPointF(area.left(), area.bottom() + 18), f"{first / self.time_scale:.4g} {self.time_label}")
+        end_label = f"{last / self.time_scale:.4g} {self.time_label}"
+        painter.drawText(QPointF(max(area.left(), area.right() - metrics.horizontalAdvance(end_label)), area.bottom() + 18), end_label)
+        duration = last - first
+        if duration <= 0:
+            return
         path = QPainterPath()
         for i, (t, v) in enumerate(self.samples):
-            x = area.left() + (t - first) / (last - first) * area.width()
-            y = area.bottom() - (v - low) / (high - low) * area.height()
+            x = area.left() + (t - first) / duration * area.width()
+            fraction = (v / 2 - low / 2) / ((high - low) / 2)
+            y = area.bottom() - max(-1, min(2, fraction)) * area.height()
             (path.lineTo if i else path.moveTo)(x, y)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.setPen(QColor("#69bcf6"))
+        # Manual zoom may put the waveform outside the viewport; its trace
+        # must never paint over the axis values or neighboring controls.
+        painter.setClipRect(area.adjusted(1, 1, -1, -1))
         painter.drawPath(path)
 
 
@@ -96,13 +223,31 @@ class Oscilloscope(QWidget):
         self.voltage.setSuffix(" V")
         self.step = QDoubleSpinBox()
         self.step.setDecimals(6)
-        self.step.setRange(0.000001, 100000)
+        self.step.setRange(0.000001, 1e11)
         self.step.setValue(10)
-        self.step.setSuffix(" µs")
+        self.step.setMinimumWidth(0)
+        self.step.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        self._step_scale = 1e-6
+        self._step_seconds = 10 * self._step_scale
+        self.time_unit = QComboBox()
+        for unit, scale in (("ns", 1e-9), ("µs", 1e-6), ("ms", 1e-3), ("s", 1.0)):
+            self.time_unit.addItem(unit, scale)
+        self.time_unit.setCurrentIndex(1)
+        self.time_unit.setFixedWidth(58)
+        self.time_unit.setToolTip("Time-step and time-axis units. Changing units keeps the same physical time step.")
+        self.step.setToolTip("Interval between simulated samples, in the selected time unit.")
+        self.waveform.set_time_unit("µs", self._step_scale)
         self.run = QPushButton("Run")
         self.run.clicked.connect(self.toggle)
         self.reset = QPushButton("Reset")
         self.reset.clicked.connect(self.restart)
+        self.auto_voltage = QPushButton("Auto V")
+        self.auto_voltage.setCheckable(True)
+        self.auto_voltage.setChecked(True)
+        self.auto_voltage.setFixedWidth(72)
+        self.auto_voltage.setToolTip("Fit the voltage scale automatically. Drag the plot's left axis to choose a fixed scale; double-click the axis to restore Auto V.")
+        self.auto_voltage.toggled.connect(self.waveform.set_auto_voltage)
+        self.waveform.voltage_auto_changed.connect(self.auto_voltage.setChecked)
         self.message = QLabel()
         self.message.setWordWrap(True)
         layout = QVBoxLayout(self)
@@ -115,29 +260,35 @@ class Oscilloscope(QWidget):
             row = QHBoxLayout()
             row.addWidget(QLabel("Oscilloscope"))
             row.addStretch()
+            row.addWidget(self.auto_voltage)
             row.addWidget(self.run)
             row.addWidget(self.reset)
             layout.addLayout(row)
             fields = QFormLayout()
             fields.addRow("Node", self.node)
-            fields.addRow("Time step", self.step)
+            time_step = QHBoxLayout()
+            time_step.setSpacing(5)
+            time_step.addWidget(self.step, 1)
+            time_step.addWidget(self.time_unit)
+            fields.addRow("Time step", time_step)
             fields.addRow("Initial capacitor", self.initial)
             fields.addRow("Initial voltage", self.voltage)
             layout.addLayout(fields)
         else:
             for controls in (
-                (self.run, self.reset, QLabel("Node"), self.node, QLabel("Time step"), self.step),
+                (self.run, self.reset, self.auto_voltage, QLabel("Node"), self.node, QLabel("Time step"), self.step, self.time_unit),
                 (QLabel("Initial capacitor"), self.initial, QLabel("Initial voltage"), self.voltage),
             ):
                 row = QHBoxLayout()
                 for control in controls:
-                    row.addWidget(control)
+                    row.addWidget(control, 1 if control is self.step else 0)
                 row.addStretch()
                 layout.addLayout(row)
         layout.addWidget(self.waveform, 1)
         layout.addWidget(self.message)
         self.node.currentIndexChanged.connect(self.show_node)
         self.step.valueChanged.connect(self.change_step)
+        self.time_unit.currentIndexChanged.connect(self.change_time_unit)
         for control in (self.initial, self.voltage):
             control.setToolTip("Initial conditions apply after Reset; changing them does not interrupt a running circuit.")
         self.hide()
@@ -145,6 +296,26 @@ class Oscilloscope(QWidget):
     def set_panel_visible(self, visible):
         self.panel_visible = visible
         self.update_visibility()
+
+    def step_seconds(self):
+        """Return canonical seconds, independent of the chosen display unit."""
+        return self._step_seconds
+
+    def _set_step_seconds(self, seconds):
+        # Keep the physical value independently of decimal display rounding.
+        # Unit-only changes must not restamp a running solver by a few ULPs.
+        self._step_seconds = min(100000.0, max(1e-12, seconds))
+        with QSignalBlocker(self.step):
+            self.step.setValue(self._step_seconds / self._step_scale)
+
+    def change_time_unit(self, *_):
+        """Convert the display and axis, leaving simulation/history untouched."""
+        self._step_scale = self.time_unit.currentData()
+        with QSignalBlocker(self.step):
+            self.step.setDecimals((3, 6, 9, 12)[self.time_unit.currentIndex()])
+            self.step.setRange(1e-12 / self._step_scale, 100000 / self._step_scale)
+            self.step.setValue(self._step_seconds / self._step_scale)
+        self.waveform.set_time_unit(self.time_unit.currentText(), self._step_scale)
 
     def update_visibility(self):
         circuit = self.circuit
@@ -179,7 +350,7 @@ class Oscilloscope(QWidget):
                 try:
                     frequency = source_frequency(circuit)
                     if not preserve_state and frequency is not None and frequency != self.frequency:
-                        self.step.setValue(1e6 / (100 * frequency))
+                        self._set_step_seconds(1 / (100 * frequency))
                     self.frequency = frequency
                 except CircuitError as error:
                     self.frequency = None
@@ -199,6 +370,7 @@ class Oscilloscope(QWidget):
         self.waveform.update()
 
     def change_step(self, *_):
+        self._step_seconds = self.step.value() * self._step_scale
         if self.simulation is not None:
             self.stop_batch.set()
             self.refresh_simulation()
@@ -236,7 +408,7 @@ class Oscilloscope(QWidget):
             return False
         self.refresh_timer.stop()
         simulation = self.simulation
-        step = self.step.value() * 1e-6
+        step = self.step_seconds()
         if simulation is not None and (simulation.circuit is not self.circuit or simulation.step != step):
             try:
                 self.simulation = simulation.reconfigure(self.circuit, step)
@@ -279,7 +451,7 @@ class Oscilloscope(QWidget):
             return
         try:
             if self.simulation is None:
-                simulation = TimeDomain(self.circuit, self.step.value() * 1e-6)
+                simulation = TimeDomain(self.circuit, self.step_seconds())
                 if self.initial.currentData():
                     simulation.set_initial_voltage(self.initial.currentData(), self.voltage.value())
                 self.simulation = simulation

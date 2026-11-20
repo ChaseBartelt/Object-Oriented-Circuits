@@ -29,6 +29,24 @@ Manual switches use `S1(open) between(a, b);` or `S1(closed) between(a, b);`. Cl
 
 Inside a battery block, `Vneg = 5;` declares a −5 V supply on its first wire relative to its return. `Vneg = -5;` gives the same result. Use either `V` or `Vneg` once per battery block.
 
+Electrical `main` can generate numbered wire names with independent counters:
+
+```ooc
+main {
+    wi = count;
+    aux = count;
+    R1(1k) between(input, wi*);    # input -> wi1
+    R2(1k) between(wi^, wi*);      # wi1 -> wi2
+    op1(wi^, wi*, wi^);            # plus=wi2, minus=wi3, out=wi3
+    Rload(10k) between(wi^, 0);
+    Rbranch(10k) between(input, aux*); # independent counter: aux1
+}
+```
+
+`wi = count;` starts at zero. `wi*` advances the counter and emits the next wire name. `wi^` reuses its current wire name, including `wi0` before the first advance. Connections expand left to right, and only executed branches and loop iterations advance counters. Counters are local to `main` and can be read with `${wi}` but cannot be assigned directly or updated with `wi++`. The suffix forms apply to connection fields. Arithmetic expressions keep their ordinary multiplication and XOR operators.
+
+Use the explicit forms if the wire prefix differs from the counter name: `w*i` advances `i`, and `w^i` or `w$i` reads it. When `w` itself is not a declared counter, `w^` reuses the last counter associated with prefix `w`. See [the complete wire-count example](examples/wire_counts.ckt).
+
 Op amps use one call syntax, with the model selected by argument count:
 
 | Arguments | Call | Model |
@@ -232,6 +250,10 @@ The proposed category map is recorded in `circuitlab/model/properties.py` alongs
 Potentiometers use `P1(10k, 25%) between(high, wiper, low);`. The first value is total resistance; the position runs from 0% at `low` to 100% at `high`. Omitting position gives 50%. Click the potentiometer to open its position slider: dragging previews the electrical result, and releasing updates the code in one undoable edit. Right-click **Edit value** to change resistance and position together; leaving the resistance unspecified creates a schematic placeholder. The native model is an ideal linear potentiometer, exported to SPICE/LTspice as two resistor legs (an exact short at either endpoint). Try [the potentiometer example](examples/potentiometer.ckt).
 
 The **Schematic** tab has a resizable oscilloscope beside the drawing. Choose its node and click **Run** to watch the waveform while adjusting a potentiometer; **View → Oscilloscope** hides or restores the panel. Value and time-step adjustments preserve elapsed time, capacitor voltages, and inductor currents. Changing the monitored node displays that signal's recorded history without restarting the circuit. AC and DC+AC waveforms use the configured frequency and phase, converting RMS amplitudes to peak amplitudes. **Pause/Resume** preserves the simulation; **Reset** starts it over and applies the initial-condition controls. Changing the circuit's connections requires a new run. Theoretical `Z` blocks still require physical R/L/C equivalents for time simulation.
+
+The scope's time-step selector supports **ns, µs, ms, and s**. Changing units converts the displayed number and time-axis labels while preserving the physical sample interval and running history. Edit the number to change that interval; for example, 10 µs and 0.01 ms describe the same step.
+
+The grey plot shows voltage divisions. Drag its left voltage axis upward to zoom in (smaller volts per division) or downward to zoom out. This freezes the displayed voltage range around its current center, so new samples do not rescale it. Click **Auto V** or double-click the left axis to fit the signal again. Display scaling does not change the simulation or its recorded samples.
 
 **Optimize wiring** can compact empty space and move components as well as shorten wires. It checks electrical connections and grid alignment before accepting changes; **Ctrl+Z** restores the previous drawing. Saved layouts keep their positions until you explicitly optimize or move them.
 

@@ -26,7 +26,10 @@ from PySide6.QtWidgets import (
 )
 
 from circuitlab.layout.hierarchy import METHOD_PREFIX, hood_levels
-from circuitlab.layout.geometry import BJT_PIN_OFFSET, POT_PIN_OFFSET, package_pins, pin_offset, rotate_point, symbol_pins
+from circuitlab.layout.geometry import (
+    BJT_PIN_OFFSET, POT_PIN_OFFSET, ChipPackage, package_half_height, package_pins,
+    pin_offset, rotate_point, symbol_pins,
+)
 from circuitlab.layout.grid import align_layout
 from circuitlab.layout.shorten import optimize_layout, wire_length
 from circuitlab.layout.persistence import pack_layout, restore_layout
@@ -502,13 +505,7 @@ class SchematicView(QGraphicsView):
             turns = layout.rotations.get(part.name, 0)
             self.symbol_turn = (a, b, turns) if turns else None
             if part.kind == "H":
-                number_pins = part.name.startswith(METHOD_PREFIX) and (
-                    circuit.instances[int(part.name.removeprefix(METHOD_PREFIX))].kind == "chip"
-                )
-                if not part.name.startswith(METHOD_PREFIX) and part.name in self.expanded:
-                    self.package(part, a, b, number_pins=False, transistor_open=True)
-                else:
-                    self.package(part, a, b, number_pins=number_pins)
+                self.package(part, a, b, transistor_open=bool(part.base and part.name in self.expanded))
                 self.symbol_turn = None
                 continue
             counts[part.kind] += 1
@@ -701,7 +698,7 @@ class SchematicView(QGraphicsView):
             if part.name not in names:
                 continue
             turns = layout.rotations.get(part.name, 0)
-            height = (max(0.8, (len(part.package_pins) + 1) // 2 / 2 + 0.4) if part.kind == "H"
+            height = (package_half_height(part, layout.pin_grid) + 0.2 if part.kind == "H"
                       else pin_offset(POT_PIN_OFFSET, layout.pin_grid) if part.kind == "P" else 0.8)
             corners = ((min(a[0], b[0]), min(a[1], b[1]) - height),
                        (max(a[0], b[0]), max(a[1], b[1]) + height))
@@ -747,18 +744,30 @@ class SchematicView(QGraphicsView):
         self.selected_symbols.update(candidates[key])
         self.paint_selection()
 
-    def package(self, part, a, b, *, number_pins, transistor_open=False):
+    def package(self, part, a, b, *, transistor_open=False):
         x, y = a
-        pins = list(package_pins(part, self.pin_grid))
-        height = max(0.8, (len(part.package_pins) + 1) // 2 / 2 + 0.2,
-                     max((abs(offset) for _, _, _, offset in pins), default=0) + 0.2)
+        height = package_half_height(part, self.pin_grid)
         left, right = x + 0.55, b[0] - 0.55
-        top = self.mapped((left, y + height))
+        center, upper = (left + right) / 2, y + height
+        top = self.mapped((left, upper))
         bottom = self.mapped((right, y - height))
         bounds = QRectF(top, bottom).normalized()
-        rect = self.scene().addRect(
-            bounds, self.pen(INK), QBrush(QColor("#eaf1f5")),
-        )
+        fill = QBrush(QColor("#eaf1f5"))
+        is_chip = isinstance(part, ChipPackage)
+        if is_chip:
+            # The notch marks the pin-1 end and rotates with the physical pins.
+            outline = QPainterPath(top)
+            outline.lineTo(self.mapped((center - 0.33, upper)))
+            outline.cubicTo(self.mapped((center - 0.33, upper - 0.37)),
+                            self.mapped((center + 0.33, upper - 0.37)),
+                            self.mapped((center + 0.33, upper)))
+            for p in ((right, upper), (right, y - height), (left, y - height)):
+                outline.lineTo(self.mapped(p))
+            outline.closeSubpath()
+            self.scene().addPath(outline, self.pen(INK), fill)
+            rect = self.scene().addRect(bounds, QPen(Qt.PenStyle.NoPen), QBrush(QColor(0, 0, 0, 0)))
+        else:
+            rect = self.scene().addRect(bounds, self.pen(INK), fill)
         self.drag_handle(rect, "hood", part.name)
         tooltip = f"{'Close' if part.name in self.expanded else 'Open'} {part.label}"
         rect.setToolTip(tooltip)
@@ -772,17 +781,26 @@ class SchematicView(QGraphicsView):
         if transistor_open:
             self.transistor_symbol(part, a, b)
             return
-        for index, (pin, net, on_left, offset) in enumerate(pins, 1):
+        for index, (pin, net, on_left, offset) in enumerate(package_pins(part, self.pin_grid), 1):
             pin_y = y + offset
-            self.lines([
-                ((x if on_left else b[0]), pin_y),
-                ((left if on_left else right), pin_y),
-            ])
-            caption = pin
-            if number_pins:
-                caption = f"{index}  {pin}" if on_left else f"{pin}  {index}"
+            contact, edge = (x, left) if on_left else (b[0], right)
+            if is_chip and index <= part.physical_pin_count:
+                tab = QRectF(self.mapped((contact, pin_y - 0.21)),
+                             self.mapped((edge, pin_y + 0.21))).normalized()
+                self.scene().addRect(tab, self.pen(INK), QBrush(QColor("#f8fafc")))
+                number = self.label(str(index), ((contact + edge) / 2, pin_y), INK)
+                number.moveBy(0, number.boundingRect().height() / 2)
+                if self.symbol_turn is not None:
+                    self.rotate_caption(number, self.symbol_turn[2])
+            else:
+                lead = self.lines([(contact, pin_y), (edge, pin_y)])
+                if is_chip:
+                    pen = lead.pen()
+                    pen.setStyle(Qt.PenStyle.DashLine)
+                    lead.setPen(pen)
             label = self.label(
-                caption, ((left + 0.2 if on_left else right - 0.2), pin_y),
+                f"{pin} (implicit)" if is_chip and index > part.physical_pin_count else pin,
+                (edge + (0.2 if on_left else -0.2), pin_y),
                 NET, ("node", net), "left" if on_left else "right",
             )
             if on_left:

@@ -258,7 +258,7 @@ Source text and saved layouts are never rewritten by elaboration.
     # Execute main's generation-time variables/loops/branches first. Its
     # remaining statements must only declare ports/wires or instantiate chips;
     # runtime assignments and clocked behavior belong inside a chip.
-    main = _normalize_declarations(expand_control_flow(main, budget=budget))
+    main = _normalize_declarations(expand_control_flow(main, budget=budget, allow_wire_counts=True))
     widths, kinds, pins, output = {}, {}, [], []
     # Collect all main declarations before connecting calls, preserving I/O
     # declaration order in pins. Main wires are internal nets, so they stay

@@ -6,6 +6,7 @@
 from collections import Counter, defaultdict
 from dataclasses import replace
 
+from circuitlab.layout.geometry import ChipPackage
 from circuitlab.model.graph import Component
 
 METHOD_PREFIX = "@method:"
@@ -63,13 +64,13 @@ def hood_levels(circuit, expanded):
             (net, net) for net in sorted(nets - exposed)
             if net in circuit.grounds or inside[net] < totals[net]
         )
-        levels[parent].append(
-            Component(
-                name, "H", "", "", label=method.name,
-                order=min((part.order for part in contents), default=0),
-                package_pins=pins,
-            )
-        )
+        package = ChipPackage if method.kind == "chip" else Component
+        physical = {"physical_pin_count": len(method.pins)} if package is ChipPackage else {}
+        levels[parent].append(package(
+            name, "H", "", "", label=method.name,
+            order=min((part.order for part in contents), default=0),
+            package_pins=pins, **physical,
+        ))
 
     for name, parts in levels.items():
         if name is None and len(parts) == len(circuit.components) and all(

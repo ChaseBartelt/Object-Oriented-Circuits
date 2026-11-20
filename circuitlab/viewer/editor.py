@@ -17,10 +17,10 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import QCompleter, QPlainTextEdit, QTextEdit, QToolTip, QWidget
 
 from circuitlab.language.gates import GATE_HELP
-from circuitlab.math.numbers import NUMBER
 from circuitlab.language.syntax import OP, TRANS_CALL
+from circuitlab.language.wire_counts import COUNT_REFERENCE, is_count_reference
 from circuitlab.tooling.source_info import (
-    IDENTIFIER, SourceInfo, accepts_calls as _accepts_calls,
+    IDENTIFIER, WIRE_COUNT_DECLARATION, SourceInfo, accepts_calls as _accepts_calls,
 )
 
 INDENT = " " * 4
@@ -28,44 +28,100 @@ BUILTIN_CALL = re.compile(
     rf"\b(?:{OP.pattern}|{TRANS_CALL.pattern}|{'|'.join(GATE_HELP)})\b(?=\s*\()",
     re.I,
 )
+NUMBER_TOKEN = re.compile(
+    r"(?<![\w.])([+−-]?(?:[0-9]+(?:_[0-9]+)*(?:\.[0-9_]*)?|\.[0-9][0-9_]*)"
+    r"(?:[eE][+-]?[0-9][0-9_]*)?[ij]?)"
+    r"(?:[ \t]*([pnuµμmkMG]?(?:V/(?:[munµμ]?s)|rad/s|ohms?|Hz|VA|var|Nm|deg|dB|"
+    r"V(?:rms|pk|pp)?|A(?:rms|pk|pp)?|Ω|F|H|s|W|J|C|°)|[pnuµμmkMG]|%))?"
+    r"(?=cos\s*\(|[^A-Za-z0-9_.]|$)"
+)
+PROTECTED_TOKEN = re.compile(r'"(?:\\.|[^"\\])*"|"(?:\\.|[^"\\])*$|#.*')
 
 
 class CircuitHighlighter(QSyntaxHighlighter):
     """Color source tokens without requiring the circuit to compile."""
 
+    # Broad categories go first; context-specific names override them below.
+    # Capture indexes let declarations color the name without repainting its
+    # keyword, and let SI units differ from their numeric magnitude.
     rules = (
-        (re.compile(r"^\s*(@override)\b", re.I), "#b5d49d"),
+        (re.compile(r"\b[A-Za-z_][A-Za-z0-9_]*\b"), "#c7dce8", 0),
+        (re.compile(r"<<=?|>>=?|==|!=|<=|>=|&&|\|\||\+\+|--|[+*/%=!?&|^<>∠.\-]"), "#bac3ce", 0),
+        (re.compile(r"[{}(),;:\[\]]"), "#98a3b3", 0),
         (
             re.compile(
                 r"\b(?:series|parallel|circuit|chip|gate|between|battery|opamp|transistor|"
-                r"end|main|return|measure|wire|ground|model|port|input|output|connector|include|"
-                r"for|while|do|if|else|clock|every|const|let|int|bool|true|false|break|continue|"
-                r"open|closed|on|off|Vneg)\b",
+                r"end|main|return|wire|ground|model|port|input|output|connector|include|"
+                r"const|let|int|bool|float|Vneg)\b",
                 re.I,
             ),
-            "#92bfff",
+            "#92bfff", 0,
         ),
-        (re.compile(r"\b(?:[RCLXZVIQPS]\d[\w]*|op\d+)\b"), "#e3b5f5"),
-        (re.compile(r"\b[RCLZVIPS]\w*(?=\s*(?:\([^()]*\)\s*)?between\s*\()", re.I), "#e3b5f5"),
-        (re.compile(rf"(?<![\w.])[+-]?{NUMBER}(?:[A-Za-zµμΩ°]+)?"), "#ffd18b"),
-        (BUILTIN_CALL, "#e3b5f5"),
+        (re.compile(r"\b[A-Za-z_][A-Za-z0-9_]*(?=\s*\()"), "#e6dfa2", 0),
+        (re.compile(r"\b(?:chip|circuit|gate|series|parallel)\s+([A-Za-z_][A-Za-z0-9_]*)", re.I), "#e6dfa2", 1),
+        (re.compile(r"\b(?:for|while|do|if|else|clock|every|switch|case|default|break|continue)\b", re.I), "#d995d9", 0),
+        (re.compile(r"\banalog\b(?=\s*(?::\s*math\b|\{|\(|[A-Za-z_]|$))", re.I), "#659cd7", 0),
+        (re.compile(r"\bdigital\b(?=\s*(?::\s*math\b|\{|\(|[A-Za-z_]|$))", re.I), "#659cd7", 0),
+        (re.compile(r"\b(?:property|properties)\b", re.I), "#64d8cb", 0),
+        (re.compile(r"\b(?:true|false|open|closed|on|off|ideal|npn|pnp|open_collector|power_amplifier|unavailable)\b", re.I), "#b5d49d", 0),
+        (re.compile(r"(?<![\w.])(?:pi|e|time|t)\b"), "#b5d49d", 0),
+        (re.compile(r"\b[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)+(?![\w.])"), "#7fd5e6", 0),
+        (re.compile(r"(?<![\w.])([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)(?=\s*=(?!=))"), "#7fd5e6", 1),
+        (re.compile(r"\bproperty\s+([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)", re.I), "#7fd5e6", 1),
+        (re.compile(r"(?:^|(?<=[;{}:]))[ \t]*(measure)(?=[ \t]*(?:=(?!=)|$))", re.I), "#aed6ff", 1),
+        (re.compile(r"\b(?:V|I)(?=\s*\()"), "#e6dfa2", 0),
+        (NUMBER_TOKEN, "#ffd18b", 1),
+        (NUMBER_TOKEN, "#dfb76c", 2),
+        (re.compile(r"\b(?:[RCLXZVIQPS]\d[\w]*|op\d+)\b", re.I), "#e3b5f5", 0),
+        (re.compile(r"\b[RCLZVIPS]\w*(?=\s*(?:\([^()]*\)\s*)?between\s*\()", re.I), "#e3b5f5", 0),
+        (BUILTIN_CALL, "#e3b5f5", 0),
+        (re.compile(r"@override\b", re.I), "#f6a652", 0),
     )
 
     # Color recognized tokens even in incomplete text; highlighting must not require a successful
     # compile or consume comments as executable code.
     def highlightBlock(self, text):
-        code, comment, _ = text.partition("#")
-        for pattern, color in self.rules:
+        # Qt ranges count UTF-16 code units, while regex spans use Python
+        # characters. A quoted emoji must not shift every following color.
+        offsets = [0]
+        for character in text:
+            offsets.append(offsets[-1] + (2 if ord(character) > 0xFFFF else 1))
+
+        def paint(start, end, style):
+            self.setFormat(offsets[start], offsets[end] - offsets[start], style)
+
+        protected = list(PROTECTED_TOKEN.finditer(text))
+        masked = list(text)
+        for token in protected:
+            masked[token.start():token.end()] = " " * len(token[0])
+        code = "".join(masked)
+        for pattern, color, group in self.rules:
             for match in pattern.finditer(code):
-                self.setFormat(match.start(), len(match[0]), QColor(color))
-        if comment:
-            start = len(code)
-            self.setFormat(start, len(text) - start, QColor("#9bc68b"))
-            for match in re.finditer(r"@[A-Za-z]+\b", text[start:]):
+                start, end = match.span(group)
+                if start >= 0:
+                    paint(start, end, QColor(color))
+        for declaration in WIRE_COUNT_DECLARATION.finditer(code):
+            paint(declaration.start(2), declaration.end(2), QColor("#659cd7"))
+        info = SourceInfo(code)
+        for token in COUNT_REFERENCE.finditer(code) if any(mark in code for mark in "*^$") else ():
+            if not is_count_reference(token[0]):
+                continue
+            column = len(code[:token.start()].encode("utf-16-le")) // 2
+            location = info.wire_at(0, column)
+            # Match a complete connection slot. Arithmetic in assignments,
+            # analog equations, values and control headers stays arithmetic.
+            if location and location[3] == token[0].strip():
+                paint(token.start(), token.end(), QColor("#e3b5f5"))
+        for token in protected:
+            comment = token[0].startswith("#")
+            paint(token.start(), token.end(), QColor("#9bc68b" if comment else "#d6b88c"))
+            if not comment:
+                continue
+            for match in re.finditer(r"@[A-Za-z]+\b", token[0]):
                 fmt = QTextCharFormat()
                 fmt.setForeground(QColor("#b5d49d"))
                 fmt.setFontWeight(QFont.Weight.Bold)
-                self.setFormat(start + match.start(), len(match[0]), fmt)
+                paint(token.start() + match.start(), token.start() + match.end(), fmt)
 
 
 class Gutter(QWidget):

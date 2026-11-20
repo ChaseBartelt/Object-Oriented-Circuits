@@ -1,0 +1,17 @@
+# Inserting another resistor stage does not require renaming later wires.
+# The op amp is a voltage follower: plus=wi2, minus=wi3, out=wi3.
+Vinput(2V) between(input, 0);
+
+main {
+    wi = count;
+    j = count;
+
+    R1(1k) between(input, wi*);
+    R2(1k) between(wi^, wi*);
+    op1(wi^, wi*, wi^);
+    Rload(10k) between(wi^, 0);
+
+    # A second counter advances independently of wi.
+    Rbranch(10k) between(input, j*);
+    Rreturn(10k) between(j^, 0);
+}

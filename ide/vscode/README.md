@@ -22,4 +22,4 @@ Source checkouts watch this local feed. Compatible runtime.js, structure.js and 
 
 Packaging and syntax tests live in tests/tooling. Run them with `python -m unittest discover -s tests/tooling -t .`; use `node --check` on the extension's JavaScript files for syntax checks.
 
-FPGA declarations, signals, constants, bit widths/selectors, clock/timing shortcuts, and operators have distinct syntax scopes. Colors follow your VS Code theme. After installing a grammar update, use **Developer: Reload Window** to load the new highlighting.
+Analog and digital blocks, model properties, math/state functions, component calls, constants, SI units, wire counters, and control flow have distinct syntax scopes. Both editors use blue (`#659CD7`) for `analog`, `digital`, and `count`, light blue (`#AED6FF`) for `measure`, and orange (`#F6A652`) for `@override`. Other VS Code syntax follows your active theme. Quoted paths and comments retain their own colors. FPGA declarations, signals, bit widths/selectors, and clock/timing shortcuts also remain highlighted. After installing a grammar update, use **Developer: Reload Window** to load the new highlighting.

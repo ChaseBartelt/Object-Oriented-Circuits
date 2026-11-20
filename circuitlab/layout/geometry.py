@@ -7,9 +7,18 @@ from collections import defaultdict, deque
 from dataclasses import dataclass, field
 import math
 
+from circuitlab.model.graph import Component
+
 BJT_PIN_OFFSET = 0.85
 POT_PIN_OFFSET = 0.85
 PACKAGE_WIDTH = 6.8
+
+
+@dataclass(frozen=True)
+class ChipPackage(Component):
+    """Schematic-only component with numbered pins followed by implicit ports."""
+
+    physical_pin_count: int = 0
 
 
 def wire_axis(edge):
@@ -50,12 +59,28 @@ def package_pins(part, grid=0):
         ):
             yield label, net, left, pin_offset(offset, grid)
         return
-    left_count = (len(part.package_pins) + 1) // 2
+    count = part.physical_pin_count if isinstance(part, ChipPackage) else len(part.package_pins)
+    left_count = max(1, (count + 1) // 2)
     middle = (left_count - 1) / 2
     for index, (label, net) in enumerate(part.package_pins):
-        left = index < left_count
-        row = index if left else len(part.package_pins) - 1 - index
+        if index < count:
+            left = index < left_count
+            row = index if left else count - 1 - index
+        else:
+            # Implicit connections get their own rows below the physical pins.
+            extra = index - count
+            left = extra % 2 == 0
+            row = left_count + extra // 2
         yield label, net, left, (middle - row) * max(1, 2 * grid)
+
+
+def package_half_height(part, grid=0):
+    """Measure the package body using only its physical pins for a chip."""
+    if isinstance(part, ChipPackage):
+        rows = max(1, (part.physical_pin_count + 1) // 2)
+        return max(0.8, rows / 2 + 0.2, (rows - 1) / 2 * max(1, 2 * grid) + 0.2)
+    return max(0.8, (len(part.package_pins) + 1) // 2 / 2 + 0.2,
+               max((abs(offset) for _, _, _, offset in package_pins(part, grid)), default=0) + 0.2)
 
 
 # Use the device-specific contact positions rather than treating every glyph as a simple

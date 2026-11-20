@@ -11,14 +11,90 @@
     { "include": "#control" },
     { "include": "#properties" },
     { "include": "#components" },
+    { "include": "#wire-count-arguments" },
     { "include": "#calls" },
     { "include": "#selectors" },
     { "include": "#numbers" },
+    { "include": "#constants" },
     { "include": "#operators" },
+    { "include": "#property-names" },
     { "include": "#identifiers" },
     { "include": "#punctuation" }
   ],
   "repository": {
+    "wire-count-arguments": {
+      "begin": "(?i)(?:\\b(between)\\s*|(?:^|(?<=[;{}]))\\s*([A-Za-z][A-Za-z0-9_]*)\\s*(?=\\((?:[^();{}#\\r\\n]|\\([^()#\\r\\n]*\\)|\\$\\{[^{}]*\\})*\\)\\s*(?:;|$)))(\\()",
+      "beginCaptures": {
+        "1": { "name": "keyword.other.placement.ooc" },
+        "2": {
+          "patterns": [
+            {
+              "name": "keyword.other.placement.ooc",
+              "match": "(?i)\\b(?:include|connector|between)\\b"
+            },
+            {
+              "name": "support.function.ooc",
+              "match": "(?i)\\b(?:not|buf|and|nand|or|nor|xor|xnor|op[0-9]+|trans[A-Za-z0-9_]+|switch[A-Za-z0-9_]+|pulse)\\b"
+            },
+            {
+              "name": "support.function.ooc",
+              "match": "\\b(?:sevenseg|integrate|delay|transition|square|abs|sqrt|sin|cos|tan|exp|log|log10|floor|ceil|pow|min|max|clamp|ifelse|V|I)\\b"
+            },
+            {
+              "name": "entity.name.function.ooc",
+              "match": "\\b[A-Za-z_][A-Za-z0-9_]*\\b"
+            }
+          ]
+        },
+        "3": { "name": "punctuation.section.group.begin.ooc" }
+      },
+      "end": "\\)|(?=#)|$",
+      "endCaptures": {
+        "0": { "name": "punctuation.section.group.end.ooc" }
+      },
+      "patterns": [
+        { "include": "#wire-count-reference" },
+        { "include": "#wire-count-group" },
+        { "include": "#strings" },
+        { "include": "#interpolation" },
+        { "include": "#numbers" },
+        { "include": "#operators" },
+        { "include": "#constants" },
+        { "include": "#selectors" },
+        { "include": "#property-names" },
+        { "include": "#calls" },
+        { "include": "#identifiers" },
+        { "include": "#punctuation" }
+      ]
+    },
+    "wire-count-group": {
+      "begin": "\\(",
+      "end": "\\)|(?=#)|$",
+      "patterns": [
+        { "include": "#wire-count-reference" },
+        { "include": "#wire-count-group" },
+        { "include": "#strings" },
+        { "include": "#interpolation" },
+        { "include": "#numbers" },
+        { "include": "#operators" },
+        { "include": "#constants" },
+        { "include": "#selectors" },
+        { "include": "#property-names" },
+        { "include": "#calls" },
+        { "include": "#identifiers" },
+        { "include": "#punctuation" }
+      ]
+    },
+    "wire-count-reference": {
+      "match": "(?<=[(,])\\s*([A-Za-z_][A-Za-z0-9_.-]*)\\s*(?:([$])\\s*([A-Za-z_][A-Za-z0-9_]*)|([*^])\\s*([A-Za-z_][A-Za-z0-9_]*)?)(?=\\s*[,\\)])",
+      "captures": {
+        "1": { "name": "variable.other.readwrite.ooc" },
+        "2": { "name": "keyword.operator.ooc" },
+        "3": { "name": "variable.other.readwrite.ooc" },
+        "4": { "name": "keyword.operator.ooc" },
+        "5": { "name": "variable.other.readwrite.ooc" }
+      }
+    },
     "comments": {
       "name": "comment.line.number-sign.ooc",
       "begin": "#",
@@ -60,13 +136,23 @@
     },
     "model-properties": {
       "begin": "(?i)\\b(properties)\\s*(\\{)",
-      "beginCaptures": { "1": { "name": "storage.type.ooc" }, "2": { "name": "punctuation.section.block.begin.ooc" } },
+      "beginCaptures": {
+        "1": { "name": "storage.type.model-properties.ooc" },
+        "2": { "name": "punctuation.section.block.begin.ooc" }
+      },
       "end": "\\}",
-      "endCaptures": { "0": { "name": "punctuation.section.block.end.ooc" } },
+      "endCaptures": {
+        "0": { "name": "punctuation.section.block.end.ooc" }
+      },
       "patterns": [
         { "include": "#comments" },
-        { "name": "variable.other.property.ooc", "match": "[A-Za-z][A-Za-z0-9_]*(?:\\.[A-Za-z][A-Za-z0-9_]*)*(?=\\s*=)" },
+        {
+          "name": "variable.other.property.ooc",
+          "match": "[A-Za-z][A-Za-z0-9_]*(?:\\.[A-Za-z][A-Za-z0-9_]*)*(?=\\s*=)"
+        },
+        { "include": "#strings" },
         { "include": "#numbers" },
+        { "include": "#constants" },
         { "include": "#operators" },
         { "include": "#punctuation" }
       ]
@@ -74,18 +160,51 @@
     "declarations": {
       "patterns": [
         {
-          "match": "\\b(property)\\s+([A-Za-z][A-Za-z0-9_]*(?:\\.[A-Za-z][A-Za-z0-9_]*)*)(?:\\s*(:)\\s*([A-Za-zµμΩ°]+(?:/[A-Za-zµμ]+)?))?(?=\\s*=)",
+          "match": "(?i)(?:^|(?<=[;{}]))\\s*([A-Za-z_][A-Za-z0-9_]*)\\s*(=)\\s*(count)\\b(?=\\s*(?:[;}]|$))",
           "captures": {
-            "1": { "name": "storage.type.ooc" },
+            "1": { "name": "variable.other.readwrite.ooc" },
+            "2": { "name": "keyword.operator.assignment.ooc" },
+            "3": { "name": "storage.type.ooc" }
+          }
+        },
+        {
+          "match": "(?i)\\b(property)\\s+([A-Za-z][A-Za-z0-9_]*(?:\\.[A-Za-z][A-Za-z0-9_]*)*)(?:\\s*(:)\\s*([A-Za-zµμΩ°]+(?:/[A-Za-zµμ]+)?))?(?=\\s*=)",
+          "captures": {
+            "1": { "name": "storage.type.model-property.ooc" },
             "2": { "name": "variable.other.property.ooc" },
             "3": { "name": "punctuation.separator.ooc" },
             "4": { "name": "storage.type.ooc" }
           }
         },
         {
-          "match": "(?i)\\b(analog|digital)\\b(?:\\s*(:)\\s*(math)\\b)?",
+          "match": "(?i)\\b(analog)\\b(?:\\s*(:)\\s*(math)\\b)?\\s+(\\([^()]*\\)|[A-Za-z_][A-Za-z0-9_]*)\\s*(?=\\{)",
           "captures": {
-            "1": { "name": "storage.type.ooc" },
+            "1": { "name": "support.type.analog.ooc" },
+            "2": { "name": "punctuation.separator.ooc" },
+            "3": { "name": "keyword.other.property.ooc" },
+            "4": {
+              "patterns": [
+                {
+                  "name": "entity.name.function.component.ooc",
+                  "match": "\\b[A-Za-z_][A-Za-z0-9_]*\\b"
+                },
+                { "include": "#punctuation" }
+              ]
+            }
+          }
+        },
+        {
+          "match": "(?i)\\b(analog)\\b(?:\\s*(:)\\s*(math)\\b)?(?=\\s*(?:\\{|\\(|[A-Za-z_]))",
+          "captures": {
+            "1": { "name": "support.type.analog.ooc" },
+            "2": { "name": "punctuation.separator.ooc" },
+            "3": { "name": "keyword.other.property.ooc" }
+          }
+        },
+        {
+          "match": "(?i)\\b(digital)\\b(?:\\s*(:)\\s*(math)\\b)?(?=\\s*(?:\\{|\\(|[A-Za-z_]))",
+          "captures": {
+            "1": { "name": "keyword.control.digital.ooc" },
             "2": { "name": "punctuation.separator.ooc" },
             "3": { "name": "keyword.other.property.ooc" }
           }
@@ -140,7 +259,10 @@
     },
     "control": {
       "patterns": [
-        { "name": "storage.type.ooc", "match": "\\bconst\\b" },
+        {
+          "name": "storage.type.ooc",
+          "match": "\\bconst\\b"
+        },
         {
           "begin": "(?i)\\b(?:(else)\\s+)?(if|for|while|clock|every|switch)\\s*(\\()(?=[^#\\r\\n]*\\)\\s*[;{])",
           "end": "(\\))|(?=#)|$",
@@ -202,6 +324,7 @@
     },
     "expression": {
       "patterns": [
+        { "include": "#strings" },
         {
           "begin": "\\(",
           "end": "\\)|(?=#)|$",
@@ -222,6 +345,8 @@
         { "include": "#selectors" },
         { "include": "#numbers" },
         { "include": "#digital-functions" },
+        { "include": "#property-names" },
+        { "include": "#constants" },
         { "include": "#identifiers" },
         {
           "name": "keyword.operator.ooc",
@@ -267,7 +392,7 @@
         {
           "match": "(?i)(?:^|(?<=[;{:]))\\s*(wire|ground|measure|model|port|base|collector|emitter|type|Vneg|gain(?:[._](?:default|max|resistor))?|bandwidth|gbw|slew|offset|delay[._](?:rise|fall)|response[._]time|supply[._]current(?:[._]total)?|output[._](?:min|max|bias|type|low[._]at4mA)|bypass[._]resistance|common[._](?:min|max|rejection|impedance))(?=\\s*=)",
           "captures": {
-            "1": { "name": "keyword.other.property.ooc" }
+            "1": { "name": "variable.other.property.ooc" }
           }
         }
       ]
@@ -320,6 +445,10 @@
           "match": "(?i)\\b[iv](?=\\s*\\(\\s*t\\s*\\)\\s*=)"
         },
         {
+          "name": "support.function.ooc",
+          "match": "\\b[VI](?=\\s*\\()"
+        },
+        {
           "name": "entity.name.function.ooc",
           "match": "\\b[A-Za-z_][A-Za-z0-9_]*(?=\\s*\\()"
         }
@@ -362,6 +491,30 @@
     "punctuation": {
       "name": "punctuation.separator.ooc",
       "match": "[{}(),;:\\[\\]]"
+    },
+    "constants": {
+      "patterns": [
+        {
+          "name": "constant.language.boolean.ooc",
+          "match": "(?i)\\b(?:true|false)\\b"
+        },
+        {
+          "name": "constant.language.output-type.ooc",
+          "match": "(?i)\\b(?:open_collector|power_amplifier)\\b"
+        },
+        {
+          "name": "constant.language.polarity.ooc",
+          "match": "(?i)\\b(?:npn|pnp)\\b"
+        },
+        {
+          "name": "constant.language.model.ooc",
+          "match": "(?i)\\b(?:ideal|unavailable)\\b"
+        }
+      ]
+    },
+    "property-names": {
+      "name": "variable.other.property.ooc",
+      "match": "(?<![A-Za-z0-9_.])[A-Za-z][A-Za-z0-9_]*(?:\\.[A-Za-z][A-Za-z0-9_]*)+(?![A-Za-z0-9_.])"
     }
   }
 }

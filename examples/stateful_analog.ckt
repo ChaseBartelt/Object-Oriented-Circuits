@@ -24,3 +24,8 @@ main {
     Rdelay(10k) between(delayed, 0);
     measure = V out 0;
 }
+
+
+# @ooc-layout-begin padding=2
+# {"version":1,"mode":"auto","layouts":[[null,"auto",{"symbols":[["@method:0","H",["input","out","delayed","0"],[8.0,0.0],[14.5,0.0],"+"],["Vinput","V",["input","0"],[7.25,-0.75],[7.25,-3.25],"+"],["Rload","R",["out","0"],[8.0,-2.0],[12.0,-2.0],"+"],["Rdelay","R",["delayed","0"],[14.75,-0.5],[18.75,-0.5],"+"]],"wires":{"input":[[[7.25,-0.75],[7.25,0.5]],[[7.25,0.5],[8.0,0.5]]],"out":[[[8.0,-2.0],[8.0,-0.5]]],"delayed":[[[14.5,-0.5],[14.75,-0.5]]],"0":[[[7.25,-3.25],[7.25,-3.0]],[[14.5,0.5],[15.25,0.5]],[[18.75,-0.5],[19.0,-0.5]]]},"junctions":{},"labels":{},"grounds":[[7.25,-3.0],[12.0,-2.0],[19.0,-0.5],[15.25,0.5]],"ground_names":[],"ground_rotations":[],"connectors":[],"boundary":{},"rotations":{},"crossings":[],"label_offsets":[],"pin_grid":0.25}]],"logic":{"schematic":{},"simulation":{}}}
+# @ooc-layout-end

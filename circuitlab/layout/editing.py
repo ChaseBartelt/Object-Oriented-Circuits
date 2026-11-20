@@ -7,7 +7,7 @@ import math
 from collections import Counter, defaultdict
 from dataclasses import replace
 
-from circuitlab.layout.geometry import add_wire, along, rotate_point, symbol_pins, wire_axis
+from circuitlab.layout.geometry import add_wire, along, package_half_height, rotate_point, symbol_pins, wire_axis
 from circuitlab.layout.checks import mark_crossings as _mark_crossings, preserves_nets, segments_intersect
 from circuitlab.layout.wiring import connector_names
 from circuitlab.layout.wire_edit import (
@@ -86,8 +86,8 @@ def move_symbol(circuit, original, name, delta, *, diagonal=False, rotate=0, ali
 def _symbol_bounds(symbol, turns, *, body_only=False):
     part, a, b, _ = symbol
     height = (
-        max(0.8, (len(part.package_pins) + 1) // 2 / 2 + 0.2)
-        if part.kind == "H" else 2.0 if part.kind == "A" else 1.4 if part.kind == "O" and part.vplus
+        package_half_height(part) if part.kind == "H"
+        else 2.0 if part.kind == "A" else 1.4 if part.kind == "O" and part.vplus
         else 0.9 if part.kind in {"Q", "O", "S", "P"}
         else 0.6 if part.kind == "K" else 0.45
     )

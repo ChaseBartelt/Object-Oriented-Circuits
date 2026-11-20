@@ -300,6 +300,57 @@ function activate(context, shared = {}) {
     const saving = new Set();
     const hoverClients = new Map();
     const cache = new WeakMap();
+
+    // These keywords have explicit OOC colors; TextMate continues to theme
+    // all other syntax. Decorations avoid changing the user's editor settings.
+    const keywordColor = vscode.window.createTextEditorDecorationType({
+        color: "#659cd7", rangeBehavior: vscode.DecorationRangeBehavior.ClosedClosed,
+    });
+    const overrideColor = vscode.window.createTextEditorDecorationType({
+        color: "#f6a652", rangeBehavior: vscode.DecorationRangeBehavior.ClosedClosed,
+    });
+    const measureColor = vscode.window.createTextEditorDecorationType({
+        color: "#aed6ff", rangeBehavior: vscode.DecorationRangeBehavior.ClosedClosed,
+    });
+    function refreshKeywordColors(document) {
+        for (const editor of vscode.window.visibleTextEditors) {
+            if (document && editor.document !== document) continue;
+            const keywords = [], overrides = [], measurements = [];
+            if (editor.document.languageId === "ooc") {
+                // Mask quoted paths and comments without changing UTF-16 offsets.
+                const code = editor.document.getText().replace(
+                    /"(?:\\.|[^"\\\r\n])*"?|#[^\r\n]*/g, match => " ".repeat(match.length),
+                );
+                const tokens = /@override\b|\b(?:analog|digital)\b(?=\s*(?::\s*math\b|\{|\(|[A-Za-z_]|$))/gim;
+                for (const match of code.matchAll(tokens)) {
+                    (match[0].startsWith("@") ? overrides : keywords).push(
+                        range(editor.document, match.index, match.index + match[0].length),
+                    );
+                }
+                const declarations = /(?:^|(?<=[;{}]))[ \t]*[A-Za-z_][A-Za-z0-9_]*[ \t]*=[ \t]*(count)\b(?=[ \t]*(?:[;}]|$))/gim;
+                for (const match of code.matchAll(declarations)) {
+                    const end = match.index + match[0].length;
+                    keywords.push(range(editor.document, end - match[1].length, end));
+                }
+                const measure = /(?:^|(?<=[;{}:]))[ \t]*(measure)(?=[ \t]*(?:=(?!=)|$))/dgim;
+                for (const match of code.matchAll(measure)) {
+                    const [start, end] = match.indices[1];
+                    measurements.push(range(editor.document, start, end));
+                }
+            }
+            editor.setDecorations(keywordColor, keywords);
+            editor.setDecorations(overrideColor, overrides);
+            editor.setDecorations(measureColor, measurements);
+        }
+    }
+    context.subscriptions.push(
+        keywordColor, overrideColor, measureColor,
+        vscode.window.onDidChangeVisibleTextEditors(() => refreshKeywordColors()),
+        vscode.workspace.onDidChangeTextDocument(event => refreshKeywordColors(event.document)),
+        vscode.workspace.onDidOpenTextDocument(document => refreshKeywordColors(document)),
+    );
+    refreshKeywordColors();
+
     function sourceInfo(document) {
         let info = cache.get(document);
         if (info?.version !== document.version) {

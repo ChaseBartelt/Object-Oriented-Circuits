@@ -11,6 +11,7 @@ This tolerant inspection describes source; it does not compile or simulate it.
 import re
 
 from circuitlab.language.control_flow import is_control_block
+from circuitlab.language.wire_counts import COUNT_REFERENCE, is_count_reference
 from circuitlab.language.digital_declarations import INLINE_WIRE, normalize_wire_declarations
 from circuitlab.language.gates import GATE_HELP, gate_accepts, gate_call_help
 from circuitlab.language.pin_banks import expand_pin_banks
@@ -26,6 +27,7 @@ from circuitlab.language.syntax import (
 
 IDENTIFIER = re.compile(r"[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)*")
 TIMED_BLOCK = re.compile(r"(?:^|(?<=[;{}]))\s*(clock|every)\s*\([^()]*\)\s*(?=\{)")
+WIRE_COUNT_DECLARATION = re.compile(r"(?:^|(?<=[;{}]))\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(count)\b(?=\s*(?:[;}]|$))", re.I)
 
 STATE_FUNCTION_HELP = {
     "integrate": "integrate(rate, [initial])\nBackward-Euler integration in native time simulation. The initial value defaults to 0; time as the second argument also selects 0. History advances only after an accepted electrical step. DC holds the initial value.",
@@ -217,11 +219,33 @@ class SourceInfo:
         return ''
 
     def hover_help(self, line, column):
+        source_column = column
         location = self.position(line, column)
         if location is None:
             return ""
         text, column = location
         code = text.partition("#")[0]
+        # Describe syntax without executing generation or advancing a counter.
+        # Actual net names come from the compiler-backed wire trace instead.
+        for declaration in WIRE_COUNT_DECLARATION.finditer(code):
+            if declaration.start(1) <= column <= declaration.end(2):
+                return (f"{declaration[1]} = count;\n"
+                        "Declare an independent wire counter in electrical main, initially 0. "
+                        f"{declaration[1]}* advances it before using the number; "
+                        f"{declaration[1]}^ reuses its current number. "
+                        "Counters expand left to right during circuit generation and cannot be assigned manually.")
+        wire = self.wire_at(line, source_column)
+        if wire and is_count_reference(wire[3]):
+            reference = COUNT_REFERENCE.fullmatch(wire[3])
+            prefix, operation, counter = (reference[group] for group in ("prefix", "operator", "counter"))
+            if operation == "*":
+                action = f"Advance counter {counter or prefix}, then use {prefix} plus its new number (first advance gives {prefix}1)."
+            elif counter:
+                action = f"Reuse counter {counter}'s current number without advancing it; initially this is {prefix}0."
+            else:
+                action = (f"Reuse counter {prefix}'s current number without advancing it. "
+                          f"If {prefix} is not a declared counter, reuse the last counter used with that prefix.")
+            return f"{wire[3]}\n{action}\nWire counters apply to electrical main connections; numerical expressions retain their ordinary operators."
         if computed := self._computed_wire_help(line, column, code):
             return computed
         section = SECTION.match(code.strip())
@@ -242,7 +266,8 @@ class SourceInfo:
                 "main [Name] { ... }\n"
                 "Assemble circuit components or behavioral digital chips. "
                 "Conditions and loops here run during circuit generation; they do not run on clock edges. "
-                "A named digital main sets the exported top-level module name."
+                "A named digital main sets the exported top-level module name. "
+                "Use wi = count; with wi* advancing and wi^ reusing a generated wire number."
             )
         timed = timed_block_at(code, column)
         if timed == "clock":
