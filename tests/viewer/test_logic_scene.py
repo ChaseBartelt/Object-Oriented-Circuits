@@ -84,6 +84,76 @@ class LogicSceneTest(unittest.TestCase):
         QTest.mouseClick(self.view.viewport(), Qt.MouseButton.LeftButton, pos=point)
         self.assertEqual(self.probes, ['a'])
 
+    def test_octant_opens_cpu_modules_and_steps_the_same_live_state(self):
+        source = (ROOT / 'examples/advanced/octant/octant_cpu.ckt').read_text(encoding='utf-8')
+        self.configure(source)
+        self.assertTrue(self.view.expanded)
+        self.assertFalse(self.view.notice)
+        self.assertTrue(any('BUS_ADDR' in signals for signals in self.view.edge_signals.values()))
+        self.assertTrue(any('BUS_RDATA' in signals for signals in self.view.edge_signals.values()))
+
+        def open_chip(name):
+            item = next(item for item in self.view.node_items.values()
+                        if item.module and self.sim.instances[item.module.instance].name == name)
+            self.view.centerOn(item)
+            self.click(item)
+            self.assertEqual(self.sim.instances[self.view.scope].name, name)
+            self.assertFalse(self.view.notice)
+
+        def back():
+            self.view.centerOn(self.view.chip_item)
+            self.click(self.view.chip_item)
+
+        def step(count):
+            before, transform = dict(self.view.node_items), self.view.transform()
+            for _ in range(count):
+                self.sim.step()
+                self.view.set_values(self.sim.values)
+            self.assertEqual(self.view.node_items, before)
+            self.assertEqual(self.view.transform(), transform)
+
+        for channel in (2, 5):
+            self.sim.set_input(f'TRIP{channel}', 1)
+        self.view.set_values(self.sim.values)
+        open_chip('OctantCpuCore')
+        open_chip('OctantCpuROM')
+        first_word = self.view.node_items['word'].value
+        step(1)
+        word = self.view.node_items['word']
+        self.assertNotEqual(word.value, first_word)
+        self.assertEqual(word.value, self.sim.values['IR'])
+        self.view.centerOn(word)
+        self.click(word)
+        self.assertEqual(self.probes, ['IR'])
+
+        back()
+        open_chip('OctantCpuALU')
+        self.assertEqual(self.view.node_items['address'].value, self.sim.values['BUS_ADDR'])
+        step(1)
+        self.assertEqual(self.view.node_items['pc_next'].value, 12)
+        back()
+        open_chip('OctantCpuRegisterFile')
+        step(5)
+        self.assertEqual(self.view.node_items['r3'].value, 0x24)
+
+        back()
+        back()
+        open_chip('OctantCpuMemory')
+        open_chip('OctantCpuRAM')
+        step(6)
+        self.assertEqual(self.view.node_items['word0'].value, 0x24)
+        self.assertEqual(self.view.node_items['word1'].value, 2)
+
+        back()
+        back()
+        open_chip('OctantAlerts')
+        open_chip('OctantCapture')
+        self.assertEqual(self.view.node_items['pending'].value, 0x24)
+        step(2)
+        self.assertEqual(self.view.node_items['pending'].value, 0)
+        self.assertEqual(self.sim.values['LAST_ACK'], 0x24)
+        self.assertEqual(self.sim.cycles, 15)
+
     def test_values_update_colors_without_rebuilding_or_changing_view(self):
         self.configure()
         self.view.toggle_hood()

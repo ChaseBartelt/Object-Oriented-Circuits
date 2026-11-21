@@ -1,0 +1,123 @@
+// OCTANT | eight-channel FPGA alarm controller
+// Feed the sampled trip voltages to TRIP7..TRIP0 as Boolean values. One CLK
+// rising edge represents 100 us. ACK is a bit mask, with bit 0 matching TRIP0.
+// Hold RESET high for one edge to clear the filter, pending flags and statistics.
+// From a settled low input, STABLE rises on the fifth high sample and PENDING
+// captures the resulting event on the sixth edge. ACK leaves STABLE unchanged.
+
+chip OctantQualify(clk, reset, trip, stable) {
+    clk, reset, trip = input;
+    stable = output;
+
+    meta;
+    synced;
+    sample1;
+    sample2;
+    level;
+
+    clock(clk, 10kHz) {
+        if (reset) {
+            meta = 0;
+            synced = 0;
+            sample1 = 0;
+            sample2 = 0;
+            level = 0;
+        } else {
+            // Two input stages, followed by a three-sample confirmation.
+            meta = trip;
+            synced = meta;
+            sample1 = synced;
+            sample2 = sample1;
+            if (synced && sample1 && sample2) {
+                level = 1;
+            } else if (!(synced || sample1 || sample2)) {
+                level = 0;
+            }
+        }
+    }
+    stable = level;
+}
+
+chip OctantCapture(clk, reset, ack, stable, pending, last_event, event_count) {
+    clk, reset = input;
+    ack[8], stable[8] = input;
+    pending[8], last_event[8], event_count[16] = output;
+
+    const ALL8[8] = 255;
+    const ZERO4[4] = 0;
+    const ZERO17[17] = 0;
+    previous[8] = 0;
+    flags[8] = 0;
+    last[8] = 0;
+    count[16] = 0;
+
+    rise[8] = stable & (previous ^ ALL8);
+    // Count all channels in the batch and widen before adding to detect overflow.
+    arrivals[4] = ZERO4 + rise[0] + rise[1] + rise[2] + rise[3] + rise[4] + rise[5] + rise[6] + rise[7];
+    next_count[17] = ZERO17 + count + arrivals;
+
+    clock(clk, 10kHz) {
+        if (reset) {
+            previous = 0;
+            flags = 0;
+            last = 0;
+            count = 0;
+        } else {
+            previous = stable;
+            // A new arrival survives ACK on the same edge. Holding a trip
+            // high after ACK cannot create a second arrival.
+            flags = (flags & (ack ^ ALL8)) | rise;
+            if (rise != 0) {
+                last = rise;
+                count = next_count[16] ? 65535 : next_count[15:0];
+            }
+        }
+    }
+
+    pending = flags;
+    last_event = last;
+    event_count = count;
+}
+
+chip OctantPriority(pending, valid, first, multiple, onehot, hex) {
+    pending[8] = input;
+    valid, multiple = output;
+    first[3] = output;
+    onehot[8], hex[8] = output;
+
+    const ONE8[8] = 1;
+    lower[3] = pending[0] ? 0 : pending[1] ? 1 : pending[2] ? 2 : 3;
+    upper[3] = pending[4] ? 4 : pending[5] ? 5 : pending[6] ? 6 : pending[7] ? 7 : 0;
+    digital {
+        // FIRST is zero when empty. Use VALID to distinguish that from channel 0.
+        valid = pending != 0;
+        first = pending[3:0] != 0 ? lower : upper;
+        multiple = (pending & (pending - 1)) != 0;
+        onehot = valid ? (ONE8 << first) : 0;
+        hex = valid ? sevenseg(first, multiple) : 255;
+    }
+}
+
+chip OctantPack(bits[7:0], word) {
+    bits[7:0] = input;
+    word[8] = output;
+    word = bits[7:0];
+}
+
+main OCTANT {
+    CLK, RESET, TRIP[7:0] = input;
+    ACK[8] = input;
+    STABLE[8], PENDING[8], LAST_EVENT[8], ONEHOT[8], HEX[8] = output;
+    EVENT_COUNT[16], FIRST[3] = output;
+    VALID, MULTIPLE = output;
+    stable[7:0] = wire;
+
+    // Each static iteration creates its own synchronizer and level history.
+    for (int channel = 0; channel < 8; channel++) {
+        OctantQualify(CLK, RESET, TRIP${channel}, stable${channel});
+    }
+
+    OctantPack(stable[7:0], STABLE);
+    OctantCapture(CLK, RESET, ACK, STABLE, PENDING, LAST_EVENT, EVENT_COUNT);
+    OctantPriority(PENDING, VALID, FIRST, MULTIPLE, ONEHOT, HEX);
+}

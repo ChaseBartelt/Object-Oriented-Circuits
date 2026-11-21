@@ -180,7 +180,10 @@ class DigitalSimulator(QWidget):
         self.port_view = LogicSceneView()
         self.port_view.input_toggled.connect(self.toggle_input)
         self.port_view.signal_probed.connect(self.select_signal)
-        self.port_view.setToolTip("Click inputs to toggle · click chip to open · drag blocks or wires to arrange · Ctrl+Z to undo · wheel to zoom")
+        self.port_view.setToolTip(
+            "Click a chip block to open it. Click a top-level input to toggle it or another signal to probe it. "
+            "Drag to arrange, use Ctrl+Z to undo, and scroll the wheel to zoom."
+        )
         self.table = QTableWidget(0, 3)
         self.table.setHorizontalHeaderLabels(["Signal", "Bits", "Value"])
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)

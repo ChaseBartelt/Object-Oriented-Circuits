@@ -271,6 +271,25 @@ Headers and declarations accept numbered pin ranges: `chip HYBRID01(SW[9:0], LED
 
 Inside a chip, `requests[8] = SW[7:0];` declares a new eight-bit combinational wire and its expression in one statement. The expression continuously drives the wire; no register is added. Arithmetic and ternary expressions work too. Bare declarations (`phase[32];`) and decimal literal initializers (`phase[32] = 0;`) retain their stored-state meaning. Once a signal is declared, `requests[3]` selects bit 3 instead of declaring a width.
 
+Use two sizes to declare a local array of words. `words[8][32] = 0;` creates eight 32-bit registers and initializes each word to zero. The first size is the word count and the second is the width in bits. An omitted initializer defaults to zero. An array supports up to 256 words, 4,096 bits per word, and 65,536 bits total.
+
+```ckt
+chip Lookup(clk, write, read_index, write_index, data, out) {
+    clk, write = input;
+    read_index[3], write_index[3] = input;
+    data[32] = input;
+    out[32] = output;
+
+    words[8][32] = 0;
+    out = words[read_index];
+    clock(clk, 10kHz) {
+        if (write) { words[write_index] = data; }
+    }
+}
+```
+
+Indices start at zero. An out-of-range literal index is a compile error. An out-of-range runtime read returns zero and an out-of-range runtime write has no effect. Use `words[index][7:0]` to select part of a word. Reads and index expressions inside a clock block use the pre-edge state. If writes on the same edge overlap, the later write wins on the overlapping bits. Arrays stay local to their chip. Expose an individual word with a named wire such as `first[32] = words[0];` to watch it in the viewer. The Verilog exporter lowers word arrays to registers and selection logic.
+
 Unsigned vectors support whole-bus `&`, `|`, `^`, `+`, `-`, `<<` and `>>`. Shifts zero-fill and keep the left operand's width: an eight-bit `value << 1` discards its old top bit, even when assigned to a wider output. A shift by the width or more produces zero. Addition binds more tightly than shifts, which bind more tightly than comparisons. Clocked state updates support `+=`, `-=`, `&=`, `|=`, `^=`, `<<=` and `>>=`, including constant bit/slice targets; each reads the previous clock-edge state. `!` remains logical NOT (a one-bit result); use `value ^ 255` to invert every bit of an eight-bit vector.
 
 Declare a display bank with `HEX0[7:0] = output;` and drive it using `HEX0[7:0] = sevenseg(value);`. The helper decodes the low four bits as hexadecimal 0–F. `sevenseg(value, point)` lights the decimal point when `point` is nonzero; it is off by default. Bits 0–6 are segments a–g, bit 7 is the point, and zero lights a segment. Raw masks also work (`255` blanks a digit). Include each used bank in the chip header. The logic simulator shows all six digit positions above its schematic; click a segment to probe its signal. [Seven-segment and shift example](examples/advanced/fpga/07_seven_segment_display.ckt) shows these features together on the DE10-Lite without a clock.

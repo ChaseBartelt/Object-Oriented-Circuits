@@ -10,19 +10,23 @@ from PySide6.QtCore import QPointF, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QKeySequence, QPainter, QPainterPath, QPen, QPolygonF
 from PySide6.QtWidgets import QGraphicsObject, QGraphicsPathItem, QGraphicsScene, QGraphicsView
 
-from circuitlab.viewer.behavior_diagram import _layers, behavior_graph, block_positions, dependency_paths
 from circuitlab.layout.logic import LogicGeometry
+from circuitlab.layout.logic_hierarchy import logic_hierarchy
+from circuitlab.viewer.behavior_diagram import _layers, behavior_graph, block_positions, dependency_paths
+from circuitlab.viewer.behavior_scope import chip_diagram_model
 
 
 HIGH, LOW, BUS = "#55d991", "#999999", "#cccccc"
 NODE_WIDTH, NODE_HEIGHT, COLUMN, ROW = 180, 58, 244, 82
 MAX_NODES = 120
 
+
 class _Node(QGraphicsObject):
-    def __init__(self, view, name, kind, width=1, *, height=NODE_HEIGHT, caption="", detail=""):
+    def __init__(self, view, name, kind, width=1, *, height=NODE_HEIGHT, caption="", detail="", module=None):
         super().__init__()
         self.view, self.name, self.kind, self.width = view, name, kind, width
         self.height, self.caption, self.detail = height, caption, detail
+        self.module = module
         self.value = None
         self.probe_name = name
         self.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -34,20 +38,23 @@ class _Node(QGraphicsObject):
 
     def paint(self, painter, option, widget=None):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        if self.module is not None:
+            self._paint_module(painter)
+            return
         color = QColor(BUS if self.width > 1 else HIGH if self.value else LOW)
         painter.setPen(QPen(color if self.kind != "chip" else QColor("#888888"), 1.8))
         painter.setBrush(QColor("#343434" if self.kind == "chip" else "#282828"))
         painter.drawRoundedRect(self.boundingRect().adjusted(1, 1, -1, -1), 7, 7)
         if self.kind == "chip":
             painter.setPen(QColor("#f2f2f2"))
-            painter.drawText(self.boundingRect().adjusted(9, 4, -9, -4),
+            painter.drawText(QRectF(9, 4, NODE_WIDTH - 18, min(self.height - 8, 116)),
                              Qt.AlignmentFlag.AlignCenter | Qt.TextFlag.TextWordWrap,
                              self.caption)
             return
         painter.setBrush(color)
         if self.width > 1:
             painter.drawRect(QRectF(14, 13, 18, 15))
-        elif self.kind == "input":
+        elif self.kind == "input" and self.probe_name in self.view.inputs:
             painter.drawRoundedRect(QRectF(11, 13, 30, 15), 7, 7)
             painter.setBrush(QColor("#191919"))
             painter.drawEllipse(QPointF(33 if self.value else 19, 20), 5, 5)
@@ -59,13 +66,34 @@ class _Node(QGraphicsObject):
         label = painter.fontMetrics().elidedText(self.name.removeprefix('ooc_logic.'), Qt.TextElideMode.ElideMiddle, NODE_WIDTH - 55)
         painter.drawText(QRectF(48, 6, NODE_WIDTH - 55, 25), Qt.AlignmentFlag.AlignVCenter, label)
         block = self.view.blocks.get(self.name)
-        value = block.value_text(self.view.values) if block else "—" if self.value is None else str(self.value) if self.width == 1 else f"0x{self.value:X}"
+        value = block.value_text(self.view.graph_values) if block else _logic_value(self.value, self.width)
         label = f"{self.kind} · {value}"
         if self.caption:
             label = f"{value} · {self.caption}"
         label = painter.fontMetrics().elidedText(label, Qt.TextElideMode.ElideRight, NODE_WIDTH - 18)
         painter.setPen(color)
         painter.drawText(QRectF(9, self.height - 24, NODE_WIDTH - 18, 20), Qt.AlignmentFlag.AlignVCenter, label)
+
+    def _paint_module(self, painter):
+        painter.setPen(QPen(QColor("#81aecb"), 1.8))
+        painter.setBrush(QColor("#263744"))
+        painter.drawRoundedRect(self.boundingRect().adjusted(1, 1, -1, -1), 7, 7)
+        outputs = [port for port in self.module.ports if port.direction == "output"]
+        ports = sorted(outputs, key=lambda port: not 1 < port.width <= 32)[:2]
+        preview = " · ".join(f"{port.label} {_logic_value(self.view.values.get(port.live), port.width)}"
+                             for port in ports)
+        for text, y, color in ((self.module.title, 5, "#f2f2f2"),
+                               (preview or self.module.caption, 30, "#aaccdf")):
+            painter.setPen(QColor(color))
+            text = painter.fontMetrics().elidedText(text, Qt.TextElideMode.ElideRight, NODE_WIDTH - 20)
+            painter.drawText(QRectF(10, y, NODE_WIDTH - 20, 20), Qt.AlignmentFlag.AlignVCenter, text)
+
+
+def _logic_value(value, width):
+    if value is None:
+        return "—"
+    return str(value) if width == 1 else f"0x{value:X}"
+
 
 class _Edge(QGraphicsPathItem):
     def __init__(self, view, path, source, target):
@@ -107,6 +135,8 @@ class LogicSceneView(QGraphicsView):
         self.input_items, self.output_items, self.node_items, self.edge_items = {}, {}, {}, {}
         self.chip_item = None
         self.blocks = {}
+        self.graph_values, self.bindings, self.edge_signals = {}, {}, {}
+        self.scope = None
         self.expanded = False
         self.notice = ""
         self._pan = None
@@ -122,8 +152,14 @@ class LogicSceneView(QGraphicsView):
         self.inputs = tuple(simulation.inputs) if simulation else ()
         self.outputs = tuple(simulation.outputs) if simulation else ()
         self.values = dict(simulation.values) if simulation else {}
-        self.expanded = False
+        # A large assembly opens on its block diagram, where its internals fit.
+        self.expanded = bool(self.instances and behavior_graph(simulation)[2])
+        self.scope = None
         self._build()
+
+    @property
+    def instances(self):
+        return getattr(self.simulation, "instances", ())
 
     def _node(self, name, kind, x, y):
         sim = self.simulation
@@ -167,49 +203,30 @@ class LogicSceneView(QGraphicsView):
         self.input_items, self.output_items, self.node_items, self.edge_items = {}, {}, {}, {}
         self.chip_item = None
         self.blocks = {}
+        self.graph_values, self.bindings, self.edge_signals = {}, {}, {}
         self.notice = ""
         sim = self.simulation
         if sim is None:
             self.resetTransform()
             self.setSceneRect(QRectF())
             return
-        if len(self.inputs) + len(self.outputs) > MAX_NODES:
+        if not self.expanded and self.instances and len(self.inputs) + len(self.outputs) > MAX_NODES:
+            self.expanded = True
+        if not self.expanded and len(self.inputs) + len(self.outputs) > MAX_NODES:
             self.notice = f"Port view exceeds {MAX_NODES} nodes; use the signal table and probes."
             title = scene.addText(self.notice)
             title.setDefaultTextColor(QColor("#f2f2f2"))
             self.fit()
             return
-        blocks, edges, notice = behavior_graph(sim)
-        if self.expanded and notice:
-            self.expanded = False
-            self.notice = notice
+        if self.expanded:
+            blocks, edges, hierarchy = self._open_graph()
+            self.expanded = bool(self.instances) or not self.notice
         if self.notice or self.expanded:
-            title = scene.addText(self.notice or "Functional schematic · arrows show signal dependencies")
+            title = scene.addText(self.notice or self._graph_title(hierarchy))
             title.setDefaultTextColor(QColor("#bbbbbb"))
             title.setPos(0, -55)
         if self.expanded:
-            self.blocks = blocks
-            positions = block_positions(blocks, edges, width=NODE_WIDTH, height=NODE_HEIGHT)
-            for name, rectangle in positions.items():
-                block = blocks[name]
-                item = _Node(self, name, block.kind, block.width,
-                             caption=block.caption, detail=block.detail)
-                item.probe_name = block.members[0]
-                item.setPos(rectangle.topLeft() + QPointF(0, 70))
-                scene.addItem(item)
-                self.node_items[name] = item
-                if block.kind == "input":
-                    self.input_items[name] = item
-                elif block.kind == "output":
-                    self.output_items[name] = item
-            self.chip_item = _Node(self, "__chip__", "chip", caption="Functional schematic\nClick to close", height=48)
-            self.chip_item.setPos(0, 0)
-            scene.addItem(self.chip_item)
-            rects = {name: item.sceneBoundingRect() for name, item in self.node_items.items()}
-            for (source, target), path in dependency_paths(rects, edges).items():
-                edge = _Edge(self, path, source, target)
-                self.edge_items[source, target] = edge
-                scene.addItem(edge)
+            self._paint_graph(blocks, edges, hierarchy)
         else:
             rows = max(len(self.inputs), len(self.outputs), 1)
             height = max(NODE_HEIGHT, (rows - 1) * ROW + NODE_HEIGHT)
@@ -239,6 +256,63 @@ class LogicSceneView(QGraphicsView):
         self.set_values(self.values)
         self._frame_initial()
 
+    def _open_graph(self):
+        if self.instances:
+            hierarchy = logic_hierarchy(self.simulation, self.instances, self.scope)
+            if hierarchy.blocks:
+                self.notice = hierarchy.notice
+                if not self.notice:
+                    self.edge_signals = hierarchy.edge_signals
+                    return hierarchy.blocks, hierarchy.edges, True
+                return {}, (), True
+        sim = self.simulation
+        if self.scope is not None:
+            sim, self.bindings = chip_diagram_model(self.instances, self.scope, sim)
+        blocks, edges, self.notice = behavior_graph(sim)
+        return ({}, (), False) if self.notice else (blocks, edges, False)
+
+    def _graph_title(self, hierarchy):
+        if not self.instances:
+            return "Functional schematic · arrows show signal dependencies"
+        names = [self.simulation.name]
+        index = self.scope
+        while index is not None:
+            instance = self.instances[index]
+            names.insert(1, instance.name)
+            index = instance.parent
+        return " / ".join(names) + ("   ·   Click a block to open it" if hierarchy else "")
+
+    def _paint_graph(self, blocks, edges, hierarchy):
+        scene = self.scene()
+        self.blocks = blocks
+        positions = block_positions(blocks, edges, width=NODE_WIDTH, height=NODE_HEIGHT)
+        for name, rectangle in positions.items():
+            block = blocks[name]
+            item = _Node(self, name, block.kind, block.width, caption=block.caption,
+                         detail=block.detail, module=block if hierarchy else None)
+            if not hierarchy:
+                item.probe_name = self.bindings.get(block.members[0], block.members[0])
+            item.setPos(rectangle.topLeft() + QPointF(0, 70))
+            scene.addItem(item)
+            self.node_items[name] = item
+            if block.kind == "input":
+                self.input_items[name] = item
+            elif block.kind == "output":
+                self.output_items[name] = item
+        if self.scope is not None:
+            caption = "‹ Back"
+        else:
+            caption = "‹ Package pins" if hierarchy else "Functional schematic\nClick to close"
+        self.chip_item = _Node(self, "__chip__", "chip", caption=caption, height=48)
+        scene.addItem(self.chip_item)
+        rectangles = {name: item.sceneBoundingRect() for name, item in self.node_items.items()}
+        for (source, target), path in dependency_paths(rectangles, edges).items():
+            edge = _Edge(self, path, source, target)
+            if signals := self.edge_signals.get((source, target)):
+                edge.setToolTip(", ".join(signals))
+            self.edge_items[source, target] = edge
+            scene.addItem(edge)
+
     def _frame_initial(self):
         """Start readable at the top; Fit remains an explicit whole-graph view."""
         area = self.scene().itemsBoundingRect().adjusted(-25, -25, 25, 25)
@@ -251,8 +325,19 @@ class LogicSceneView(QGraphicsView):
     # Update existing node/edge values without rebuilding the graph or refitting the viewport.
     def set_values(self, values):
         self.values = dict(values)
+        self.graph_values = ({name: values[live] for name, live in self.bindings.items() if live in values}
+                             if self.bindings else self.values)
         for name, item in self.node_items.items():
-            value = self.blocks[name].value(self.values) if name in self.blocks else self.values.get(name)
+            if item.module:
+                value = tuple(values.get(port.live) for port in item.module.ports)
+                if value != item.value:
+                    item.setToolTip(item.module.title + "\n" + "\n".join(
+                        f"{port.label} ({port.direction})  {_logic_value(level, port.width)}"
+                        + (f"  ·  {port.live}" if port.live != port.label else "")
+                        for port, level in zip(item.module.ports, value)))
+            else:
+                block = self.blocks.get(name)
+                value = block.value(self.graph_values) if block else self.values.get(name)
             if value != item.value:
                 item.value = value
                 item.update()
@@ -260,8 +345,12 @@ class LogicSceneView(QGraphicsView):
             if source == '__chip__':
                 source = target
             block = self.blocks.get(source)
-            width = block.width if block else self.simulation.signals.get(source, 1) if self.simulation else 1
-            value = block.value(self.values) if block else self.values.get(source, 0)
+            if signals := self.edge_signals.get((source, target)):
+                width = sum(self.simulation.signals[signal] for signal in signals)
+                value = self.values.get(signals[0], 0)
+            else:
+                width = block.width if block else self.simulation.signals.get(source, 1) if self.simulation else 1
+                value = block.value(self.graph_values) if block else self.values.get(source, 0)
             color = QColor(BUS if width > 1 else HIGH if value else LOW)
             pen_width = 2.5 if width > 1 else 1.7
             if item.pen().color() != color or item.pen().widthF() != pen_width:
@@ -270,10 +359,25 @@ class LogicSceneView(QGraphicsView):
     def toggle_hood(self):
         if self.simulation is not None:
             self._remember_placement()
-            self.expanded = not self.expanded
+            if self.scope is None:
+                self.expanded = not self.expanded
+            else:
+                self.scope = self.instances[self.scope].parent
             self._build()
 
+    def _open_instance(self, index, simulation):
+        if (self.simulation is not simulation or not self.expanded
+                or simulation.instances[index].parent != self.scope):
+            return
+        self._remember_placement()
+        self.scope = index
+        self._build()
+
     def _mode(self):
+        if self.scope is not None:
+            return f"instance:{self.scope}:{self.instances[self.scope].name}"
+        if self.expanded and self.instances:
+            return "hierarchy"
         return 'internals' if self.expanded else 'ports'
 
     def _remember_placement(self):
@@ -325,15 +429,21 @@ class LogicSceneView(QGraphicsView):
 
     def _activate(self, item):
         if isinstance(item, _Node):
-            if item.kind == 'chip':
+            if item.module:
+                index, simulation = item.module.instance, self.simulation
+                QTimer.singleShot(0, self, lambda: self._open_instance(index, simulation))
+            elif item.kind == 'chip':
                 QTimer.singleShot(0, self.toggle_hood)
-            elif item.kind == 'input':
-                self.input_toggled.emit(item.name)
+            elif item.kind == 'input' and item.probe_name in self.inputs:
+                self.input_toggled.emit(item.probe_name)
             else:
                 self.signal_probed.emit(item.probe_name)
         elif isinstance(item, _Edge):
-            source = item.target if item.source == '__chip__' else item.source
-            self.signal_probed.emit(self.blocks[source].members[0] if source in self.blocks else source)
+            if signals := self.edge_signals.get((item.source, item.target)):
+                self.signal_probed.emit(signals[0])
+            else:
+                source = item.target if item.source == '__chip__' else item.source
+                self.signal_probed.emit(self.node_items[source].probe_name)
 
     def fit(self):
         area = self.scene().itemsBoundingRect().adjusted(-25, -25, 25, 25)

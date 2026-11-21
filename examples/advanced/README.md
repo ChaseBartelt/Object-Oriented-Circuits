@@ -2,6 +2,8 @@
 
 Open any `.ckt` file in VS Code and use **OOC: Run Circuit / Open Schematic** (the play button). Each file includes its controls, probe names, expected behavior, and model assumptions in the opening comments.
 
+[OCTANT](octant/README.md) combines an eight-channel electrical scanner with an FPGA alert controller and six-digit telemetry display. The [OOC processor](octant/octant_cpu.ckt) runs firmware that reads, logs, and acknowledges the scanner's alerts. You can single-step its registers in Logic simulation.
+
 ## Five FPGA designs
 
 Each file is an independent `HYBRID01` design for the DE10-Lite's 50 MHz clock. Open **Logic simulation**, select **DE10-Lite switches**, and press **Run**. This profile inserts the board's switch synchronizers automatically. Most timed designs remain still until enabled with the switches below.

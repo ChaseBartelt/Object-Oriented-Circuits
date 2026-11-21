@@ -7,19 +7,18 @@ import re
 from types import SimpleNamespace
 
 from circuitlab.math.digital import DigitalSimulation
-from circuitlab.language.pin_banks import expand_pin_banks
 
 
 # Prefer bindings from the active compiled instance. A standalone structural preview can
 # describe ports without fabricating running values for private state.
-def chip_diagram_model(circuit, index, simulation=None):
+def chip_diagram_model(instances, index, simulation=None):
     """Return display metadata and display-name -> live-signal bindings.
 
     A stand-alone preview compiles once for structure only; it never runs a
     second clock or presents its initial values as a live simulation.
     """
-    instance = circuit.instances[index]
-    if simulation is not None and len(circuit.instances) == 1 and not instance.signal_bindings:
+    instance = instances[index]
+    if simulation is not None and len(instances) == 1 and not instance.signal_bindings:
         return simulation, {name: name for name in simulation.signals}
 
     if simulation is None or not instance.signal_bindings:
@@ -36,7 +35,7 @@ def chip_diagram_model(circuit, index, simulation=None):
     # Generated tick counters are not source declarations. Include their real
     # dependencies, but never pull a neighbouring chip's private state inside.
     owned = {simulation.source_bindings[name]
-             for method in circuit.instances for _, name in method.signal_bindings
+             for method in instances for _, name in method.signal_bindings
              if name in simulation.source_bindings}
     reverse = {live: local for local, live in bindings.items()}
     pending = list(reverse)
@@ -54,10 +53,8 @@ def chip_diagram_model(circuit, index, simulation=None):
         return re.sub(r'\b[A-Za-z_][\w.]*', lambda match: reverse.get(match[0], match[0]), text)
 
     ports = {'input': [], 'output': []}
-    for row in instance.body:
-        if match := re.fullmatch(r'(.+?)\s*=\s*(input|output)', row):
-            pins = expand_pin_banks(match[1], 1)
-            ports[match[2]].extend(name.partition('[')[0].strip() for name in pins.split(','))
+    for pin, direction in instance.port_directions:
+        ports[direction].append(pin)
     clocks = tuple(reverse[name] for name in simulation.clocks if name in reverse)
     model = SimpleNamespace(
         name=instance.name,

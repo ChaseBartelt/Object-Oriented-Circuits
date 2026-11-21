@@ -1,0 +1,396 @@
+// OCTANT CPU | single-cycle 32-bit educational processor
+// Open Logic simulation, click Reset, then raise TRIP2 and TRIP5.
+// Watch PC, IR, R0 through R7, PENDING, ACK and LAST_ACK in Signals.
+// The 15th Step executes the acknowledge store. While the CPU is running,
+// each Step executes one instruction. RESET clears the CPU, log and alerts.
+//
+// The custom Nios-style word uses A[31:27], B[26:22], imm16[21:6], opcode[5:0].
+// Only r0-r7 are implemented. ADDI, LDW, STW, LDWIO and STWIO use signed
+// immediates. BEQ/BNE add a signed byte displacement to PC+4.
+// ANDI zero-extends its mask. Loads write B, stores read B, and r0 is zero.
+
+chip OctantCpuROM(pc, word) {
+    pc[32] = input;
+    word[32] = output;
+    // Machine words for the polling firmware. "poll" is byte address 8.
+    switch (pc) {
+        case  0: word =   4210689; break;  // addi  r1, r0, 256    (OCTANT register base)
+        case  4: word =   8388609; break;  // addi  r2, r0, 0      (RAM log write offset)
+        case  8: word = 146800643; break;  // ldwio r3, 0(r1)      (read pending channels)
+        case 12: word = 406846981; break;  // beq   r3, r0, poll   (poll again when no alerts are pending)
+        case 16: word = 155189507; break;  // ldwio r5, 4(r1)      (read hardware event count)
+        case 20: word = 159384323; break;  // ldwio r6, 12(r1)     (read qualified input levels)
+        case 24: word = 297795591; break;  // ldw   r7, 0(r2)      (read the mask already in this log slot)
+        case 28: word = 281018376; break;  // stw   r3, 0(r2)      (log the newly read mask)
+        case 32: word = 289407240; break;  // stw   r5, 4(r2)      (log its hardware count)
+        case 36: word = 553648193; break;  // addi  r4, r4, 1      (increment processed batch count)
+        case 40: word = 146801156; break;  // stwio r3, 8(r1)      (acknowledge exactly the mask read at poll)
+        case 44: word = 276824577; break;  // addi  r2, r2, 8      (advance to next two-word entry)
+        case 48: word = 276826050; break;  // andi  r2, r2, 31     (wrap within 32-byte RAM)
+        case 52: word =   4191237; break;  // beq   r0, r0, poll   (branch back to byte address 8)
+        default: word = 63;  // Illegal opcode on an unmapped fetch.
+    }
+}
+
+chip OctantCpuRegisterFile(clk, reset, a, b, write, result, lhs, rhs, words) {
+    clk, reset, write = input;
+    a[3], b[3] = input;
+    result[32] = input;
+    lhs[32], rhs[32], words[256] = output;
+    regs[8][32] = 0;
+
+    lhs = regs[a];
+    rhs = regs[b];
+    r0[32] = regs[0];
+    r1[32] = regs[1];
+    r2[32] = regs[2];
+    r3[32] = regs[3];
+    r4[32] = regs[4];
+    r5[32] = regs[5];
+    r6[32] = regs[6];
+    r7[32] = regs[7];
+
+    // Keep the packed inspection port in register order.
+    for (int i = 0; i < 8; i++) {
+        words[i * 32 + 31 : i * 32] = regs[i];
+    }
+
+    clock(clk, 10kHz) {
+        if (reset) {
+            for (int i = 0; i < 8; i++) {
+                regs[i] = 0;
+            }
+        } else if (write && b != 0) {
+            regs[b] = result;
+        }
+    }
+}
+
+chip OctantCpuALU(pc, lhs, rhs, imm, and_mode, branch_eq, branch_ne,
+                  address, alu_result, pc_next, target, take_branch) {
+    pc[32], lhs[32], rhs[32], imm[16] = input;
+    and_mode, branch_eq, branch_ne = input;
+    address[32], alu_result[32], pc_next[32], target[32] = output;
+    take_branch = output;
+
+    const SIGN_FILL[32] = 4294901760;
+    displacement[32] = imm[15] ? (SIGN_FILL | imm) : imm;
+
+    // The same 32-bit addition serves ADDI and load/store addressing.
+    address = lhs + displacement;
+    alu_result = and_mode ? (lhs & imm) : address;
+    pc_next = pc + 4;
+    target = pc_next + displacement;
+    take_branch = (branch_eq && lhs == rhs) || (branch_ne && lhs != rhs);
+}
+
+chip OctantCpuCore(clk, reset, bus_in, bus_fault, port_io, mem_read, mem_write,
+                   address, bus_out, pc, ir, last_pc, last_ir, halted, fault, registers) {
+    clk, reset, bus_fault = input;
+    bus_in[32] = input;
+    port_io, mem_read, mem_write, halted, fault = output;
+    address[32], bus_out[32], pc[32], ir[32], last_pc[32], last_ir[32] = output;
+    registers[256] = output;
+
+    const OP_HALT[6] = 0;
+    const OP_ADDI[6] = 1;
+    const OP_ANDI[6] = 2;
+    const OP_LDWIO[6] = 3;
+    const OP_STWIO[6] = 4;
+    const OP_BEQ[6] = 5;
+    const OP_BNE[6] = 6;
+    const OP_LDW[6] = 7;
+    const OP_STW[6] = 8;
+    pc_reg[32] = 0;
+    previous_pc[32] = 0;
+    previous_ir[32] = 0;
+    stopped = 0;
+    trapped = 0;
+
+    pc = pc_reg;
+    last_pc = previous_pc;
+    last_ir = previous_ir;
+    halted = stopped;
+    fault = trapped;
+    OctantCpuROM(pc, ir);
+
+    opcode[6] = ir[5:0];
+    field_a[3] = ir[29:27];
+    field_b[3] = ir[24:22];
+    imm[16] = ir[21:6];
+    valid, running, writeback, take_branch = wire;
+    valid = ir[31:30] == 0 && ir[26:25] == 0 && opcode <= OP_STW && (opcode != OP_HALT || ir == 0);
+    running = !reset && !stopped && valid;
+    port_io = opcode == OP_LDWIO || opcode == OP_STWIO;
+    mem_read = running && (opcode == OP_LDW || opcode == OP_LDWIO);
+    mem_write = running && (opcode == OP_STW || opcode == OP_STWIO);
+
+    lhs[32], rhs[32], pc_next[32], target[32], alu_result[32] = wire;
+    and_mode, branch_eq, branch_ne = wire;
+    and_mode = opcode == OP_ANDI;
+    branch_eq = opcode == OP_BEQ;
+    branch_ne = opcode == OP_BNE;
+    OctantCpuALU(pc, lhs, rhs, imm, and_mode, branch_eq, branch_ne,
+                 address, alu_result, pc_next, target, take_branch);
+
+    bus_out = rhs;
+    result[32] = mem_read ? bus_in : alu_result;
+    writeback = running && !bus_fault && (mem_read || opcode == OP_ADDI || opcode == OP_ANDI);
+    OctantCpuRegisterFile(clk, reset, field_a, field_b, writeback, result, lhs, rhs, registers);
+
+    clock(clk, 10kHz) {
+        if (reset) {
+            pc_reg = 0;
+            previous_pc = 0;
+            previous_ir = 0;
+            stopped = 0;
+            trapped = 0;
+        } else if (!stopped) {
+            previous_pc = pc_reg;
+            previous_ir = ir;
+            if (!valid || bus_fault || (take_branch && target[1:0] != 0)) {
+                stopped = 1;
+                trapped = 1;
+            } else if (opcode == OP_HALT) {
+                stopped = 1;
+            } else {
+                pc_reg = take_branch ? target : pc_next;
+            }
+        }
+    }
+}
+
+chip OctantCpuRAM(clk, reset, write, address, write_data, valid, data, words) {
+    clk, reset, write = input;
+    address[32], write_data[32] = input;
+    valid = output;
+    data[32], words[256] = output;
+
+    // Byte addresses 0 through 31 hold eight aligned words.
+    ram[8][32] = 0;
+    word_index[3] = address[4:2];
+    valid = address < 32 && address[1:0] == 0;
+    data = ram[word_index];
+    word0[32] = ram[0];
+    word1[32] = ram[1];
+    word2[32] = ram[2];
+    word3[32] = ram[3];
+    word4[32] = ram[4];
+    word5[32] = ram[5];
+    word6[32] = ram[6];
+    word7[32] = ram[7];
+
+    // Pack the words for the existing log inspection port.
+    for (int i = 0; i < 8; i++) {
+        words[i * 32 + 31 : i * 32] = ram[i];
+    }
+
+    clock(clk, 10kHz) {
+        if (reset) {
+            for (int i = 0; i < 8; i++) {
+                ram[i] = 0;
+            }
+        } else if (write && valid) {
+            ram[word_index] = write_data;
+        }
+    }
+}
+
+chip OctantCpuMMIO(clk, reset, write, bus_fault, address, write_data, pending, stable, event_count, last_event,
+                   read_valid, write_valid, data, ack, last_ack) {
+    clk, reset, write, bus_fault = input;
+    address[32], write_data[32] = input;
+    pending[8], stable[8], last_event[8] = input;
+    event_count[16] = input;
+    read_valid, write_valid = output;
+    data[32] = output;
+    ack[8], last_ack[8] = output;
+
+    const PENDING_ADDR[32] = 256;
+    const COUNT_ADDR[32] = 260;
+    const ACK_ADDR[32] = 264;
+    const STABLE_ADDR[32] = 268;
+    const LAST_EVENT_ADDR[32] = 272;
+    acknowledged[8] = 0;
+
+    read_valid = (address == PENDING_ADDR || address == COUNT_ADDR ||
+                  address == STABLE_ADDR || address == LAST_EVENT_ADDR);
+    write_valid = address == ACK_ADDR;
+    switch (address) {
+        case PENDING_ADDR: data = pending; break;
+        case COUNT_ADDR: data = event_count; break;
+        case STABLE_ADDR: data = stable; break;
+        case LAST_EVENT_ADDR: data = last_event; break;
+        default: data = 0;
+    }
+    // Drive ACK on the store edge; retain the most recent mask for inspection.
+    ack = write && write_valid ? write_data[7:0] : 0;
+    last_ack = acknowledged;
+    clock(clk, 10kHz) {
+        if (reset) {
+            acknowledged = 0;
+        } else if (write && write_valid && !bus_fault) {
+            acknowledged = ack;
+        }
+    }
+}
+
+chip OctantCpuMemory(clk, reset, port_io, mem_read, mem_write, address, bus_out,
+                     pending, stable, event_count, last_event, bus_in, bus_fault, ack, last_ack, log_words) {
+    clk, reset, port_io, mem_read, mem_write = input;
+    address[32], bus_out[32] = input;
+    pending[8], stable[8], last_event[8] = input;
+    event_count[16] = input;
+    bus_in[32], log_words[256] = output;
+    ack[8], last_ack[8] = output;
+    bus_fault = output;
+
+    ram_write, io_write, ram_valid, io_read_valid, io_write_valid = wire;
+    ram_value[32], io_value[32] = wire;
+    ram_write = mem_write && !port_io;
+    io_write = mem_write && port_io;
+    OctantCpuRAM(clk, reset, ram_write, address, bus_out, ram_valid, ram_value, log_words);
+    OctantCpuMMIO(clk, reset, io_write, bus_fault, address, bus_out, pending, stable, event_count, last_event,
+                  io_read_valid, io_write_valid, io_value, ack, last_ack);
+
+    bus_fault = ((mem_read && !(port_io ? io_read_valid : ram_valid)) ||
+                 (mem_write && !(port_io ? io_write_valid : ram_valid)));
+    bus_in = mem_read && !bus_fault ? (port_io ? io_value : ram_value) : 0;
+}
+
+// Same qualifier and sticky capture logic as the standalone OCTANT controller.
+// These definitions keep this single OOC document directly openable in the viewer.
+chip OctantQualify(clk, reset, trip, stable) {
+    clk, reset, trip = input;
+    stable = output;
+
+    meta;
+    synced;
+    sample1;
+    sample2;
+    level;
+
+    clock(clk, 10kHz) {
+        if (reset) {
+            meta = 0;
+            synced = 0;
+            sample1 = 0;
+            sample2 = 0;
+            level = 0;
+        } else {
+            // Two input stages, followed by a three-sample confirmation.
+            meta = trip;
+            synced = meta;
+            sample1 = synced;
+            sample2 = sample1;
+            if (synced && sample1 && sample2) {
+                level = 1;
+            } else if (!(synced || sample1 || sample2)) {
+                level = 0;
+            }
+        }
+    }
+    stable = level;
+}
+
+chip OctantCapture(clk, reset, ack, stable, pending, last_event, event_count) {
+    clk, reset = input;
+    ack[8], stable[8] = input;
+    pending[8], last_event[8], event_count[16] = output;
+
+    const ALL8[8] = 255;
+    const ZERO4[4] = 0;
+    const ZERO17[17] = 0;
+    previous[8] = 0;
+    flags[8] = 0;
+    last[8] = 0;
+    count[16] = 0;
+
+    rise[8] = stable & (previous ^ ALL8);
+    // Count all channels in the batch and widen before adding to detect overflow.
+    arrivals[4] = ZERO4 + rise[0] + rise[1] + rise[2] + rise[3] + rise[4] + rise[5] + rise[6] + rise[7];
+    next_count[17] = ZERO17 + count + arrivals;
+
+    clock(clk, 10kHz) {
+        if (reset) {
+            previous = 0;
+            flags = 0;
+            last = 0;
+            count = 0;
+        } else {
+            previous = stable;
+            // A new arrival survives ACK on the same edge. Holding a trip
+            // high after ACK cannot create a second arrival.
+            flags = (flags & (ack ^ ALL8)) | rise;
+            if (rise != 0) {
+                last = rise;
+                count = next_count[16] ? 65535 : next_count[15:0];
+            }
+        }
+    }
+
+    pending = flags;
+    last_event = last;
+    event_count = count;
+}
+
+chip OctantPack(bits[7:0], word) {
+    bits[7:0] = input;
+    word[8] = output;
+    word = bits[7:0];
+}
+
+chip OctantAlerts(clk, reset, ack, trip[7:0], qualified[7:0], stable, pending, last_event, event_count) {
+    clk, reset, trip[7:0] = input;
+    ack[8] = input;
+    qualified[7:0] = output;
+    stable[8], pending[8], last_event[8], event_count[16] = output;
+
+    for (int channel = 0; channel < 8; channel++) {
+        OctantQualify(clk, reset, trip[channel], qualified[channel]);
+    }
+    OctantPack(qualified[7:0], stable);
+    OctantCapture(clk, reset, ack, stable, pending, last_event, event_count);
+}
+
+chip OctantCpuWordView(words, w0, w1, w2, w3, w4, w5, w6, w7) {
+    words[256] = input;
+    w0[32], w1[32], w2[32], w3[32], w4[32], w5[32], w6[32], w7[32] = output;
+    w0 = words[31:0];
+    w1 = words[63:32];
+    w2 = words[95:64];
+    w3 = words[127:96];
+    w4 = words[159:128];
+    w5 = words[191:160];
+    w6 = words[223:192];
+    w7 = words[255:224];
+}
+
+main OCTANT_CPU {
+    CLK, RESET, TRIP[7:0] = input;
+    PC[32], IR[32], LAST_PC[32], LAST_IR[32] = output;
+    R0[32], R1[32], R2[32], R3[32], R4[32], R5[32], R6[32], R7[32] = output;
+    HALTED, FAULT = output;
+    STABLE[8], PENDING[8], ACK[8], LAST_ACK[8], LAST_EVENT[8] = output;
+    EVENT_COUNT[16] = output;
+
+    qualified[7:0] = wire;
+    OctantAlerts(CLK, RESET, ACK, TRIP[7:0], qualified[7:0], STABLE, PENDING, LAST_EVENT, EVENT_COUNT);
+
+    registers[256], log_words[256] = wire;
+    BUS_ADDR[32], BUS_WDATA[32], BUS_RDATA[32] = wire;
+    BUS_IO, BUS_READ, BUS_WRITE, bus_fault = wire;
+    OctantCpuCore(CLK, RESET, BUS_RDATA, bus_fault, BUS_IO, BUS_READ, BUS_WRITE,
+                  BUS_ADDR, BUS_WDATA, PC, IR, LAST_PC, LAST_IR, HALTED, FAULT, registers);
+    OctantCpuMemory(CLK, RESET, BUS_IO, BUS_READ, BUS_WRITE, BUS_ADDR, BUS_WDATA,
+                    PENDING, STABLE, EVENT_COUNT, LAST_EVENT, BUS_RDATA, bus_fault, ACK, LAST_ACK, log_words);
+
+    // Named views of the storage words are available in Signals and Probe.
+    OctantCpuWordView(registers, R0, R1, R2, R3, R4, R5, R6, R7);
+    for (int entry = 0; entry < 4; entry++) {
+        LOG_MASK${entry}[32] = wire;
+        LOG_COUNT${entry}[32] = wire;
+    }
+    OctantCpuWordView(log_words, LOG_MASK0, LOG_COUNT0, LOG_MASK1, LOG_COUNT1,
+                      LOG_MASK2, LOG_COUNT2, LOG_MASK3, LOG_COUNT3);
+}

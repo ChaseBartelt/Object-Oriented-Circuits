@@ -962,7 +962,7 @@ class SchematicView(QGraphicsView):
         if name not in self.behavior_models:
             try:
                 index = int(name.removeprefix(METHOD_PREFIX))
-                self.behavior_models[name] = chip_diagram_model(self.circuit, index, self.logic_simulation)
+                self.behavior_models[name] = chip_diagram_model(self.circuit.instances, index, self.logic_simulation)
             except (CircuitError, ValueError) as error:
                 self.behavior_models[name] = str(error)
         model = self.behavior_models[name]

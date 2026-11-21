@@ -8,6 +8,7 @@ from graphlib import CycleError, TopologicalSorter
 
 from circuitlab.exporters.clocked import Expressions, SELECTOR, selected_bits, compile_clocks
 from circuitlab.language.control_flow import expand_digital_loops
+from circuitlab.language.digital_arrays import lower_digital_arrays
 from circuitlab.language.digital_switch import expand_switches, normalize_switch_labels
 from circuitlab.language.digital_declarations import normalize_wire_declarations
 from circuitlab.language.pin_banks import expand_pin_banks, pin_bank_names
@@ -236,7 +237,8 @@ class _CombinationalExpressions(Expressions):
 
 
 def _module(name, pins, body, header_line):
-    body = normalize_wire_declarations(expand_switches(expand_digital_loops(normalize_switch_labels(body))), pins)
+    body = expand_switches(expand_digital_loops(normalize_switch_labels(body)))
+    body = normalize_wire_declarations(lower_digital_arrays(body, pins), pins)
     directions, port_widths, wires, states, constants = {}, {}, {}, {}, {}
     declarations_body, clocks = [], []
     index = outer_depth = 0
@@ -396,11 +398,11 @@ def _module(name, pins, body, header_line):
 
 # Compile each definition independently and preserve header port order for callers.
 # Return metadata alongside HDL so simulation and editor tooling share the same validation.
-def compile_chips(source: str):
-    """Return each validated chip's pins, body, and Verilog."""
+def compile_chips(source: str, *, instances=None):
+    """Return each validated chip's pins, body, and Verilog, with optional assembly instances."""
     from circuitlab.language.digital_structure import assemble_digital
 
-    assembled = assemble_digital(source)
+    assembled = assemble_digital(source, instances=instances)
     if assembled is not None:
         name, pins, body, header_line = assembled
         verilog, directions = _module(name, pins, body, header_line)

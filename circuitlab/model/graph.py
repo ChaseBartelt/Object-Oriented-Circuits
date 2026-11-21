@@ -332,6 +332,13 @@ class MethodInstance:
 
 
 @dataclass(frozen=True)
+class DigitalInstance(MethodInstance):
+    """An assembled digital chip's formal pin directions."""
+
+    port_directions: tuple[tuple[str, str], ...] = ()
+
+
+@dataclass(frozen=True)
 class ChipProperty:
     name: str
     value: Scalar

@@ -420,10 +420,12 @@ class DigitalSimulation:
             raise _error("source exceeds the interactive size limit.")
         # Simulation follows the compiler's lowered design, including generated
         # counters and phase increments, instead of interpreting OOC a second way.
-        chips = compile_chips(source)
+        instances = []
+        chips = compile_chips(source, instances=instances)
         if len(chips) != 1:
             raise _error("select one chip; multi-chip simulation is not yet supported.")
         self.profile = profile
+        self.instances = tuple(instances)
         # Use the same board wrapper as an FPGA build, so switch synchronizer
         # registers and their cycle delays are real simulated state. The ordinary
         # OOC profile uses the board-neutral core HDL directly.

@@ -40,7 +40,7 @@ from circuitlab.viewer.editor import CircuitEditor
 from circuitlab.layout.devices import DeviceLayouts
 from circuitlab.viewer.device_layouts import DeviceLayoutDialog
 from circuitlab.viewer.source_editing import SourceTools
-from circuitlab.model.graph import Circuit, CircuitError, MethodInstance
+from circuitlab.model.graph import CircuitError
 from circuitlab.language.linked import CHIP_LIBRARY, imported_definitions, read_includes
 from circuitlab.exporters.ltspice import export_hierarchy, export_schematic
 from circuitlab.tooling.pins import apply_pin_overrides, circuit_text, pin_comment, pin_entries, read_pins
@@ -52,9 +52,10 @@ from circuitlab.viewer.schematic import SchematicView
 from circuitlab.viewer.scope import ScopeSidebar, ScopeToggle
 from circuitlab.exporters.spice import export_spice
 from circuitlab.language.syntax import MAIN, has_chip, source_rows
-from circuitlab.tooling.session import includes_files, issue_for
+from circuitlab.tooling.session import CircuitSession, includes_files, issue_for
 from circuitlab.tooling.trace import wire_trace
-from circuitlab.exporters.verilog import compile_chips, export_verilog
+from circuitlab.exporters.verilog import export_verilog
+from circuitlab.viewer.digital import DigitalSimulator
 from circuitlab.viewer.widgets import (
     MODES,
     STYLESHEET,
@@ -126,6 +127,12 @@ class MainWindow(QMainWindow):
 
         self.results = Results()
         self.views.addTab(self.results, "Results")
+        self.digital = DigitalSimulator()
+        self.digital.values_changed.connect(self.update_logic_colors)
+        self.digital.port_view.placement_changed.connect(self.placement_changed)
+        self.schematic.logic_input_requested.connect(self.digital.toggle_input)
+        self.digital_tab = self.views.addTab(self.digital, "Logic simulation")
+        self.views.setTabVisible(self.digital_tab, False)
         self.status = QLabel("Open a circuit or enter known quantities.")
         self.status.setTextFormat(Qt.TextFormat.PlainText)
         self.status.setWordWrap(True)
@@ -354,7 +361,7 @@ class MainWindow(QMainWindow):
         if path is not None:
             state.wiring, state.placements = read_placement(path)
             state.pin_overrides = read_pin_overrides(path)
-            state.logic = read_logic_placement(path).get('schematic', {})
+            state.logic = read_logic_placement(path)
         self.documents[editor] = state
         editor.textChanged.connect(lambda: self.source_changed() if editor is self.editor else None)
         editor.document().modificationChanged.connect(lambda: self.update_tab_title(editor))
@@ -371,7 +378,7 @@ class MainWindow(QMainWindow):
         state.path, state.disk_bytes = self.path, self.disk_bytes
         state.placement_dirty = self.placement_dirty
         state.placements = self.schematic.placements()
-        state.logic = self.schematic.logic_placements()
+        state.logic = self.logic_placements()
         state.wiring = self.schematic.layout_mode
         state.mode = self.mode.currentIndex()
         state.pin_overrides = dict(self.pin_overrides)
@@ -391,7 +398,7 @@ class MainWindow(QMainWindow):
         self.pins = apply_pin_overrides(read_pins(source), self.pin_overrides)
         self.circuit_text = circuit_text(source)
         self.load_placement(state.wiring, dict(state.placements or {}))
-        self.schematic.load_logic_placements(state.logic or {})
+        self.load_logic_placements(state.logic or {})
         self.placement_dirty = state.placement_dirty
         with QSignalBlocker(self.mode):
             self.mode.setCurrentIndex(state.mode)
@@ -465,6 +472,11 @@ class MainWindow(QMainWindow):
             "Place a named probe on a wire, connector, or component terminal."
         )
         grid_button(self.schematic, controls, alignment_layout=self.schematic_header.secondary)
+        self.schematic_step = button("Step logic", lambda: self.digital.step(), controls)
+        self.schematic_step.setObjectName("schematic-step")
+        self.schematic_step.setToolTip("Advance one logic clock cycle while viewing the schematic.")
+        self.schematic_step.setEnabled(False)
+        self.schematic_step.hide()
         controls = self.schematic_header.secondary
         button("Zoom in", lambda: self.schematic.zoom(1.4), controls)
         button("Zoom out", lambda: self.schematic.zoom(1 / 1.4), controls)
@@ -659,6 +671,7 @@ class MainWindow(QMainWindow):
         if self.effective_mode() != self.picker_mode:
             self.refresh_picker()
         self.schematic.clear(preserve_placement=True)
+        self.clear_digital()
         self.pin_button.setChecked(False)
         self.schematic.set_pin_tool(False)
         self.show_issues([])
@@ -679,6 +692,7 @@ class MainWindow(QMainWindow):
             self.scope_sidebar.set_circuit(None)
         self.set_solution(None)
         self.schematic.clear(preserve_placement=True)
+        self.clear_digital()
         issues = []
         if not mask_comments(source).strip():
             self.scope_sidebar.set_circuit(None)
@@ -722,22 +736,9 @@ class MainWindow(QMainWindow):
     # connected schematic even when its operating point is not yet determined.
     def _draw_source(self, source, mode, *, preserve_scope=False):
         """Render a compiled graph even when electrical analysis cannot solve it."""
-        if has_chip(source) and not self.includes_files(source):
-            chips = compile_chips(source)
-            circuit = Circuit(
-                "dc",
-                instances=[
-                    MethodInstance(
-                        "chip", name, None,
-                        tuple(
-                            (pin, pin if len(chips) == 1 else f"@{name}.{pin}")
-                            for pin, _ in pins
-                        ),
-                        body,
-                    )
-                    for name, pins, body, _ in chips
-                ],
-            )
+        digital = has_chip(source) and not self.includes_files(source)
+        if digital:
+            circuit = CircuitSession(source=source).render()
         else:
             preview = self.library_preview(source)
             if preview:
@@ -745,6 +746,34 @@ class MainWindow(QMainWindow):
             circuit = self.build_circuit(source, mode, render_only=True)
         self.schematic.draw(circuit, self.pins)
         self.scope_sidebar.set_circuit(circuit, preserve_state=preserve_scope)
+        if digital:
+            self.digital.set_source(source)
+            self.views.setTabVisible(self.digital_tab, self.digital.simulation is not None)
+        else:
+            self.clear_digital()
+
+    def clear_digital(self):
+        if self.digital.source:
+            self.digital.set_source("")
+        self.views.setTabVisible(self.digital_tab, False)
+
+    def update_logic_colors(self, values):
+        sim = self.digital.simulation
+        can_step = bool(sim and sim.clocks)
+        if self.schematic_step.isEnabled() != can_step:
+            self.schematic_step.setEnabled(can_step)
+            self.schematic_step.setVisible(can_step)
+            self.schematic_header.show_tools(self.views.currentIndex())
+        self.schematic.set_logic_simulation(sim, values)
+        self.schematic.set_logic_values({name: value for name, value in values.items()
+                                         if sim and name not in sim.clocks and sim.signals.get(name) == 1})
+
+    def logic_placements(self):
+        return {"schematic": self.schematic.logic_placements(), "simulation": self.digital.logic_placements()}
+
+    def load_logic_placements(self, records):
+        self.schematic.load_logic_placements(records.get("schematic", {}))
+        self.digital.load_logic_placements(records.get("simulation", {}))
 
     def render_source(self):
         try:
@@ -752,6 +781,7 @@ class MainWindow(QMainWindow):
         except CircuitError as error:
             self.schematic.clear(preserve_placement=True)
             self.scope_sidebar.set_circuit(None)
+            self.clear_digital()
             issue = self.issue(error)
             self.show_issues([issue])
             self.status.setText(issue.message)
@@ -901,6 +931,11 @@ class MainWindow(QMainWindow):
         self.analysis_window.activateWindow()
 
     def probe(self, kind, name):
+        sim = self.digital.simulation
+        if sim is not None and kind in {"node", "pin"} and name in sim.values:
+            self.digital.select_signal(name)
+            self.status.setText(f"{name} = {sim.values[name]} · simulated logic level")
+            return
         if kind == "pin" and name in self.pins:
             self.results.search.setText(self.pins[name])
             self.views.setCurrentWidget(self.results)
@@ -975,7 +1010,7 @@ class MainWindow(QMainWindow):
             self.pin_overrides = read_pin_overrides(path)
             self.editor.setPlainText(source)
             self.load_placement(*read_placement(path))
-            self.schematic.load_logic_placements(read_logic_placement(path).get('schematic', {}))
+            self.load_logic_placements(read_logic_placement(path))
             self.editor.document().setModified(False)
             self.update_title()
             self.compile_source()
@@ -1109,9 +1144,9 @@ class MainWindow(QMainWindow):
         placements = self.schematic.placements()
         logic = (layout_payload(source) or {}).get('logic', {})
         logic = dict(logic) if isinstance(logic, dict) else {}
-        if 'schematic' in logic or self.schematic.logic_placements():
-            logic['schematic'] = self.schematic.logic_placements()
-        if (placements or self.schematic.logic_placements() or self.pin_overrides or "@ooc-layout-" in source
+        current_logic = self.logic_placements()
+        logic.update({key: record for key, record in current_logic.items() if record or key in logic})
+        if (placements or any(current_logic.values()) or self.pin_overrides or "@ooc-layout-" in source
                 or placement_path(self.path or path).exists()):
             try:
                 source = embed_placement(source, self.schematic.layout_mode, placements,
@@ -1171,4 +1206,5 @@ class MainWindow(QMainWindow):
                     event.ignore()
                     return
         self.scope.shutdown()
+        self.digital.shutdown()
         event.accept()

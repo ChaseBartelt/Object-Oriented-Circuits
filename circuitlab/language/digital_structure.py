@@ -12,12 +12,13 @@ import re
 from dataclasses import dataclass
 
 from circuitlab.language.control_flow import ExpansionBudget, expand_control_flow, expand_digital_loops
+from circuitlab.language.digital_arrays import lower_digital_arrays
 from circuitlab.language.digital_switch import expand_switches, normalize_switch_labels
 from circuitlab.language.digital_declarations import normalize_wire_declarations
 from circuitlab.language.pin_banks import expand_pin_banks
 from circuitlab.language.math_blocks import digital_math_rows
 from circuitlab.language.syntax import CHIP, DIGITAL_MAIN, source_rows
-from circuitlab.model.graph import CircuitError, MethodInstance
+from circuitlab.model.graph import CircuitError, DigitalInstance
 
 
 DECLARATION = re.compile(r"(.+?)\s*=\s*(input|output|wire)", re.I)
@@ -218,6 +219,7 @@ def _definitions(source):
             # it is not executed using main's static variable environment.
             body = [(text, number, origins[number]) for text, number in expand_switches(expand_digital_loops(
                 normalize_switch_labels([(text, number) for text, number, _ in body])))]
+            body = lower_digital_arrays(body, pins)
             # Normalize explicit bank declarations and inferred sized wires before
             # building local signal tables. Bank expression helpers add declarations,
             # so collect the tables again after their insertion.
@@ -425,11 +427,12 @@ Source text and saved layouts are never rewritten by elaboration.
         # pins/arguments retain the external formal/actual connections.
         if instances is not None:
             own_index = len(instances)
-            instances.append(MethodInstance(
+            instances.append(DigitalInstance(
                 "chip", name, parent, tuple((p, mapping[p]) for p in chip.pins),
                 tuple(row[0] for row in chip.body), line=number,
                 arguments=tuple(zip(actual, (mapping[p] for p in chip.pins))),
                 signal_bindings=tuple(mapping.items()),
+                port_directions=tuple((pin, chip.directions[pin]) for pin in chip.pins),
             ))
         depth = 0
         for row, source_line, _ in chip.body:

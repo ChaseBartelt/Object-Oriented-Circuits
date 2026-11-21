@@ -151,6 +151,11 @@ class ViewerWindow(QMainWindow):
         self.pin_button = button("Add pin", self.toggle_pin_tool, controls)
         self.pin_button.setCheckable(True)
         grid_button(self.schematic, controls, alignment_layout=self.schematic_header.secondary)
+        self.schematic_step = button("Step logic", lambda: self.digital.step(), controls)
+        self.schematic_step.setObjectName("schematic-step")
+        self.schematic_step.setToolTip("Advance one logic clock cycle while viewing the schematic.")
+        self.schematic_step.setEnabled(False)
+        self.schematic_step.hide()
         controls = self.schematic_header.secondary
         button("Zoom in", lambda: self.schematic.zoom(1.4), controls)
         button("Zoom out", lambda: self.schematic.zoom(1 / 1.4), controls)
@@ -325,6 +330,11 @@ class ViewerWindow(QMainWindow):
         # Samples are taken between complete cycles. Leave clock wires neutral
         # instead of presenting their sampled low phase as a constant logic 0.
         sim = self.digital.simulation
+        can_step = bool(sim and sim.clocks)
+        if self.schematic_step.isEnabled() != can_step:
+            self.schematic_step.setEnabled(can_step)
+            self.schematic_step.setVisible(can_step)
+            self.schematic_header.show_tools(self.views.currentIndex())
         self.schematic.set_logic_simulation(sim, values)
         clocks = sim.clocks if sim else ()
         self.schematic.set_logic_values({name: value for name, value in values.items()

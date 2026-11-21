@@ -1,0 +1,115 @@
+include("@chips/converters/LT1677.ckt");
+include("@chips/analog/LM339.ckt");
+
+// Repeatable inputs let the scope and FPGA companion observe the same events.
+chip OctantStimulus(gnd, raw3, raw2, raw1, raw0, raw4, raw5, raw6, raw7) {
+    for (int channel = 0; channel < 8; channel++) {
+        Vprobe${channel}(pulse(${400 + 200 * channel}mV, ${2200 + 100 * channel}mV,
+                              ${2 + 2 * channel}ms, 100us, 100us, 4ms, 24ms)) between(raw${channel}, gnd);
+    }
+}
+
+// The same RC network attenuates short input glitches on all eight channels.
+circuit OctantFilter(raw, filtered, gnd) {
+    Rfilter(4.7k) between(raw, filtered);
+    Cfilter(100nF) between(filtered, gnd);
+}
+
+// Open a channel in the schematic to see its RC network and LT1677 follower.
+chip OctantChannel(raw, vcc, gnd, level) {
+    OctantFilter(raw, filtered, gnd);
+    LT1677(trim1, level, filtered, gnd, nc, level, vcc, trim2);
+}
+
+// One quad comparator supervises four filtered inputs. Open this package to
+// inspect the LM339, four channel modules, and their open-collector pullups.
+chip OctantBank(raw0, raw1, raw2, raw3, reference, vcc, gnd, level3,
+                trip3, level2, trip2, level1, trip1, level0, trip0) {
+    for (int channel = 0; channel < 4; channel++) {
+        OctantChannel(raw${channel}, vcc, gnd, level${channel});
+        Rpull${channel}(10k) between(vcc, trip${channel});
+    }
+    LM339(trip0, trip1, vcc, reference, level1, reference, level0,
+          reference, level2, reference, level3, gnd, trip3, trip2);
+}
+
+// In manual mode the west pin group carries the switch positions. In scan
+// mode the same address pins count from 0 through 7 in three-millisecond slots.
+chip OctantAddress(manual0, manual1, manual2, scan, gnd, select2, select1, select0) {
+    for (int bit = 0; bit < 3; bit++) {
+        Rselect${bit}(47k) between(manual${bit}, gnd);
+    }
+    Rscan(47k) between(scan, gnd);
+
+    analog {
+        properties {
+            slot.time = 3ms;
+            logic.threshold = 2.5V;
+            logic.high = 5V;
+        }
+
+        let slot = floor(time / slot.time);
+        let address = slot - 8 * floor(slot / 8);
+        let bit1 = floor(address / 2);
+        let bit2 = floor(address / 4);
+        let running = V(scan, gnd) > logic.threshold;
+
+        V(select0, gnd) = ifelse(running, logic.high * (address - 2 * bit1), V(manual0, gnd));
+        V(select1, gnd) = ifelse(running, logic.high * (bit1 - 2 * bit2), V(manual1, gnd));
+        V(select2, gnd) = ifelse(running, logic.high * bit2, V(manual2, gnd));
+    }
+}
+
+// An eight-to-one selector with finite contact resistance and an inhibit pin.
+// The hidden voltage equations drive eight ordinary bidirectional switches.
+chip OctantMux(ch0, ch1, ch2, ch3, ch4, ch5, ch6, ch7,
+               gnd, bus, inhibit, select2, select1, select0, vcc) {
+    Rinhibit(47k) between(inhibit, gnd);
+
+    analog {
+        properties { logic.threshold = 2.5V; logic.high = 5V; }
+        let bit0 = ifelse(V(select0, gnd) > logic.threshold, 1, 0);
+        let bit1 = ifelse(V(select1, gnd) > logic.threshold, 1, 0);
+        let bit2 = ifelse(V(select2, gnd) > logic.threshold, 1, 0);
+        let selected = ifelse(V(inhibit, gnd) > logic.threshold, -1, bit0 + 2 * bit1 + 4 * bit2);
+        let drive = min(logic.high, V(vcc, gnd));
+
+        V(on0, gnd) = ifelse(selected == 0, drive, 0V);
+        V(on1, gnd) = ifelse(selected == 1, drive, 0V);
+        V(on2, gnd) = ifelse(selected == 2, drive, 0V);
+        V(on3, gnd) = ifelse(selected == 3, drive, 0V);
+        V(on4, gnd) = ifelse(selected == 4, drive, 0V);
+        V(on5, gnd) = ifelse(selected == 5, drive, 0V);
+        V(on6, gnd) = ifelse(selected == 6, drive, 0V);
+        V(on7, gnd) = ifelse(selected == 7, drive, 0V);
+    }
+
+    switch0(on0, gnd, ch0, bus, 2.5, 470, 1G);
+    switch1(on1, gnd, ch1, bus, 2.5, 470, 1G);
+    switch2(on2, gnd, ch2, bus, 2.5, 470, 1G);
+    switch3(on3, gnd, ch3, bus, 2.5, 470, 1G);
+    switch4(on4, gnd, ch4, bus, 2.5, 470, 1G);
+    switch5(on5, gnd, ch5, bus, 2.5, 470, 1G);
+    switch6(on6, gnd, ch6, bus, 2.5, 470, 1G);
+    switch7(on7, gnd, ch7, bus, 2.5, 470, 1G);
+}
+
+// The monitor follows the selected channel. The second output uses a stateful
+// first-order average to reveal changes in the selected level and scan order.
+chip OctantReadout(bus, gnd, monitor, average) {
+    Rbus(100k) between(bus, gnd);
+    Rmonitor(100k) between(monitor, gnd);
+    Raverage(100k) between(average, gnd);
+
+    analog {
+        properties {
+            input.gain = 1;
+            output.max = 4.5V;
+            average.time = 5ms;
+        }
+
+        let level = clamp(input.gain * V(bus, gnd), 0V, output.max);
+        V(monitor, gnd) = level;
+        V(average, gnd) = integrate((level - V(average, gnd)) / average.time, 0V);
+    }
+}

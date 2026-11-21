@@ -1,0 +1,24 @@
+// OCTANT | six-digit telemetry view for a controller snapshot
+// Set the inputs from the correspondingly named controller outputs. DIGIT0
+// is the rightmost digit. The display bytes are active-low, with DP at bit 7.
+// PAGE=0: [active count] [first pending] [pending byte] [stable byte]
+// PAGE=1: [last-event byte] [16-bit event count]
+
+chip OCTANT_TELEMETRY(PAGE, VALID, MULTIPLE, FIRST, STABLE, PENDING,
+                      LAST_EVENT, EVENT_COUNT, DIGIT0, DIGIT1, DIGIT2, DIGIT3, DIGIT4, DIGIT5) {
+    PAGE, VALID, MULTIPLE = input;
+    FIRST[3] = input;
+    STABLE[8], PENDING[8], LAST_EVENT[8] = input;
+    EVENT_COUNT[16] = input;
+    DIGIT0[8], DIGIT1[8], DIGIT2[8], DIGIT3[8], DIGIT4[8], DIGIT5[8] = output;
+
+    const ZERO4[4] = 0;
+    active_count[4] = ZERO4 + STABLE[0] + STABLE[1] + STABLE[2] + STABLE[3] + STABLE[4] + STABLE[5] + STABLE[6] + STABLE[7];
+
+    DIGIT0 = sevenseg(PAGE ? EVENT_COUNT[3:0] : STABLE[3:0]);
+    DIGIT1 = sevenseg(PAGE ? EVENT_COUNT[7:4] : STABLE[7:4]);
+    DIGIT2 = sevenseg(PAGE ? EVENT_COUNT[11:8] : PENDING[3:0]);
+    DIGIT3 = sevenseg(PAGE ? EVENT_COUNT[15:12] : PENDING[7:4]);
+    DIGIT4 = PAGE ? sevenseg(LAST_EVENT[3:0]) : (VALID ? sevenseg(FIRST) : 255);
+    DIGIT5 = PAGE ? sevenseg(LAST_EVENT[7:4]) : sevenseg(active_count, MULTIPLE);
+}
