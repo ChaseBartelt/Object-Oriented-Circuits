@@ -7,17 +7,65 @@ import unittest
 
 from circuitlab.language.compiler import compile_circuit
 from circuitlab.layout.automatic import series_runs
+from circuitlab.layout.buffered_divider import buffered_divider_layout
 from circuitlab.layout.checks import preserves_nets
 from circuitlab.layout.editing import move_symbol
 from circuitlab.layout.geometry import component_pins, symbol_pins
 from circuitlab.layout.grid import align_layout
 from circuitlab.layout.persistence import pack_layout, restore_layout
 from circuitlab.layout.routing import fast_layout, schematic_layout
-from circuitlab.layout.shorten import wire_length
+from circuitlab.layout.shorten import clear_of_bodies, wire_length
 from circuitlab.math.report import component_labels
 
 
 class PotentiometerLayoutTest(unittest.TestCase):
+    def test_buffered_divider_draws_an_inline_source_and_straight_wiper_lead(self):
+        for source in ("Vs(5) between(supply,0);", "Vs(-5) between(0,supply);"):
+            with self.subTest(source=source):
+                circuit = compile_circuit(
+                    source + "\nPadjust(10k,25%) between(supply,tap,0);\n"
+                    "op1(tap,buffered,buffered);\nRreturn(1k) between(0,buffered);",
+                    render_only=True,
+                )
+                drawing = schematic_layout(circuit, component_labels(circuit), "auto")
+                drawing = align_layout(circuit, drawing)
+                self.assertIsNotNone(drawing)
+                self.assertTrue(preserves_nets(circuit, drawing))
+                self.assertFalse(drawing.crossings)
+                self.assertFalse(drawing.connectors)
+                edges = [edge for wires in drawing.wires.values() for edge in wires]
+                self.assertTrue(clear_of_bodies(edges, drawing))
+
+                symbols = {symbol[0].name: symbol for symbol in drawing.symbols}
+                voltage = dict(symbol_pins(*symbols["Vs"], grid=drawing.pin_grid))
+                pot = dict(symbol_pins(*symbols["Padjust"], grid=drawing.pin_grid))
+                amp = dict(symbol_pins(*symbols["op1"], grid=drawing.pin_grid))
+                load = dict(symbol_pins(*symbols["Rreturn"], grid=drawing.pin_grid))
+                self.assertEqual(pot["supply"][1], voltage["supply"][1])
+                self.assertEqual(voltage["supply"][1], voltage["0"][1])
+                self.assertGreater(pot["supply"][0], voltage["supply"][0])
+                self.assertGreater(voltage["supply"][0], voltage["0"][0])
+                self.assertGreater(pot["supply"][1], pot["0"][1])
+                self.assertEqual(pot["tap"][1], amp["tap"][1])
+                self.assertEqual(drawing.wires["tap"], [(pot["tap"], amp["tap"])])
+                self.assertEqual(load["buffered"][1], load["0"][1])
+                self.assertLess(load["buffered"][0], load["0"][0])
+                load_ground, = [pos for pos in drawing.grounds if pos[1] == load["0"][1]]
+                self.assertGreater(load_ground[0], load["0"][0])
+                self.assertEqual(drawing.ground_rotations[load_ground], 3)
+                for pin in (pot["0"], voltage["0"]):
+                    ground, = [pos for pos in drawing.grounds if pos[1] == pin[1]]
+                    self.assertLess(ground[0], pin[0])
+                    self.assertEqual(drawing.ground_rotations[ground], 1)
+
+    def test_buffered_divider_rejects_a_shared_source(self):
+        circuit = compile_circuit(
+            "Vs(5) between(supply,0);\nPadjust(10k,25%) between(supply,tap,0);\n"
+            "op1(tap,buffered,buffered);\nRother(1k) between(supply,0);",
+            render_only=True,
+        )
+        self.assertIsNone(buffered_divider_layout(circuit, component_labels(circuit)))
+
     def test_three_fixed_pins_follow_high_wiper_low_order(self):
         part = compile_circuit('P1(200,25%) between(high,tap,low);').components[0]
         a, b = (2, 3), (6, 3)

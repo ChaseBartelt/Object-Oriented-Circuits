@@ -9,9 +9,10 @@ import math
 from threading import Event
 
 from PySide6.QtCore import QPointF, QRectF, QSignalBlocker, QTimer, Qt, Signal
-from PySide6.QtGui import QColor, QPainter, QPainterPath
+from PySide6.QtGui import QAction, QColor, QPainter, QPainterPath
 from PySide6.QtWidgets import (
-    QComboBox, QDoubleSpinBox, QFormLayout, QHBoxLayout, QLabel, QPushButton, QSizePolicy, QVBoxLayout, QWidget,
+    QComboBox, QDoubleSpinBox, QFormLayout, QHBoxLayout, QLabel, QPushButton, QSizePolicy,
+    QSplitter, QToolButton, QVBoxLayout, QWidget,
 )
 
 from circuitlab.model.graph import CircuitError
@@ -473,3 +474,52 @@ class Oscilloscope(QWidget):
             return
         self.stop_batch = Event()
         self.pending = simulation, self.worker.submit(sample_batch, simulation, self.stop_batch)
+
+
+class ScopeSidebar(QSplitter):
+    """Give the schematic the full width whenever the scope is closed."""
+
+    def __init__(self, schematic):
+        super().__init__(Qt.Orientation.Horizontal)
+        self.scope = Oscilloscope(compact=True)
+        self.panel = QWidget()
+        self.panel.setMinimumWidth(self.scope.minimumWidth())
+        self.empty = QLabel("Open or render an electrical circuit to use the oscilloscope.")
+        self.empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.empty.setWordWrap(True)
+        layout = QVBoxLayout(self.panel)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.addWidget(self.scope, 1)
+        layout.addWidget(self.empty, 1)
+        self.addWidget(schematic)
+        self.addWidget(self.panel)
+        self.setChildrenCollapsible(False)
+        self.setStretchFactor(0, 3)
+        self.setStretchFactor(1, 1)
+        self.setSizes([750, 330])
+        self.panel.hide()
+
+    def set_circuit(self, circuit, *, preserve_state=False):
+        self.scope.set_circuit(circuit, preserve_state=preserve_state)
+        self.empty.setVisible(self.scope.isHidden())
+
+    def set_open(self, opened):
+        self.panel.setVisible(opened)
+
+
+class ScopeToggle(QToolButton):
+    def __init__(self, views, sidebar):
+        super().__init__(views)
+        self.setObjectName("scopeToggle")
+        self.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+        action = QAction("Oscilloscope", self)
+        action.setCheckable(True)
+        action.setToolTip("Show or hide the oscilloscope beside the schematic.")
+        self.setDefaultAction(action)
+
+        def toggle(opened):
+            if opened:
+                views.setCurrentIndex(0)
+            sidebar.set_open(opened)
+
+        action.toggled.connect(toggle)

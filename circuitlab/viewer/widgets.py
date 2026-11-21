@@ -3,12 +3,12 @@
 # File writes and shared-default publishing use explicit helpers so a failed save does not
 # leave a partially written replacement or silently change another circuit's source.
 
-from PySide6.QtCore import QIODevice, QSaveFile, QSignalBlocker, Qt
+from PySide6.QtCore import QIODevice, QSaveFile, QSignalBlocker, QSize, Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QAbstractItemView, QComboBox, QDialog, QFileDialog, QHBoxLayout, QHeaderView, QLabel,
-    QLineEdit, QMessageBox, QPushButton, QSpinBox, QTableWidget, QTableWidgetItem,
-    QVBoxLayout, QWidget,
+    QLineEdit, QListWidget, QMenu, QMessageBox, QPushButton, QSpinBox, QStyle, QTableWidget, QTableWidgetItem,
+    QToolButton, QVBoxLayout, QWidget,
 )
 
 from circuitlab.language.gates import GATE_HELP, gate_accepts
@@ -38,6 +38,9 @@ QPushButton#compile { background: #a92537; font-weight: bold; }
 QPushButton#compile:hover { background: #c33449; }
 QTabBar::tab { background: #343434; padding: 7px 16px; border: 1px solid #555; }
 QTabBar::tab:selected { background: #191919; }
+QToolButton#scopeToggle { background: #343434; padding: 7px 16px; border: 1px solid #555; }
+QToolButton#scopeToggle:hover { background: #4b4b4b; }
+QToolButton#scopeToggle:checked { background: #31556b; border-color: #72a6c5; }
 QHeaderView::section { background: #363636; color: #fff; border: 1px solid #565656; padding: 5px; }
 QTableWidget { gridline-color: #6b6b6b; selection-background-color: #365777; }
 QTableWidget::item:selected { color: white; }
@@ -53,7 +56,7 @@ def button(label, callback, layout):
     return control
 
 
-def grid_button(view, layout):
+def grid_button(view, layout, *, alignment_layout=None):
     control = button("Grid", view.set_grid_enabled, layout)
     control.setCheckable(True)
     control.setChecked(view.grid_enabled)
@@ -63,9 +66,94 @@ def grid_button(view, layout):
             QMessageBox.information(view, "Align to grid",
                 "This layout is too tightly spaced to align without joining different wires. "
                 "Move the crowded parts or wires apart and try again. Your layout has not changed.")
-    align_control = button("Align to grid", align, layout)
+    align_control = button("Align to grid", align, alignment_layout if alignment_layout is not None else layout)
     align_control.setToolTip("Align existing wires, pins, grounds and parts together. Ctrl+Z undoes the whole change.")
     return control
+
+
+class SchematicHeader(QWidget):
+    """Fill the tab row with schematic tools and the persistent scope toggle."""
+
+    def __init__(self, tabs, scope_toggle):
+        super().__init__(tabs)
+        self.tabs = tabs
+        self.scope_toggle = scope_toggle
+        self.tools = QWidget()
+        self.tools.setStyleSheet("""
+            QPushButton { padding: 3px 6px; }
+            QComboBox { padding-top: 3px; padding-bottom: 3px; }
+            QToolButton { background: #393939; border: 1px solid #666; border-radius: 4px;
+                          padding: 3px 14px 3px 6px; }
+            QToolButton:hover { background: #4b4b4b; }
+        """)
+        self.primary = QHBoxLayout()
+        self.secondary = QHBoxLayout()
+        tools = QHBoxLayout(self.tools)
+        tools.setContentsMargins(0, 0, 0, 0)
+        tools.setSpacing(3)
+        tools.addLayout(self.primary)
+        tools.addLayout(self.secondary)
+        self.more = QToolButton()
+        self.more.setText("More")
+        self.more.setToolTip("More schematic tools")
+        self.more.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self.more.setMenu(QMenu(self.more))
+        tools.addWidget(self.more)
+        row = QHBoxLayout(self)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(6)
+        row.addWidget(self.tools)
+        row.addStretch()
+        row.addWidget(scope_toggle)
+        tabs.setCornerWidget(self, Qt.Corner.TopRightCorner)
+        tabs.currentChanged.connect(self.show_tools)
+        self.show_tools(tabs.currentIndex())
+
+    def minimumSizeHint(self):
+        # Keep the editor/preview split stable as the user switches between pages.
+        width = self.scope_toggle.sizeHint().width() + self.primary.sizeHint().width()
+        width += self.more.sizeHint().width() + self.layout().spacing() + self.tools.layout().spacing()
+        return QSize(width, self.scope_toggle.sizeHint().height())
+
+    def sizeHint(self):
+        hint = self.minimumSizeHint()
+        # QTabWidget sizes its corner from the widget's hint. Reserve the tab bar
+        # first and use the rest of the row for the toolbar and right-side toggle.
+        available = self.tabs.width() - self.tabs.tabBar().sizeHint().width() - self.layout().spacing()
+        hint.setWidth(max(hint.width(), available))
+        return hint
+
+    def show_tools(self, index):
+        self.tools.setVisible(index == 0)
+        if index == 0:
+            self._fit_tools()
+        self.updateGeometry()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if not self.tools.isHidden():
+            self._fit_tools()
+
+    def _fit_tools(self):
+        spacing = self.tools.layout().spacing()
+        widths = []
+        for index in range(self.secondary.count()):
+            control = self.secondary.itemAt(index).widget()
+            widths.append((control, control.sizeHint().width() + spacing))
+        available = self.width() - self.scope_toggle.sizeHint().width() - self.layout().spacing()
+        available -= self.primary.sizeHint().width()
+        menu = self.more.menu()
+        menu.clear()
+        if sum(width for _, width in widths) > available:
+            available -= self.more.sizeHint().width() + spacing
+        for control, width in widths:
+            visible = width <= available
+            control.setVisible(visible)
+            if visible:
+                available -= width
+            else:
+                menu.addAction(control.text(), control.click)
+        self.more.setVisible(not menu.isEmpty())
 
 
 def search_text(value):
@@ -229,6 +317,24 @@ class GateLayoutDialog(QDialog):
             self.message.setText(f"Saved the layout for {inputs}-input {name.upper()} gates.")
         else:
             self.message.setText("Could not save the gate layout to your app settings.")
+
+
+class DiagnosticsList(QListWidget):
+    """Keep the status to one line and leave room to scroll compiler diagnostics."""
+
+    def fit_rows(self, *, status=False):
+        self.ensurePolished()
+        margins = self.contentsMargins()
+        height = margins.top() + margins.bottom()
+        if not status:
+            # A long diagnostic can add a horizontal scrollbar when the window narrows.
+            scrollbar = self.horizontalScrollBar()
+            height += scrollbar.style().pixelMetric(QStyle.PixelMetric.PM_ScrollBarExtent, widget=scrollbar)
+        for row in range(self.count()):
+            height += self.sizeHintForRow(row)
+            if height >= 100:
+                break
+        self.setFixedHeight(min(height, 100))
 
 
 class Results(QWidget):

@@ -7,6 +7,7 @@ import math
 import re
 from dataclasses import dataclass, field, replace
 
+from circuitlab.language.comments import mask_comments
 from circuitlab.language.compiler import compile_circuit
 from circuitlab.model.graph import Circuit, CircuitError
 from circuitlab.math.equations import solve_known
@@ -204,7 +205,7 @@ def diagnostics(source, result):
         for note in result.diagnostics
     ]
     # Ignore comments when locating the code responsible for a wiring warning.
-    lines = [line.partition("#")[0] for line in source.splitlines()]
+    lines = mask_comments(source).splitlines()
     parts = result.circuit.components
     # Ideal op-amp inputs sense voltage without drawing input current; they
     # should not be mistaken for an accidentally unused resistor-bank node.

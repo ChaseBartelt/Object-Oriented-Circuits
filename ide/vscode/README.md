@@ -10,6 +10,8 @@ The extension discovers a checkout or installed runtime. Use **OOC: Project Root
 
 Hover a gate/chip name for its reference symbol or pinout, and a wire argument for its connected path. F12 navigates definitions and includes. Digital syntax supports buses, clock blocks, +=, Hz increments, every(...), and behavioral chip assembly. Electrical and digital source have separate execution rules.
 
+In a `.ckt` editor, select lines and press **Ctrl+#** (**Ctrl+Shift+3** on a US keyboard) or **Ctrl+/** to toggle line comments. The shortcut removes both `#` and `//` from a fully commented selection. New line comments use `//`. You can also run **OOC: Toggle Line Comment** from the Command Palette.
+
 ## Build the extension from source
 
 From the checkout root:

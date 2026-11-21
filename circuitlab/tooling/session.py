@@ -11,6 +11,7 @@ interface state belong to the caller, not to the electrical graph.
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from circuitlab.language.comments import mask_comments
 from circuitlab.language.compiler import compile_circuit
 from circuitlab.language.digital_structure import assemble_digital
 from circuitlab.language.linked import CHIP_LIBRARY, imported_definitions, read_includes
@@ -151,7 +152,7 @@ class CircuitSession:
         self.drawing = None
         self.issues = []
         self.preview_only = False
-        if not any(row.partition("#")[0].strip() for row in self.source.splitlines()):
+        if not mask_comments(self.source).strip():
             return
         try:
             self.preview_only = bool(self.library_preview()) or (

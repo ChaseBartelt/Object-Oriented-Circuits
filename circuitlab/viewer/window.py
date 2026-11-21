@@ -9,7 +9,7 @@ from PySide6.QtCore import QSettings, QSignalBlocker, Qt, QUrl
 from PySide6.QtGui import QColor, QDesktopServices, QKeySequence
 from PySide6.QtWidgets import (
     QComboBox, QDialog, QFileDialog, QHBoxLayout, QInputDialog, QLabel,
-    QListWidget, QListWidgetItem, QMainWindow, QMessageBox, QSplitter, QTabWidget,
+    QListWidgetItem, QMainWindow, QMessageBox, QTabWidget,
     QVBoxLayout, QWidget,
 )
 
@@ -28,10 +28,11 @@ from circuitlab.viewer.exports import export_file, hierarchy_layouts
 from circuitlab.viewer.device_layouts import DeviceLayoutDialog
 from circuitlab.viewer.digital import DigitalSimulator
 from circuitlab.viewer.schematic import SchematicView
-from circuitlab.viewer.scope import Oscilloscope
+from circuitlab.viewer.scope import ScopeSidebar, ScopeToggle
 from circuitlab.viewer.source_editing import SourceTools
 from circuitlab.viewer.widgets import (
-    GateLayoutDialog, MODES, Results, STYLESHEET, button, grid_button, probe_text, search_text,
+    DiagnosticsList, GateLayoutDialog, MODES, Results, STYLESHEET, SchematicHeader,
+    button, grid_button, probe_text, search_text,
 )
 
 
@@ -75,8 +76,7 @@ class ViewerWindow(QMainWindow):
         self.digital.port_view.placement_changed.connect(self.placement_changed)
         self.digital_tab = self.views.addTab(self.digital, "Logic simulation")
         self.views.setTabVisible(self.digital_tab, False)
-        self.issues = QListWidget()
-        self.issues.setMaximumHeight(100)
+        self.issues = DiagnosticsList()
         self.issues.itemDoubleClicked.connect(self.select_diagnostic)
         panel.addWidget(self.issues)
         self.status = QLabel("Open a circuit from your IDE or File → Open.")
@@ -118,7 +118,6 @@ class ViewerWindow(QMainWindow):
         page = QWidget()
         canvas = QVBoxLayout(page)
         canvas.setContentsMargins(0, 0, 0, 0)
-        controls = QHBoxLayout()
         settings = QSettings("Electric Circuits", "Object-Oriented Circuits")
         self.schematic = SchematicView(DeviceLayouts(settings))
         self.schematic.device_layout_requested.connect(self.edit_device_layouts)
@@ -130,12 +129,14 @@ class ViewerWindow(QMainWindow):
         self.schematic.pin_requested.connect(self.name_pin)
         self.schematic.pin_renamed.connect(self.name_pin)
         self.schematic.pin_removed.connect(lambda net: self.write_pin(net, None))
-        self.schematic.move_refused.connect(
-            lambda: self.status.setText("Try an open spot where the existing nets can stay connected.")
-        )
+        self.scope_sidebar = ScopeSidebar(self.schematic)
+        self.scope = self.scope_sidebar.scope
+        self.scope_toggle = ScopeToggle(self.views, self.scope_sidebar)
+        self.schematic_header = SchematicHeader(self.views, self.scope_toggle)
+        controls = self.schematic_header.primary
         self.wire_style = QComboBox()
         for label, mode, tip in (
-            ("Auto layout", "auto", "Use matching net labels when wires get crowded."),
+            ("Auto layout", "auto", "Arrange parts with continuous wiring."),
             ("Labeled connectors", "labeled", "Matching names connect distant terminals."),
             ("All wires", "routed", "Start with continuous wires."),
         ):
@@ -149,23 +150,14 @@ class ViewerWindow(QMainWindow):
         )
         self.pin_button = button("Add pin", self.toggle_pin_tool, controls)
         self.pin_button.setCheckable(True)
-        grid_button(self.schematic, controls)
+        grid_button(self.schematic, controls, alignment_layout=self.schematic_header.secondary)
+        controls = self.schematic_header.secondary
         button("Zoom in", lambda: self.schematic.zoom(1.4), controls)
         button("Zoom out", lambda: self.schematic.zoom(1 / 1.4), controls)
         button("Fit", self.schematic.fit, controls)
+        self.source_tools = SourceTools(self, controls)
         button("Export LTspice .asc", self.export_ltspice, controls)
-        controls.addStretch()
-        canvas.addLayout(controls)
-        self.source_tools = SourceTools(self, canvas)
-        self.scope = Oscilloscope(compact=True)
-        self.schematic_splitter = QSplitter(Qt.Orientation.Horizontal)
-        self.schematic_splitter.setChildrenCollapsible(False)
-        self.schematic_splitter.addWidget(self.schematic)
-        self.schematic_splitter.addWidget(self.scope)
-        self.schematic_splitter.setStretchFactor(0, 3)
-        self.schematic_splitter.setStretchFactor(1, 1)
-        self.schematic_splitter.setSizes([750, 330])
-        canvas.addWidget(self.schematic_splitter, 1)
+        canvas.addWidget(self.scope_sidebar, 1)
         return page
 
     def _create_menus(self):
@@ -180,10 +172,8 @@ class ViewerWindow(QMainWindow):
         files.addSeparator()
         files.addAction("&Quit", self.close, QKeySequence.StandardKey.Quit)
         view = self.menuBar().addMenu("&View")
-        self.scope_action = view.addAction("Oscilloscope")
-        self.scope_action.setCheckable(True)
-        self.scope_action.setChecked(True)
-        self.scope_action.toggled.connect(self.scope.set_panel_visible)
+        self.scope_action = self.scope_toggle.defaultAction()
+        view.addAction(self.scope_action)
         view.addAction("Chip Library…", self.show_chip_library)
         view.addAction("Gate Layouts…", lambda: self.edit_gate_layouts())
         view.addAction("Chip & Circuit Layouts…", lambda: self.edit_device_layouts())
@@ -270,15 +260,15 @@ class ViewerWindow(QMainWindow):
         if getattr(self, "fpga_window", None):
             self.fpga_window.refresh_source()
         if not preserve_scope:
-            self.scope.set_circuit(None)
+            self.scope_sidebar.set_circuit(None)
         self.schematic.clear(preserve_placement=True)
         self.session.compile(self.mode.currentData())
         self.update_results()
         if self.session.drawing is not None:
             self.schematic.draw(self.session.drawing, self.pins)
-            self.scope.set_circuit(self.session.drawing, preserve_state=preserve_scope)
+            self.scope_sidebar.set_circuit(self.session.drawing, preserve_state=preserve_scope)
         elif preserve_scope:
-            self.scope.set_circuit(None)
+            self.scope_sidebar.set_circuit(None)
         self.update_digital()
         self.pin_button.setChecked(False)
         self.schematic.set_pin_tool(False)
@@ -307,14 +297,14 @@ class ViewerWindow(QMainWindow):
             circuit = self.session.render(self.mode.currentData())
         except CircuitError as error:
             self.schematic.clear(preserve_placement=True)
-            self.scope.set_circuit(None)
+            self.scope_sidebar.set_circuit(None)
             self.digital.set_source("")
             self.views.setTabVisible(self.digital_tab, False)
             self.show_issues([issue_for(error)])
             self.status.setText(error.message)
             return False
         self.schematic.draw(circuit, self.pins)
-        self.scope.set_circuit(circuit)
+        self.scope_sidebar.set_circuit(circuit)
         self.update_digital()
         self.views.setCurrentIndex(0)
         self.status.setText("Schematic rendered.")
@@ -361,6 +351,7 @@ class ViewerWindow(QMainWindow):
             item.setData(Qt.ItemDataRole.UserRole + 1, str(issue.path or self.path or ""))
             item.setToolTip(issue.message + "\nDouble-click to open in VS Code.")
             self.issues.addItem(item)
+        self.issues.fit_rows(status=not issues)
 
     def select_diagnostic(self, item):
         path = item.data(Qt.ItemDataRole.UserRole + 1)
@@ -544,7 +535,7 @@ class ViewerWindow(QMainWindow):
             if self.schematic.layout is None or includes_files(self.session.source):
                 circuit = self.session.render(self.mode.currentData())
                 self.schematic.draw(circuit, self.pins)
-                self.scope.set_circuit(circuit)
+                self.scope_sidebar.set_circuit(circuit)
                 self.views.setCurrentIndex(0)
             circuit, drawing = self.schematic.circuit, self.schematic.layout
             if drawing is None:

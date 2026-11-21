@@ -5,6 +5,7 @@ import os
 import unittest
 from copy import deepcopy
 from dataclasses import replace
+from pathlib import Path
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 from PySide6.QtWidgets import QApplication
@@ -12,9 +13,14 @@ from circuitlab.language.compiler import compile_circuit
 from circuitlab.layout.checks import mark_crossings, preserves_nets
 from circuitlab.layout.geometry import Layout
 from circuitlab.layout.hierarchy import hood_levels
+from circuitlab.layout.lead_spacing import shorten_symbol_leads
 from circuitlab.layout.persistence import pack_layout, restore_layout
-from circuitlab.layout.shorten import compact_spacing, optimize_layout, straighten, wire_length, clear_of_bodies
+from circuitlab.layout.shorten import (
+    align_passive_tees, clear_of_bodies, compact_spacing, optimize_layout, rotate_detoured_passives,
+    straighten, wire_length,
+)
 from circuitlab.layout.editing import _symbol_bounds, boxes_overlap
+from circuitlab.layout.wire_edit import count_wire_bends
 from circuitlab.viewer.schematic import SchematicView
 from circuitlab.exporters.ltspice import export_schematic
 from tests.exporters.test_ltspice import read_connections
@@ -73,6 +79,112 @@ class RouteShorteningTest(unittest.TestCase):
     def setUpClass(cls):
         cls.app = QApplication.instance() or QApplication([])
 
+    def test_rotate_between_parallel_tracks_removes_both_terminal_doglegs(self):
+        circuit = compile_circuit("R1(1k) between(a,b);", render_only=True)
+        original = Layout(
+            symbols=[(circuit.components[0], (0, 0), (2, 0), "+")],
+            positions={"R1": (0, 0)}, pin_grid=.25,
+            boundary={"a": (-4, 3), "b": (-4, -3)},
+            connectors=[("a", (6, 3), "a", False, False), ("b", (6, -3), "b", False, False)],
+            wires={
+                "a": [((-4, 3), (6, 3)), ((-2, 3), (-2, 0)), ((-2, 0), (0, 0))],
+                "b": [((-4, -3), (6, -3)), ((4, -3), (4, 0)), ((2, 0), (4, 0))],
+            },
+        )
+        mark_crossings(original)
+        result = rotate_detoured_passives(circuit, original)
+        self.assertEqual(result.rotations["R1"], 1)
+        self.assertEqual(list(result.pins()), [("a", (1, 1)), ("b", (1, -1))])
+        self.assertEqual(count_wire_bends(result), 0)
+        self.assertLess(wire_length(result), wire_length(original))
+        self.assertTrue(preserves_nets(circuit, result))
+
+    def test_automatic_equalizer_keeps_the_primary_signal_path_together(self):
+        source = (Path(__file__).resolve().parents[2] / "examples" / "advanced" / "schematics"
+                  / "04_impedance_equalizer.ckt")
+        circuit = compile_circuit(source.read_text(encoding="utf-8"), path=source, render_only=True)
+        view = SchematicView()
+        self.addCleanup(view.deleteLater)
+        view.draw(circuit)
+        drawing = view.layout
+        amps = {part.name: a for part, a, _, _ in drawing.symbols if part.kind == "O"}
+        self.assertLess(amps["op1"][0], amps["op2"][0])
+        self.assertLess(amps["op2"][0], amps["op4"][0])
+        self.assertEqual(amps["op1"][1], amps["op2"][1])
+        self.assertEqual(amps["op2"][1], amps["op4"][1])
+        self.assertLess(amps["op3"][1], amps["op2"][1])
+        self.assertTrue(preserves_nets(circuit, drawing))
+
+    def test_automatic_multivibrator_keeps_buffers_and_feedback_local(self):
+        source = (Path(__file__).resolve().parents[2] / "examples" / "advanced" / "schematics"
+                  / "05_transistor_multivibrator.ckt")
+        circuit = compile_circuit(source.read_text(encoding="utf-8"), path=source, render_only=True)
+        view = SchematicView()
+        self.addCleanup(view.deleteLater)
+        view.draw(circuit)
+        drawing = view.layout
+        self.assertLess(wire_length(drawing), 145)
+        self.assertFalse(drawing.connectors)
+        for net in ("bufferBase1", "bufferBase2"):
+            self.assertLessEqual(sum(abs(a[0] - b[0]) + abs(a[1] - b[1])
+                                     for a, b in drawing.wires.get(net, ())), 2)
+        self.assertTrue(clear_of_bodies([edge for edges in drawing.wires.values() for edge in edges], drawing))
+        self.assertTrue(preserves_nets(view.levels[None, "auto"], drawing))
+
+    def test_shortening_a_doubled_back_lead_removes_its_overhanging_tip(self):
+        circuit = compile_circuit("R1(1k) between(a,b);\nR2(1k) between(c,a);", render_only=True)
+        r1, r2 = circuit.components
+        original = Layout(
+            symbols=[(r1, (0, 0), (4, 0), "+"), (r2, (-3, 3), (1, 3), "+")],
+            positions={"R1": (0, 0), "R2": (-3, 3)}, boundary={"b": (5, 0)}, pin_grid=.25,
+            wires={"a": [((0, 0), (1, 0)), ((1, 0), (1, 3))], "b": [((4, 0), (5, 0))]},
+        )
+        before = deepcopy(original)
+        self.assertTrue(preserves_nets(circuit, original))
+        result = shorten_symbol_leads(circuit, original, overlaps_only=True)
+        self.assertTrue(preserves_nets(circuit, result))
+        self.assertEqual(original, before)
+        self.assertEqual(result.symbols[1], original.symbols[1])
+        self.assertEqual(result.symbols[0][1], (1, 0))
+        self.assertEqual(result.wires["a"], [((1, 0), (1, 3))])
+        self.assertEqual(result.wires["b"], [((3, 0), (5, 0))])
+
+    def test_optimizer_moves_grounded_stack_as_one_column(self):
+        circuit = compile_circuit(
+            "Rdriver(1k) between(input,out);\nRother(1k) between(out,other);\n"
+            "Rupper(1k) between(out,mid);\nRlower(1k) between(mid,0);\n"
+            "Rtap(1k) between(tap,mid);",
+            render_only=True,
+        )
+        pins = [
+            ((-4, 6), (0, 6)), ((2, 8), (6, 8)), ((-2, 3), (-2, 0)),
+            ((-2, 0), (-2, -3)), ((-8, 0), (-4, 0)),
+        ]
+        symbols = [(part, a, b, "+") for part, (a, b) in zip(circuit.components, pins)]
+        drawing = Layout(
+            symbols=symbols, positions={part.name: a for part, a, _, _ in symbols}, pin_grid=.25,
+            grounds=[(-2, -3)],
+            wires={
+                "out": [((0, 6), (2, 6)), ((2, 6), (2, 8)), ((2, 4), (2, 6)),
+                        ((-2, 4), (2, 4)), ((-2, 3), (-2, 4))],
+                "mid": [((-4, 0), (-2, 0))],
+            },
+        )
+        mark_crossings(drawing)
+        self.assertTrue(preserves_nets(circuit, drawing))
+        result = optimize_layout(circuit, drawing, move_parts=True, flip_budget=0)
+        self.assertTrue(preserves_nets(circuit, result))
+        self.assertLessEqual(wire_length(result), wire_length(drawing))
+        self.assertLess(count_wire_bends(result), count_wire_bends(drawing))
+        ends = {part.name: (a, b) for part, a, b, _ in result.symbols}
+        upper, middle = ends["Rupper"]
+        self.assertEqual(middle, ends["Rlower"][0])
+        self.assertEqual(upper[0], ends["Rlower"][1][0])
+        self.assertIn(ends["Rlower"][1], result.grounds)
+        docked = upper in (ends["Rdriver"][1], ends["Rother"][0])
+        straight = any(upper in (a, b) and a[0] == b[0] for a, b in result.wires.get("out", ()))
+        self.assertTrue(docked or straight)
+
     def test_flip_passive_reconnects_both_pins_and_survives_save(self):
         circuit, drawing = reversed_resistor()
         snapshot = deepcopy(drawing)
@@ -127,6 +239,58 @@ class RouteShorteningTest(unittest.TestCase):
         self.assertEqual(result.labels, drawing.labels)
         self.assertEqual(drawing, before)
         self.assertTrue(preserves_nets(circuit, result))
+
+    def test_optimize_rebuilds_a_branched_net_as_one_shared_trunk(self):
+        circuit = compile_circuit(
+            "R1(1k) between(bus,0);\nR2(2k) between(bus,0);\nR3(3k) between(bus,0);",
+            render_only=True,
+        )
+        symbols = [(part, (x, 0), (x, -4), "+") for x, part in zip((0, 4, 8), circuit.components)]
+        drawing = Layout(
+            symbols=symbols, positions={part.name: a for part, a, _, _ in symbols}, pin_grid=.25,
+            grounds=[b for _, _, b, _ in symbols],
+            wires={"bus": [((0, 0), (0, 3)), ((0, 3), (8, 3)),
+                           ((4, 0), (4, 3)), ((8, 3), (8, 0))]},
+            labels={"bus": (2, 3)},
+        )
+        mark_crossings(drawing)
+        before = deepcopy(drawing)
+        result = optimize_layout(circuit, drawing, move_parts=True, flip_budget=0)
+        self.assertEqual(drawing, before)
+        self.assertLess(wire_length(result), wire_length(drawing) / 2)
+        self.assertIn("bus", result.labels)
+        self.assertTrue(preserves_nets(circuit, result))
+        self.assertTrue(clear_of_bodies(result.wires["bus"], result))
+
+    def test_passive_input_aligns_through_a_tee_at_equal_wire_length(self):
+        circuit = compile_circuit(
+            "Vin(1) between(a,0);\nR1(1k) between(a,b);\nR2(1k) between(a,0);\n"
+            "R3(1k) between(b,0);\nR4(1k) between(b,0);",
+            render_only=True,
+        )
+        starts = [(-3, 0), (3, -1), (1, 2), (10, -3), (11, -1)]
+        stops = [(-3, -2), (7, -1), (1, 4), (14, -3), (15, -1)]
+        symbols = [(part, a, b, "+") for part, a, b in zip(circuit.components, starts, stops)]
+        drawing = Layout(
+            symbols=symbols, positions={part.name: a for part, a, _, _ in symbols},
+            grounds=[stops[i] for i in (0, 2, 3, 4)], pin_grid=.25, labels={"a": (-1, 0)},
+            wires={
+                "a": [((-3, 0), (1, 0)), ((1, 0), (1, 2)), ((1, 0), (1, -1)), ((1, -1), (3, -1))],
+                "b": [((7, -1), (9, -1)), ((9, -1), (9, -3)), ((9, -3), (10, -3)), ((9, -1), (11, -1))],
+            },
+        )
+        mark_crossings(drawing)
+        before = deepcopy(drawing)
+        result = align_passive_tees(circuit, drawing)
+        self.assertEqual(result.positions, {**drawing.positions, "R1": (3, 0)})
+        self.assertIn(((1, 0), (3, 0)), result.wires["a"])
+        self.assertIn(((1, 0), (1, 2)), result.wires["a"])
+        self.assertEqual(result.labels, drawing.labels)
+        self.assertEqual(wire_length(result), wire_length(drawing))
+        self.assertEqual(drawing, before)
+        self.assertTrue(preserves_nets(circuit, result))
+        self.assertTrue(clear_of_bodies([edge for edges in result.wires.values() for edge in edges], result))
+        self.assertIs(align_passive_tees(circuit, result), result)
 
     def test_explicit_optimize_turns_vertical_passive_to_follow_horizontal_flow(self):
         circuit = compile_circuit('R1(1k) between(a,b);', render_only=True)

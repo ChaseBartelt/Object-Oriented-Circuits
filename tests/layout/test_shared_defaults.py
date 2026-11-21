@@ -67,7 +67,51 @@ class SharedDefaultsTest(unittest.TestCase):
         view.preview_drag(end)
         self.assertFalse(view.drag.blocked)
         self.assertNotEqual(view.layout.boundary, drawing.boundary)
+        outline, = view.selection_items
+        self.assertTrue(all(outline.rect().contains(point(pos)) for pos in view.layout.boundary.values()))
         self.assertTrue(preserves_nets(circuit,view.layout))
+        view.drag = None
+        view.close()
+
+    def test_selection_outline_follows_internal_wires_without_enclosing_fixed_trunks(self):
+        circuit = compile_circuit(
+            "R1(1k) between(a,mid);\nR2(1k) between(mid,out);\nR3(1k) between(out,b);",
+            render_only=True,
+        )
+        symbols = [(part, (x, 0), (x + 4, 0), "+") for part, x in zip(circuit.components, (0, 8, 26))]
+        drawing = Layout(
+            symbols=symbols, positions={part.name: a for part, a, _, _ in symbols}, pin_grid=.25,
+            wires={
+                "mid": [((4, 0), (4, 6)), ((4, 6), (8, 6)), ((8, 6), (8, 0))],
+                "out": [((12, 0), (15, 0)), ((15, 0), (15, -3)), ((15, -3), (24, -3)),
+                        ((24, -3), (24, 0)), ((24, 0), (26, 0))],
+            },
+        )
+        view = SchematicView()
+        self.addCleanup(view.deleteLater)
+        view.resize(900, 430)
+        view.show()
+        view.draw(circuit, layout=drawing)
+        key = (None, "auto")
+        view.selection_key = key
+        view.selected_symbols = {"R1", "R2"}
+        view.paint_selection()
+        outline, = view.selection_items
+        self.assertTrue(outline.rect().contains(point((4, 6))))
+        self.assertTrue(outline.rect().contains(point((15, 0))))
+        self.assertFalse(outline.rect().contains(point((24, -3))))
+
+        start = view.mapFromScene(point((2, 0)))
+        view.start_drag("component", "R1", key, start, control=True)
+        view.preview_drag(view.mapFromScene(point((2, 2))))
+        self.assertFalse(view.drag.blocked)
+        self.assertIsNot(view.layout, drawing)
+        outline, = view.selection_items
+        for a, b in view.layout.wires["mid"]:
+            self.assertTrue(outline.rect().contains(point(a)))
+            self.assertTrue(outline.rect().contains(point(b)))
+        self.assertFalse(outline.rect().contains(point((24, -3))))
+        self.assertTrue(preserves_nets(circuit, view.layout))
         view.drag = None
         view.close()
 

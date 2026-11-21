@@ -6,6 +6,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
+from circuitlab.language.comments import mask_comments
 from circuitlab.language.compiler import compile_circuit
 from circuitlab.math.numbers import scalar
 from circuitlab.language.syntax import UNITS, parse_potentiometer
@@ -20,6 +21,14 @@ class SourceEdit:
 
 
 PLACED = re.compile(r'(?P<name>[RCLZVIPS]\w*)(?P<value_clause>\s*\((?P<value>[^()\r\n]*)\))?\s+between\s*\((?P<pins>[^()\r\n]+)\)', re.I)
+# Match a complete grouped entry without mistaking a component argument in
+# a method call for an independently editable part.
+GROUP_PART = re.compile(
+    r'(?:^|(?<=[;{}])|\(\s*(?:series|parallel)\s*\))[ \t]*'
+    r'(?P<name>[RCLZS]\w*)[ \t]*\((?P<value>[^()\r\n]*)\)'
+    r'(?=[ \t]*(?:[;}]|$|\(\s*end\s+(?:series|parallel)\s*\)))',
+    re.I,
+)
 LEGACY = re.compile(r'(?P<name>[RCLZVIS]\w*)[ \t]+(?P<a>\S+)[ \t]+(?P<b>\S+)[ \t]+(?P<value>[^;#\r\n]+)', re.I)
 ASSIGN = re.compile(r'(?P<name>[RCLZS]\w*)\s*=\s*(?P<value>[^;#\r\n]*)', re.I)
 CALL = re.compile(r'(?P<name>[A-Za-z_]\w*)\s*\((?P<pins>[^()\r\n]*)\)')
@@ -36,10 +45,10 @@ def source_target(circuit, name, root, source, read_source):
     if not line or not 1 <= line <= len(rows):
         raise ValueError('This generated component has no editable source statement. Edit its definition in the IDE.')
     offset = sum(map(len, rows[:line-1]))
-    code = rows[line-1].partition('#')[0]
+    code = mask_comments(text).splitlines()[line-1]
     key = name.casefold()
     matches = []
-    for pattern in (PLACED, LEGACY, ASSIGN, CALL):
+    for pattern in (PLACED, GROUP_PART, ASSIGN, LEGACY, CALL):
         for match in pattern.finditer(code):
             raw = match['name'].casefold()
             if key == raw or key.startswith(raw + '_'):
@@ -49,6 +58,13 @@ def source_target(circuit, name, root, source, read_source):
     if len(matches) != 1:
         raise ValueError('This component is generated or its source is ambiguous. Edit its definition in the IDE.')
     return path, text, offset, matches[0]
+
+
+def _value_span(match):
+    start, end = match.span('value')
+    raw = match['value']
+    start += len(raw) - len(raw.lstrip())
+    return start, max(start, end - (len(raw) - len(raw.rstrip())))
 
 
 # Replace only the value span, then recompile the proposed source with its include reader.
@@ -72,15 +88,19 @@ def edit_value(circuit, name, value, root, source, read_source):
     if 'value_clause' in groups and groups['value_clause'] is None:
         start = end = match.end('name')
         replacement = f'({replacement})' if replacement else ''
-    elif 'value_clause' in groups and not replacement:
-        start, end = match.span('value_clause')
     elif 'a' in groups and not replacement:
         # Legacy node rows need an explicit placement when their value is removed.
-        start, end = match.span()
+        start = match.start()
+        end = start + len(match[0].rstrip())
         replacement = f'{match["name"]} between({match["a"]}, {match["b"]})'
-        replacement += match[0][len(match[0].rstrip()):]
     else:
-        start, end = match.span('value')
+        start, end = _value_span(match)
+        if 'value_clause' in groups and not replacement:
+            clause_start, clause_end = match.span('value_clause')
+            if before[offset+clause_start:offset+clause_end] == match['value_clause']:
+                start, end = clause_start, clause_end
+    if before[offset+start:offset+end] != match.string[start:end]:
+        raise ValueError('This value contains a comment. Edit it in the IDE to keep the comment.')
     after = before[:offset+start] + replacement + before[offset+end:]
     def reader(filename):
         return after if Path(filename).resolve() == path else read_source(filename)
@@ -105,10 +125,7 @@ def edit_switch(circuit, name, closed, root, source, read_source):
         start = end = match.end('name')
         replacement = f'({replacement})'
     else:
-        start, end = match.span('value')
-        raw = match['value']
-        start += len(raw) - len(raw.lstrip())
-        end -= len(raw) - len(raw.rstrip())
+        start, end = _value_span(match)
     after = before[:offset+start] + replacement + before[offset+end:]
 
     def reader(filename):

@@ -34,7 +34,7 @@ class SchematicSwitchSyntaxTest(unittest.TestCase):
 
     def test_named_series_button_and_scoped_component_arguments(self):
         source = """
-        series button { S1 = closed; R2 = 10k; }
+        series button { S1(closed); R2(10k); }
         circuit contact(a, b, part) { part between(a, b); }
         main {
             button(pos, first);
@@ -50,6 +50,15 @@ class SchematicSwitchSyntaxTest(unittest.TestCase):
         self.assertEqual(switches[1].p, "pos")
         self.assertEqual(switches[2].p, "pos")
         self.assertNotEqual(switches[1].n, switches[2].n)
+
+    def test_inline_group_button_and_resistor_share_the_generated_junction(self):
+        circuit = compile_circuit("""
+            main { series(input, out) { Sbutton(closed); R2(10k); } }
+        """)
+        button, resistor = circuit.components
+        self.assertEqual((button.name, button.kind, button.closed), ("Sbutton", "K", True))
+        self.assertEqual((button.p, resistor.n, resistor.value), ("input", "out", 10000))
+        self.assertEqual(button.n, resistor.p)
 
     def test_generated_switches_and_state_parameters(self):
         source = """

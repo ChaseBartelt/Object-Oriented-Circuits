@@ -469,7 +469,7 @@ def result_rows(result):
                 # current is determined by the surrounding KCL constraints.
                 formulas = {
                     "R": "I = Vbranch / R",
-                    "K": "I = Vbranch / R_switch",
+                    "K": "I = Vbranch / R switch",
                     "C": "I = j x 2πf x C x Vbranch"
                     if is_ac
                     else "I = 0 (DC capacitor)",
@@ -481,7 +481,7 @@ def result_rows(result):
                 }
                 add(
                     name + " current" + basis,
-                    formulas.get(p.kind, "Σ I_node = 0 (KCL)"),
+                    formulas.get(p.kind, "Σ I node = 0 (KCL)"),
                     i,
                     "A",
                     is_ac,
@@ -546,9 +546,9 @@ def result_rows(result):
         # Only voltage/current receive an RMS label, while impedance retains ohms.
         if network.equivalent:
             for key, label, equation, unit in (
-                ("voltage", "Open-circuit voltage", "V_OC = V+ - V-", "V"),
-                ("impedance", "Equivalent impedance", "Z_eq = V_test / 1 A", "ohm"),
-                ("current", "Short-circuit current", "I_SC = V_OC / Z_eq", "A"),
+                ("voltage", "Open-circuit voltage", "V OC = V+ - V-", "V"),
+                ("impedance", "Equivalent impedance", "Zeq = V_test / 1 A", "ohm"),
+                ("current", "Short-circuit current", "I SC = V_OC / Zeq", "A"),
             ):
                 value = network.equivalent[key]
                 if value is not None:

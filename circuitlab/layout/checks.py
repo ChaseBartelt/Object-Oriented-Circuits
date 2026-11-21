@@ -6,7 +6,14 @@
 from collections import Counter, defaultdict
 from itertools import chain, combinations
 
-from circuitlab.layout.geometry import along, wire_axis
+from circuitlab.layout.geometry import (
+    PACKAGE_WIRE_CLEARANCE,
+    along,
+    package_body_corners,
+    rotate_point,
+    symbol_bounds,
+    wire_axis,
+)
 
 
 def intersection(first, second):
@@ -39,6 +46,55 @@ def segments_intersect(first, second):
     if a == b:
         a, b, c = c, d, a
     return abs((c[0] - a[0]) * (b[1] - a[1]) - (c[1] - a[1]) * (b[0] - a[0])) < 1e-8
+
+
+def segment_intersects_box(edge, a, b):
+    """Check a straight segment against an axis-aligned rectangle and its border."""
+    left, right = sorted((a[0], b[0]))
+    bottom, top = sorted((a[1], b[1]))
+    (x1, y1), (x2, y2) = edge
+    if (max(x1, x2) < left - 1e-8 or min(x1, x2) > right + 1e-8
+            or max(y1, y2) < bottom - 1e-8 or min(y1, y2) > top + 1e-8):
+        return False
+    if wire_axis(edge) is not None:
+        return True
+    borders = (((left, bottom), (right, bottom)), ((right, bottom), (right, top)),
+               ((right, top), (left, top)), ((left, top), (left, bottom)))
+    return (any(left < x < right and bottom < y < top for x, y in edge)
+            or any(segments_intersect(edge, border) for border in borders))
+
+
+def clear_package_wires(drawing, edges=None):
+    """Require a grid square around package bodies while leaving pin leads open."""
+    bounds = []
+    # A lane exactly one square away can lie on the keepout border.
+    padding = PACKAGE_WIRE_CLEARANCE - 1e-7
+    for part, a, b, _ in drawing.symbols:
+        if part.kind != "H":
+            continue
+        (left, bottom), (right, top) = package_body_corners(part, a, b, drawing.pin_grid)
+        turns = drawing.rotations.get(part.name, 0)
+        bounds.append((rotate_point((left - padding, bottom - padding), a, b, turns),
+                       rotate_point((right + padding, top + padding), a, b, turns)))
+    if not bounds:
+        return True
+    if edges is None:
+        edges = chain.from_iterable(drawing.wires.values())
+    return not any(segment_intersects_box(edge, a, b) for edge in edges for a, b in bounds)
+
+
+def clear_of_bodies(edges, layout):
+    """Keep segments outside symbol bodies and the clearance around packages."""
+    if not clear_package_wires(layout, edges):
+        return False
+    for symbol in layout.symbols:
+        part = symbol[0]
+        if part.kind == "H":
+            continue
+        a, b = symbol_bounds(symbol, layout.rotations.get(part.name, 0), body_only=True)
+        if any(segment_intersects_box(edge, a, b) for edge in edges):
+            return False
+    return True
 
 
 # Compare physical wire islands and terminal attachments against the compiled net sets.

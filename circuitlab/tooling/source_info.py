@@ -9,7 +9,9 @@ This tolerant inspection describes source; it does not compile or simulate it.
 # columns carefully so non-ASCII characters do not shift hover or navigation targets.
 
 import re
+from functools import cached_property
 
+from circuitlab.language.comments import mask_comments
 from circuitlab.language.control_flow import is_control_block
 from circuitlab.language.wire_counts import COUNT_REFERENCE, is_count_reference
 from circuitlab.language.digital_declarations import INLINE_WIRE, normalize_wire_declarations
@@ -120,6 +122,12 @@ class SourceInfo:
         self.lines = self.source.split("\n")
         self.read_imports = read_imports
 
+    @cached_property
+    def code_lines(self):
+        # Keep the original rows for UTF-16 position conversion. A masked
+        # comment may include astral characters, but regex offsets use Python.
+        return mask_comments(self.source).split("\n")
+
     # VS Code and QTextCursor count UTF-16 code units, while Python indexes Unicode code points.
     # Reject a position inside a surrogate pair rather than selecting the wrong token.
     def position(self, line, column):
@@ -137,6 +145,16 @@ class SourceInfo:
             if units > column:
                 return None  # A position inside a UTF-16 surrogate pair.
         return (text, len(text)) if units == column else None
+
+    def code_position(self, line, column):
+        location = self.position(line, column)
+        if location is None:
+            return None
+        text, index = location
+        code = self.code_lines[line]
+        if index < len(text) and text[index] != code[index]:
+            return None
+        return code, index
 
     # Reread included signatures on demand so changed library declarations are visible
     # without treating an old hover/completion cache as current source.
@@ -220,11 +238,10 @@ class SourceInfo:
 
     def hover_help(self, line, column):
         source_column = column
-        location = self.position(line, column)
+        location = self.code_position(line, column)
         if location is None:
             return ""
-        text, column = location
-        code = text.partition("#")[0]
+        code, column = location
         # Describe syntax without executing generation or advancing a counter.
         # Actual net names come from the compiler-backed wire trace instead.
         for declaration in WIRE_COUNT_DECLARATION.finditer(code):
@@ -309,7 +326,7 @@ class SourceInfo:
                 property_name = name.casefold().replace("_", ".")
                 metadata = next((value for key, value in MODEL_PROPERTIES.items() if key.casefold() == property_name), None)
                 if metadata:
-                    prefix = '\n'.join(row.partition('#')[0] for row in self.lines[:line]) + '\n' + code[:match.start()]
+                    prefix = '\n'.join([*self.code_lines[:line], code[:match.start()]])
                     if (re.search(r'(?:opamp|analog(?:\s*:\s*math)?)\s+(?:[A-Za-z_][A-Za-z0-9_]*|\([^()]*\))\s*\{[^{}]*$', prefix, re.I)
                             or (property_name == "supply.current.total" and re.search(r'analog\s*\{[^{}]*$',prefix,re.I))):
                         return metadata.description
@@ -320,7 +337,7 @@ class SourceInfo:
                             "digital { ... } defines logic; "
                             "electrical voltage comparisons produce 0/1 V. Existing chip/circuit/main syntax is unchanged.")
                 if name.casefold() == "vneg" and re.match(r"\s*=", code[match.end():]):
-                    prefix = '\n'.join(row.partition('#')[0] for row in self.lines[:line]) + '\n' + code[:match.start()]
+                    prefix = '\n'.join([*self.code_lines[:line], code[:match.start()]])
                     prefix = re.sub(r'\(\s*end\s+battery\s*\)', '}', prefix, flags=re.I)
                     if re.search(r'(?:battery\s+[A-Za-z][A-Za-z0-9_]*\s*\{|\(\s*battery\b[^()]*\))[^{}]*$', prefix, re.I):
                         return ("Vneg = 5;\nNegative battery supply: sets this battery to -5 V. "
@@ -360,9 +377,15 @@ class SourceInfo:
                         "The decimal point is off unless the optional point expression is nonzero. "
                         "For example: HEX0[7:0] = sevenseg(SW[3:0]);"
                     )
-                if name.upper().startswith("S") and re.match(r"\s*(?:(?:\([^()]*\)\s*)?between\s*\(|=\s*(?:open|closed|on|off|[01])\b)", code[match.end():], re.I):
+                if name.upper().startswith("S") and re.match(
+                    r"\s*(?:(?:\([^()]*\)\s*)?between\s*\(|"
+                    r"=\s*(?:open|closed|on|off|[01])\b|"
+                    r"\(\s*(?:open|closed|on|off|[01])?\s*\)\s*(?=[;}]|$))",
+                    code[match.end():], re.I,
+                ):
                     return (f"{name}(open) between(a, b)\nManual switch with two terminals. "
                             "Use open/closed, off/on, or 0/1; omitting the state means open. "
+                            f"Inside a series or parallel group, write {name}(open); to use the group's wiring. "
                             "Click the switch in the schematic to toggle it and update the source; Undo restores its previous state.")
                 if name.upper().startswith("Z") and re.match(r"\s*(?:\([^()]*\)\s*)?between\s*\(", code[match.end():], re.I):
                     return (
@@ -401,11 +424,10 @@ class SourceInfo:
         return ""
 
     def device_at(self, line, column):
-        location = self.position(line, column)
+        location = self.code_position(line, column)
         if location is None:
             return None
-        text, column = location
-        code = text.partition("#")[0]
+        code, column = location
         if timed_block_at(code, column):
             return None
         start = max(code.rfind(mark, 0, column) for mark in ";{}") + 1
@@ -438,11 +460,10 @@ class SourceInfo:
     # Return the compiler-style source line, call name, terminal index, and wire spelling.
     # The hover renderer uses that identity to trace the selected physical connection.
     def wire_at(self, line, column):
-        location = self.position(line, column)
+        location = self.code_position(line, column)
         if location is None:
             return None
-        text, column = location
-        code = text.partition("#")[0]
+        code, column = location
         if timed_block_at(code, column):
             return None
         start = max(code.rfind(mark, 0, column) for mark in ";{}") + 1

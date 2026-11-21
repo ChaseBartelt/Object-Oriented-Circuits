@@ -6,9 +6,10 @@
 from dataclasses import dataclass, replace
 from statistics import median
 
+from circuitlab.layout.checks import mark_crossings
 from circuitlab.layout.geometry import (
-    Layout, add_wire, component_pins, ground_at, input_source_indices,
-    label_node, place_symbol,
+    Layout, add_wire, component_pins, ground_at, ground_lead, input_source_indices,
+    label_node, pin_offset, place_symbol,
 )
 
 
@@ -699,12 +700,6 @@ def _divider_bank(circuit, source, tree, ground):
 def compact(circuit, labels=None):
     """Choose a conventional layout when the resolved topology supports one."""
     parts = circuit.components
-    # The dispatcher declines explicit amplifier supply pins before trying
-    # signal-only templates. Returning None asks the caller to retain those
-    # extra terminals with another layout strategy.
-    if any(part.kind == "O" and part.vplus for part in parts):
-        # These topology-specific drawings only route the signal terminals.
-        return None
     # Limit this compact-template path to small graphs and exclude transistor
     # or potentiometer geometry, whose extra terminals need another strategy.
     if len(parts) > 12 or any(part.kind in {"Q", "P", "A"} for part in parts):
@@ -783,30 +778,95 @@ def _paths(parts, start, terminals):
         visited = reached
 
 
+def _powered_input(circuit, chip, sources, branches):
+    """Find the one grounded source feeding the inverting input tree."""
+    supplies = {}
+    for source in sources:
+        active, ground = (source.n, source.p) if source.p in circuit.grounds else (source.p, source.n)
+        if ground not in circuit.grounds or active in circuit.grounds or active in supplies:
+            return None
+        supplies[active] = source, ground
+    rails = {chip.vplus, chip.vminus}
+    if len(rails) != 2 or not rails <= supplies.keys():
+        return None
+    if rails & {chip.in_minus, chip.in_plus, chip.p}:
+        return None
+    boundaries = supplies.keys() | circuit.grounds | {chip.in_minus, chip.p}
+    candidates = []
+    for net in supplies:
+        if supplies.keys() - (rails | {net}):
+            continue
+        parts = _paths(branches, net, boundaries)
+        if tree := series_parallel(parts, (net, chip.in_minus)):
+            candidates.append((net, parts, tree))
+    return (*candidates[0], supplies) if len(candidates) == 1 else None
+
+
+def _draw_powered_sources(drawing, chip, supplies, feed, input_y, center):
+    """Place local rails along the amp's supply-pin axes."""
+    left = -1
+    active = left, input_y
+    # Put the input source on the opposite side of a shared rail's first bend.
+    direction = 1 if feed == chip.vminus else -1
+    ground_end = left, input_y + direction * 2.5
+    source, ground = supplies[feed]
+    place_symbol(drawing, source, feed, active, ground_end)
+    ground_lead(drawing, ground_end, ground, turns=2 if direction > 0 else 0)
+    add_wire(drawing, feed, active, (0, input_y))
+    for net, side in ((chip.vplus, 1), (chip.vminus, -1)):
+        terminal = center, side * pin_offset(1.25, drawing.pin_grid)
+        if net == feed:
+            rail_y = side * 1.75
+            add_wire(drawing, net, active, (left, rail_y), (center, rail_y), terminal)
+            drawing.junctions.setdefault(net, []).append(active)
+        else:
+            source, ground = supplies[net]
+            start = center, terminal[1] + side * 0.5
+            end = center, start[1] + side * 2.5
+            add_wire(drawing, net, terminal, start)
+            place_symbol(drawing, source, net, start, end)
+            ground_lead(drawing, end, ground, turns=2 if side > 0 else 0)
+
+
 # Place the input and feedback branches around one amplifier while retaining their
 # actual shared sensing node rather than inventing a grounded input.
 def compact_amplifier(circuit):
     parts = circuit.components
-    # Identify actual voltage sources and ideal amplifiers. The compact()
-    # dispatcher performs the optional-power-pin guard before using this helper.
+    # Identify actual voltage sources and ideal amplifiers.
     sources = [e for e in parts if e.kind == "V" and e.is_source]
     amps = [e for e in parts if e.kind == "O"]
+    powered = any(amp.vplus for amp in amps)
+    if powered and len(amps) != 1:
+        return None
     # Several input sources around one amplifier may form a direct summing
     # topology. Otherwise this path expects one grounded inverting stage,
     # optionally followed by unity buffers.
-    if len(sources) > 1 and len(amps) == 1:
+    if not powered and len(sources) > 1 and len(amps) == 1:
         return _summing_amplifier(circuit, sources, amps[0])
-    first = [e for e in amps if e.in_plus == "0"]
-    if len(parts) < 4 or len(sources) != 1 or len(first) != 1:
+    grounded = circuit.grounds if powered else {"0"}
+    first = [e for e in amps if e.in_plus in grounded]
+    if len(parts) < 4 or len(first) != 1 or (not powered and len(sources) != 1):
         return None
-    if not input_source_indices(parts):
+    if not powered and not input_source_indices(parts):
         return None
-    source, chip = sources[0], first[0]
-    # Protect source, sensing node, global ground, and every amplifier output
-    # as distinct boundaries. This template specifically requires the source
-    # return and the first amplifier's non-inverting input to be literal 0.
-    terminals = [source.p, chip.in_minus, "0", *(e.p for e in amps)]
-    if source.n != "0" or len(set(terminals)) != len(terminals):
+    chip = first[0]
+    branches = [e for e in parts if e.kind not in "VO"]
+    if any(e.kind not in "RCLXZK" for e in branches) or any(e.kind == "V" and e not in sources for e in parts):
+        return None
+    if powered:
+        input_stage = _powered_input(circuit, chip, sources, branches)
+        if input_stage is None:
+            return None
+        feed, inputs, input_tree, supplies = input_stage
+    else:
+        source = sources[0]
+        if source.n != "0":
+            return None
+        feed = source.p
+    # Protect the feed, sensing node, return, and each amplifier output as
+    # separate boundaries while identifying the surrounding signal trees.
+    terminals = [feed, chip.in_minus, chip.in_plus, *(e.p for e in amps)]
+    if len(set(terminals)) != len(terminals):
         return None
     # Follow a unique chain of unity followers from the first output. Every
     # remaining amplifier must fit the next link; branching buffers or ambiguous
@@ -825,12 +885,12 @@ def compact_amplifier(circuit):
     # Only supported two-terminal passive/switch branches may surround the
     # amplifiers. Split them into source-to-sense and sense-to-first-output
     # subnetworks, then require both to reduce to series/parallel trees.
-    branches = [e for e in parts if e.kind not in "VO"]
-    if any(e.kind not in "RCLXZK" for e in branches):
-        return None
-    inputs = _paths(branches, source.p, terminals)
+    if powered:
+        terminals = set(terminals) | supplies.keys() | circuit.grounds
+    else:
+        inputs = _paths(branches, feed, terminals)
+        input_tree = series_parallel(inputs, (feed, chip.in_minus))
     feedback = _paths([e for e in branches if e not in inputs], chip.in_minus, terminals)
-    input_tree = series_parallel(inputs, (source.p, chip.in_minus))
     feedback_tree = series_parallel(feedback, (chip.in_minus, chip.p))
     if not input_tree or not feedback_tree:
         return None
@@ -847,9 +907,10 @@ def compact_amplifier(circuit):
         # global ground if present; otherwise try other endpoints until the entire
         # load reduces to one tree spanning the final output and that endpoint.
         nodes = list(dict.fromkeys(node for e in loads for node in (e.p, e.n)))
-        if set(nodes) & (stage_nodes - {previous, "0"}):
+        if set(nodes) & (stage_nodes - ({previous} | grounded)):
             return None
-        for n in ["0"] if "0" in nodes else [n for n in nodes if n != previous]:
+        returns = [n for n in nodes if n in grounded]
+        for n in returns or [n for n in nodes if n != previous]:
             load_tree = series_parallel(loads, (previous, n))
             if load_tree:
                 break
@@ -858,32 +919,37 @@ def compact_amplifier(circuit):
     # After recognition, size the output clearance for both triangle and
     # feedback-tree width. Lift feedback above its own downward branches and
     # put source ground below the input tree's full downward extent.
-    d = Layout()
+    d = Layout(pin_grid=.25 if powered else 0)
     x = input_tree.width
     chip_x = x + 0.75
-    out_x = max(chip_x + 4.7, x + feedback_tree.width + 0.8)
-    fy = 1.75 + feedback_tree.depth
-    gy = -2.75 - input_tree.depth
+    chip_width = 4.5 if powered else 4.3
+    out_x = max(chip_x + (5.0 if powered else 4.7), x + feedback_tree.width + (0.75 if powered else 0.8))
+    feedback_clearance = (3.0 if feed == chip.vplus else 5.75) if powered else 1.75
+    fy = feedback_clearance + feedback_tree.depth
+    input_y = pin_offset(0.35, d.pin_grid)
     # The minus input is above center for this triangle orientation. Align
     # the input tree with that pin; the independent plus input is grounded
     # below the triangle. The sensing node itself remains a separate net.
-    place_tree(d, circuit, input_tree, 0, 0.35)
-    d.positions[source.name] = (0, 0.35)
-    d.symbols.append((source, (0, 0.35), (0, gy), "+"))
+    place_tree(d, circuit, input_tree, 0, input_y)
+    if powered:
+        _draw_powered_sources(d, chip, supplies, feed, input_y, chip_x + chip_width / 2)
+    else:
+        gy = -2.75 - input_tree.depth
+        place_symbol(d, source, feed, (0, input_y), (0, gy))
     d.positions[chip.name] = (chip_x, 0)
-    d.symbols.append((chip, (chip_x, 0), (chip_x + 4.3, 0), "-"))
-    add_wire(d, chip.in_minus, (x, 0.35), (chip_x, 0.35))
-    add_wire(d, chip.in_minus, (x, 0.35), (x, fy))
+    d.symbols.append((chip, (chip_x, 0), (chip_x + chip_width, 0), "-"))
+    add_wire(d, chip.in_minus, (x, input_y), (chip_x, input_y))
+    add_wire(d, chip.in_minus, (x, input_y), (x, fy))
     # Draw the full feedback network above the amplifier and return its far
     # end to the real output. A split marker at out_x also joins onward wiring.
     place_tree(d, circuit, feedback_tree, x, fy)
     add_wire(d, chip.p,
-             (x + feedback_tree.width, fy), (out_x, fy), (out_x, 0), (chip_x + 4.3, 0))
-    add_wire(d, "0", (chip_x, -0.35), (chip_x - 0.55, -0.35), (chip_x - 0.55, -1.2))
-    ground_at(d, (chip_x - 0.55, -1.2))
-    ground_at(d, (0, gy))
-    label_node(d, circuit, (0, 0.35), source.p)
-    label_node(d, circuit, (x, 0.35), chip.in_minus)
+             (x + feedback_tree.width, fy), (out_x, fy), (out_x, 0), (chip_x + chip_width, 0))
+    ground_lead(d, (chip_x, -input_y), chip.in_plus, turns=1)
+    if not powered:
+        ground_at(d, (0, gy))
+    label_node(d, circuit, (0, input_y), feed)
+    label_node(d, circuit, (x, input_y), chip.in_minus)
     d.junctions.setdefault(chip.p, []).append((out_x, 0))
     # Each follower takes the preceding output at its upper plus input and
     # returns its own output around the bottom to its lower minus input.
@@ -903,7 +969,7 @@ def compact_amplifier(circuit):
     # An unloaded final stage gets a short labeled output extension. Otherwise
     # put the complete load tree below and to the right of that final stage.
     if not load_tree:
-        add_wire(d, chip.p, (out_x, 0), (out_x + 0.9, 0))
+        add_wire(d, chip.p, (out_x, 0), (out_x + (1 if powered else 0.9), 0))
         d.labels[chip.p] = (out_x + 1.05, 0)
     else:
         lx, ly = out_x + 0.75, -2.0
@@ -913,12 +979,14 @@ def compact_amplifier(circuit):
         end = lx + load_tree.width
         # Finish a grounded load with a local 0 symbol; retain a distinct named
         # endpoint as a labeled lead when the accepted load is not grounded.
-        if load_tree.n == "0":
-            add_wire(d, "0", (end, ly), (end + 0.55, ly), (end + 0.55, ly - 0.85))
-            ground_at(d, (end + 0.55, ly - 0.85))
+        if load_tree.n in grounded:
+            add_wire(d, load_tree.n, (end, ly), (end + 0.55, ly), (end + 0.55, ly - 0.85))
+            ground_at(d, (end + 0.55, ly - 0.85), load_tree.n)
         else:
             add_wire(d, load_tree.n, (end, ly), (end + 0.65, ly))
             d.labels[load_tree.n] = (end + 0.8, ly)
+    if powered:
+        mark_crossings(d)
     return d
 
 
@@ -977,8 +1045,7 @@ def _summing_amplifier(circuit, sources, amp):
     add_wire(drawing, tap, (sum_x, 0), (amp_x - 1.4, 0), (amp_x - 1.4, -0.65), (amp_x, -0.65))
     drawing.symbols.append((amp, (amp_x, -1), (amp_x + 4.3, -1), "-"))
     drawing.positions[amp.name] = (amp_x, -1)
-    add_wire(drawing, ground, (amp_x, -1.35), (amp_x - 0.85, -1.35), (amp_x - 0.85, -3.0))
-    ground_at(drawing, (amp_x - 0.85, -3.0), ground)
+    ground_lead(drawing, (amp_x, -1.35), ground, turns=1)
     # Close the top feedback branch onto the amplifier output and expose an
     # output connector at that same junction. Neither link changes tap identity.
     place_symbol(drawing, branches[feedback], tap, (sum_x, 2.0), (out_x, 2.0))

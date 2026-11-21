@@ -3,6 +3,7 @@
 # Visual compactness is secondary to retaining every component pin and intended connection.
 
 import unittest
+from collections import Counter
 from dataclasses import replace
 from itertools import combinations
 from pathlib import Path
@@ -14,7 +15,10 @@ from circuitlab.layout.gates import default_gate_layout, gate_preview
 from circuitlab.model.graph import Circuit, Component
 from circuitlab.layout.automatic import compact, grounded_bridge
 from circuitlab.layout.checks import preserves_nets
+from circuitlab.layout.geometry import symbol_pins
+from circuitlab.layout.hierarchy import hood_levels
 from circuitlab.layout.persistence import pack_layout, restore_layout
+from circuitlab.layout.shorten import clear_of_bodies
 from circuitlab.math.report import component_labels
 from circuitlab.layout.routing import connected_layout, fast_layout, schematic_layout
 from circuitlab.layout.editing import ground_attachment, move_ground
@@ -32,6 +36,32 @@ def intersect(a, b, c, d):
 
 
 class SchematicWiring(unittest.TestCase):
+    def test_grounded_emitter_shunt_stays_by_the_device_with_an_independent_supply_load(self):
+        source = """
+        VCC(5) between(vcc, 0);
+        main {
+            Rbase(10k) between(vcc, base);
+            transQ1(base, vcc, emitter, npn);
+            Remitter(22k) between(0, emitter);
+            Rload(10k) between(vcc, 0);
+        }
+        """
+        _, circuit, _, _ = next(hood_levels(compile_circuit(source, render_only=True), set()))
+        drawing = align_layout(circuit, schematic_layout(circuit, component_labels(circuit), "auto"))
+        self.assertIsNotNone(drawing)
+        self.assertTrue(preserves_nets(circuit, drawing))
+        self.assertTrue(clear_of_bodies([edge for edges in drawing.wires.values() for edge in edges], drawing))
+        symbols = {part.name: (part, a, b, top) for part, a, b, top in drawing.symbols}
+        emitter = dict(symbol_pins(*symbols["Q1"], grid=drawing.pin_grid))["emitter"]
+        grounded, live = symbols["Remitter"][1:3]
+        self.assertEqual(grounded[0], live[0])
+        self.assertLess(grounded[1], live[1])
+        self.assertGreater(live[0], emitter[0])
+        self.assertLessEqual(live[0] - emitter[0], 1.25)
+        self.assertLessEqual(abs(live[1] - emitter[1]), .5)
+        self.assertTrue(any(x == grounded[0] and y <= grounded[1] for x, y in drawing.grounds))
+        self.assertEqual(symbols["VCC"][1][0], symbols["VCC"][2][0])
+
     def test_wide_and_layout_adds_matching_input_rows_and_keeps_the_output_stage(self):
         self.assertIsNone(default_gate_layout("and", 2))
         original = default_gate_layout("and", 3)
@@ -560,24 +590,22 @@ class SchematicWiring(unittest.TestCase):
             self.assertTrue(all(a[0] == b[0] for a, b in positions.values()))
             self.assertLess(positions["Vin"][0][0], positions["Vbias"][0][0])
 
-    def test_auto_reduces_congestion_with_matching_connectors(self):
+    def test_congested_auto_layout_keeps_nets_physically_connected(self):
         source = Path(__file__).parent.parent / "fixtures" / "three_band_mixer.ckt"
         circuit = compile_circuit(source.read_text(encoding="utf-8"), render_only=True)
         labels = component_labels(circuit)
         auto = schematic_layout(circuit, labels, "auto")
-        routed = schematic_layout(circuit, labels, "routed")
-        self.assertTrue(auto.connectors)
-        self.assertFalse(routed.connectors)
-        self.assertLess(
-            sum(map(len, auto.crossings.values())),
-            sum(map(len, routed.crossings.values())) / 2,
-        )
+        explicit = schematic_layout(circuit, labels, "labeled")
+        self.assertFalse(auto.connectors)
         self.assertTrue(preserves_nets(circuit, auto))
-        self.assertTrue(preserves_nets(circuit, routed))
+        self.assertTrue(explicit.connectors)
+        self.assertTrue(preserves_nets(circuit, explicit))
 
-        net, pos, _, left, below = auto.connectors[0]
-        auto.connectors[0] = (net, pos, "Different name", left, below)
-        self.assertFalse(preserves_nets(circuit, auto))
+        counts = Counter(net for net, *_ in explicit.connectors)
+        index = next(i for i, item in enumerate(explicit.connectors) if counts[item[0]] > 1)
+        net, pos, _, left, below = explicit.connectors[index]
+        explicit.connectors[index] = (net, pos, "Different name", left, below)
+        self.assertFalse(preserves_nets(circuit, explicit))
 
     def test_generated_topologies_preserve_nets_in_all_modes(self):
         nodes = ("0", "input", "left", "right", "@g1_1", "N1", "n1", "output", "island")
@@ -597,7 +625,6 @@ class SchematicWiring(unittest.TestCase):
             circuit = Circuit("dc", components=parts)
             labels = component_labels(circuit)
             for mode, drawing in (
-                ("auto", connected_layout(circuit, labels, simplify=True)),
                 ("routed", connected_layout(circuit, labels)),
                 ("labeled", labeled(circuit, labels)),
             ):

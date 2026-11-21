@@ -2,7 +2,7 @@
   "OOC divider example": {
     "prefix": "ooc-divider",
     "body": [
-      "# Voltage divider",
+      "// Voltage divider",
       "(battery supply)",
       "\tV = ${1:5}",
       "\twire = vin",

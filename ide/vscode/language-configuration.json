@@ -1,6 +1,7 @@
 {
   "comments": {
-    "lineComment": "#"
+    "lineComment": "//",
+    "blockComment": ["/*", "*/"]
   },
   "brackets": [
     [
@@ -70,11 +71,11 @@
   ],
   "indentationRules": {
     "increaseIndentPattern": {
-      "pattern": "^(?:[^\"#]*(?<!\\$)\\{\\s*|\\s*\\(\\s*(?:series|parallel|(?:battery|opamp)(?:\\s+[^()#=]+)?)\\s*\\)\\s*)(?:#.*)?$",
+      "pattern": "^(?:(?:(?!//|/\\*)[^\"#])*(?<!\\$)\\{\\s*|\\s*\\(\\s*(?:series|parallel|(?:battery|opamp)(?:\\s+[^()#=]+)?)\\s*\\)\\s*)(?:(?://|#).*)?$",
       "flags": "i"
     },
     "decreaseIndentPattern": {
-      "pattern": "^\\s*(?:\\}|\\(\\s*end\\s+(?:battery|opamp|series|parallel)\\s*\\)\\s*(?:#.*)?$)",
+      "pattern": "^\\s*(?:\\}|\\(\\s*end\\s+(?:battery|opamp|series|parallel)\\s*\\)\\s*(?:(?://|#).*)?$)",
       "flags": "i"
     }
   }

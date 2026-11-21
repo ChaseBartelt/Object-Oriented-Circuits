@@ -17,7 +17,7 @@ from unittest.mock import patch
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication, QPlainTextEdit, QMessageBox
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import QTimer, Qt
 
 from circuitlab.exporters.ltspice import export_hierarchy
 from circuitlab.layout.checks import preserves_nets
@@ -60,14 +60,30 @@ class ViewerTest(unittest.TestCase):
         self.window.source_tools.apply(plan)
         return plan
 
-    def test_scope_shares_schematic_page_and_can_resize_hide_and_return(self):
+    def test_scope_toggle_opens_beside_schematic_and_keeps_running(self):
         window = self.window
         window.open_path(self.path)
         self.app.processEvents()
         self.assertEqual(window.views.currentIndex(), 0)
         self.assertTrue(window.schematic.isVisible())
+        self.assertFalse(window.scope.isVisible())
+        schematic_page = window.views.currentWidget()
+        self.assertEqual(window.schematic.width(), schematic_page.width())
+        self.assertEqual(window.scope_toggle.text(), "Oscilloscope")
+        self.assertIs(window.views.cornerWidget(Qt.Corner.TopRightCorner), window.schematic_header)
+        tabs = window.views.tabBar().geometry()
+        for control in (window.wire_style, window.scope_toggle):
+            y = control.mapTo(window.views, control.rect().center()).y()
+            self.assertTrue(tabs.top() <= y <= tabs.bottom())
+        window.views.setCurrentWidget(window.results)
+        self.assertFalse(window.wire_style.isVisible())
+        window.scope_toggle.click()
+        self.app.processEvents()
+        self.assertIs(window.views.currentWidget(), schematic_page)
         self.assertTrue(window.scope.isVisible())
-        self.assertGreater(window.scope.geometry().left(), window.schematic.geometry().right())
+        self.assertTrue(window.schematic.isVisible())
+        self.assertLess(window.schematic.width(), schematic_page.width())
+        self.assertGreater(window.scope_sidebar.panel.x(), window.schematic.geometry().right())
         placement = pack_layout(window.schematic.layout)
         window.scope.run.click()
         simulation = window.scope.simulation
@@ -75,21 +91,18 @@ class ViewerTest(unittest.TestCase):
         window.scope.pending[1].result(timeout=5)
         window.scope.advance()
         self.assertTrue(window.scope.waveform.samples)
-        window.schematic_splitter.setSizes([450, 600])
+        window.scope_toggle.click()
         self.app.processEvents()
-        shown_width = window.schematic.width()
-        window.scope_action.trigger()
-        self.app.processEvents()
+        self.assertIs(window.views.currentWidget(), schematic_page)
         self.assertFalse(window.scope.isVisible())
-        self.assertGreater(window.schematic.width(), shown_width)
+        self.assertEqual(window.schematic.width(), schematic_page.width())
         self.assertIs(window.scope.simulation, simulation)
         self.assertTrue(window.scope.timer.isActive())
-        window.compile_source()
-        self.app.processEvents()
-        self.assertFalse(window.scope.isVisible())
         window.scope_action.trigger()
         self.app.processEvents()
+        self.assertTrue(window.scope_toggle.isChecked())
         self.assertTrue(window.scope.isVisible())
+        self.assertIs(window.scope.simulation, simulation)
         self.assertEqual(window.views.currentIndex(), 0)
         self.assertEqual(pack_layout(window.schematic.layout), placement)
         self.assertEqual(self.path.read_text(), DIVIDER)
@@ -440,11 +453,18 @@ window.close()
         self.assertFalse(tools.history)
 
     def test_renderable_model_error_shows_diagnostics_and_scope(self):
+        issues = self.window.issues
+        self.assertEqual(issues.item(0).text(), "No compiler diagnostics.")
+        clean_height = issues.height()
+        margins = issues.contentsMargins()
+        self.assertEqual(clean_height, issues.sizeHintForRow(0) + margins.top() + margins.bottom())
         self.path.write_text('include("@chips/converters/ADS1115.ckt");\nmain { ADS1115(a,b,0,c,d,e,f,v,sda,scl); }')
         self.window.open_path(self.path)
         self.assertIsNotNone(self.window.schematic.circuit)
         self.assertIsNone(self.window.solution)
         self.assertIn("simulation model", self.window.status.text())
+        self.assertIn("simulation model", issues.item(0).text())
+        self.assertGreater(issues.height(), clean_height)
 
     def test_spice_and_hierarchical_export_keep_source_and_companions(self):
         self.path.write_text("chip block(a,b) { R1(1k) between(a,b); }\nV1(5) between(a,0);\nmain { block(a,0); }\n")

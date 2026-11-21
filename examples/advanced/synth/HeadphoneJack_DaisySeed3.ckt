@@ -1,28 +1,68 @@
-chip DaisySeed3(p01, p02, p03, p04, p05, p06, p07, p08, p09, p10, p11, p12, p13, p14, p15, p16, p17, OUT_L, OUT_R, AGND, p21, p22, p23, p24, p25, p26, p27, p28, p29, p30, p31, p32, p33, p34, p35, p36, p37, p38, p39, DGND) {  # Package pin order and named audio nets document the intended interconnections between blocks.
-    model = unavailable;  # Allow a schematic preview while refusing a numerical solve without a model.
+# Stereo LT1677 audio stage
+# One LT1677 per channel.
+# Gain approximately -1.
+# Outputs feed the headphone-driver stage.
+
+include("LT1677");
+
+f = 1k;
+
+# Power supplies, both referenced to ground.
+Vpos(5V) between(vcc, 0);
+Vneg(-5V) between(vee, 0);
+
+# Test signals representing the Seed3 audio outputs.
+# Left:  Seed3 physical pin 18.
+# Right: Seed3 physical pin 19.
+Vleft(0.1 Vrms) between(audio_left, 0);
+Vright(0.1 Vrms) between(audio_right, 0);
+
+circuit AudioChannel(input, output, positive, negative, ground) {
+
+    # Input DC blocking and input resistance.
+    Cinput(2.2uF) between(input, coupled);
+    Rin(10k) between(coupled, inverting);
+
+    # Negative feedback and compensation.
+    Rfeedback(10k) between(output, inverting);
+    Cfeedback(47pF) between(output, inverting);
+
+    # LT1677 physical pin order:
+    # 1 trim, 2 minus, 3 plus, 4 negative supply,
+    # 5 NC, 6 output, 7 positive supply, 8 trim.
+    LT1677(
+        trim1,
+        inverting,
+        ground,
+        negative,
+        nc5,
+        output,
+        positive,
+        trim8
+    );
+
+    # Supply bypass capacitors.
+    Cpositive(100nF) between(positive, ground);
+    Cnegative(100nF) between(negative, ground);
 }
 
-chip HeadphoneJackAdapter(sleeve, ring, nc3, nc4, tip) {
-    model = unavailable;  # Allow a schematic preview while refusing a numerical solve without a model.
+main {
+
+    AudioChannel(
+        audio_left, preamp_left,
+        vcc, vee, 0
+    );
+
+    AudioChannel(
+        audio_right, preamp_right,
+        vcc, vee, 0
+    );
+
+    # Light test loads, representing a following stage.
+    # These resistors are not headphone models.
+    RloadLeft(10k) between(preamp_left, 0);
+    RloadRight(10k) between(preamp_right, 0);
+
+    measure = V preamp_left 0;
+    measure = V preamp_right 0;
 }
-
-main {  # Assemble the declared parts and chips using the named connections below.
-    DaisySeed3(seed01_nc, seed02_nc, seed03_nc, seed04_nc, seed05_nc, seed06_nc, seed07_nc, seed08_nc, seed09_nc, seed10_nc, seed11_nc, seed12_nc, seed13_nc, seed14_nc, seed15_nc, seed16_nc, seed17_nc, daisy_out_l, seed19_nc, 0, seed21_nc, seed22_nc, seed23_nc, seed24_nc, seed25_nc, seed26_nc, seed27_nc, seed28_nc, seed29_nc, seed30_nc, seed31_nc, seed32_nc, seed33_nc, seed34_nc, seed35_nc, seed36_nc, seed37_nc, seed38_nc, seed39_nc, 0);
-    HeadphoneJackAdapter(0, jack_ring, jack03_nc, jack04_nc, jack_tip);
-
-    R1(1.5k) between(daisy_out_l, A);
-
-    parallel(A,B){
-        C1 = 0.56u;
-        C2 = 0.56u;
-        C3 = 0.56u;
-    }
-    R2(1.5k) between(B, jack_tip);
-    R3(1.5k) between(B, jack_ring);
-    R4(15k) between(B, 0);
-}
-
-
-# @ooc-layout-begin padding=2
-# {"version":1,"mode":"auto","layouts":[[null,"auto",{"symbols":[["@method:0","H",["seed01_nc","seed02_nc","seed03_nc","seed04_nc","seed05_nc","seed06_nc","seed07_nc","seed08_nc","seed09_nc","seed10_nc","seed11_nc","seed12_nc","seed13_nc","seed14_nc","seed15_nc","seed16_nc","seed17_nc","daisy_out_l","seed19_nc","0","seed21_nc","seed22_nc","seed23_nc","seed24_nc","seed25_nc","seed26_nc","seed27_nc","seed28_nc","seed29_nc","seed30_nc","seed31_nc","seed32_nc","seed33_nc","seed34_nc","seed35_nc","seed36_nc","seed37_nc","seed38_nc","seed39_nc","0"],[37,0],[43.75,0],"+"],["@method:1","H",["0","jack_ring","jack03_nc","jack04_nc","jack_tip"],[2,-7.5],[8.75,-7.5],"+"],["R1","R",["daisy_out_l","A"],[34,-7.5],[30,-7.5],"+"],["C1","C",["A","B"],[26,-4.5],[22,-4.5],"+"],["C2","C",["A","B"],[26,-7.5],[22,-7.5],"+"],["C3","C",["A","B"],[26,-10.5],[22,-10.5],"+"],["R2","R",["B","jack_tip"],[17,-5.5],[13,-5.5],"+"],["R3","R",["B","jack_ring"],[17,-9.5],[13,-9.5],"+"],["R4","R",["B","0"],[20,-13],[20,-16],"+"]],"wires":{"daisy_out_l":[[[37,-7.5],[34,-7.5]]],"A":[[[30,-7.5],[28,-7.5]],[[28,-4.5],[28,-7.5]],[[28,-7.5],[28,-10.5]],[[28,-4.5],[26,-4.5]],[[28,-7.5],[26,-7.5]],[[28,-10.5],[26,-10.5]]],"B":[[[22,-4.5],[20,-4.5]],[[22,-7.5],[20,-7.5]],[[22,-10.5],[20,-10.5]],[[20,-4.5],[20,-5.5]],[[20,-5.5],[20,-7.5]],[[20,-7.5],[20,-9.5]],[[20,-9.5],[20,-10.5]],[[20,-10.5],[20,-13]],[[20,-5.5],[17,-5.5]],[[20,-9.5],[17,-9.5]]],"jack_tip":[[[13,-5.5],[11,-5.5]],[[11,-5.5],[11,-6.5]],[[11,-6.5],[8.75,-6.5]]],"jack_ring":[[[13,-9.5],[0,-9.5]],[[0,-9.5],[0,-7.5]],[[0,-7.5],[2,-7.5]]],"0":[[[2,-6.5],[-1.5,-6.5]],[[37,-9.5],[35,-9.5]],[[35,-9.5],[35,-12]],[[43.75,9.5],[45.75,9.5]]]},"junctions":{"A":[[28,-7.5]],"B":[[20,-5.5],[20,-7.5],[20,-9.5],[20,-10.5]]},"labels":{"A":[28,-3.5],"B":[20,-3.5]},"grounds":[[-1.5,-6.5],[20,-16],[35,-12],[45.75,9.5]],"ground_names":[],"ground_rotations":[],"connectors":[],"boundary":{},"rotations":{},"crossings":[],"label_offsets":[],"pin_grid":0.25}]]}
-# @ooc-layout-end

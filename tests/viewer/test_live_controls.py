@@ -55,7 +55,8 @@ class LiveControlsTest(unittest.TestCase):
 
     def run_scope(self):
         scope = self.window.scope
-        self.assertFalse(scope.isHidden())
+        self.window.scope_toggle.click()
+        self.assertTrue(scope.isVisible())
         scope.node.setCurrentText("out")
         scope.step.setValue(5)
         scope.toggle()

@@ -257,6 +257,19 @@ assert not any(name.startswith('circuitlab.viewer') for name in sys.modules)
         self.assertIsNone(info.position(0, emoji + 1))
         self.assertEqual(info.position(2, 0), ("", 0))
 
+    def test_slash_comments_do_not_supply_hover_targets_or_shift_columns(self):
+        row = "😀 */ nor(vcc, a, result); // not(vcc, b, fake);"
+        info = SourceInfo("/*\nnot(vcc, a, hidden);\n" + row)
+        self.assertIsNone(info.device_at(1, 0))
+        self.assertIsNone(info.wire_at(1, 12))
+        self.assertEqual(info.hover_help(1, 0), "")
+        column = lambda name: len(row[:row.index(name)].encode("utf-16-le")) // 2
+        self.assertEqual(info.device_at(2, column("nor")), ("builtin", "NOR", 1))
+        self.assertEqual(info.wire_at(2, column("result")), (3, "nor", 2, "result"))
+        self.assertIsNone(info.wire_at(2, column("fake")))
+        include = 'include("chips//file/*part*/#v1.ckt"); // loader hint'
+        self.assertIn("bundled chip", SourceInfo(include).hover_help(0, 0))
+
     def test_outside_document_positions_are_ignored(self):
         info = SourceInfo("nor(vcc,a,y);")
         for line, column in ((-1, 0), (1, 0), (0, -1), (0, 100), (0, 0.5)):

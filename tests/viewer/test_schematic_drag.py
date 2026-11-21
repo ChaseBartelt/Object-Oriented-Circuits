@@ -6,6 +6,7 @@
 import os
 import unittest
 from dataclasses import replace
+from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -17,8 +18,9 @@ from PySide6.QtWidgets import QApplication
 from circuitlab.language.compiler import compile_circuit
 from circuitlab.language.syntax import parse_wires
 from circuitlab.layout.checks import preserves_nets
-from circuitlab.layout.editing import move_symbol
+from circuitlab.layout.editing import move_symbol, move_wire
 from circuitlab.layout.geometry import Layout
+from circuitlab.layout.hierarchy import hood_levels
 from circuitlab.layout.persistence import pack_layout, restore_layout
 from circuitlab.model.graph import CircuitError
 from circuitlab.viewer.schematic import SCALE, SchematicView, point
@@ -60,6 +62,115 @@ class SchematicDragTest(unittest.TestCase):
         end = self.start_pos + self.view.mapFromScene(point((dx, dy))) - self.view.mapFromScene(point((0, 0)))
         self.view.preview_drag(end)
         return end
+
+    def test_wire_drag_keeps_a_grid_square_around_a_chip(self):
+        circuit = compile_circuit(
+            "chip Block(a, b) { Rinside(1k) between(a, b); }\n"
+            "main { Block(left, right); Rload(1k) between(feed, out); }",
+            render_only=True,
+        )
+        _, root, _, _ = next(hood_levels(circuit, set()))
+        package = next(part for part in root.components if part.kind == "H")
+        load = next(part for part in root.components if part.kind == "R")
+        wire = (-3, 1.25), (8, 1.25)
+        drawing = Layout(
+            symbols=[(package, (0, 0), (6.5, 0), "+"), (load, (8, 1.25), (10, 1.25), "+")],
+            positions={package.name: (0, 0), load.name: (8, 1.25)}, pin_grid=.25,
+            boundary={"feed": wire[0]}, wires={"feed": [wire]},
+        )
+        self.view.draw(circuit, layout=drawing)
+        self.start_pos = self.view.mapFromScene(point((3, 1.25)))
+        self.view.start_drag("wire", "feed", self.key, self.start_pos, edge=wire)
+        self.move(0, -.25)
+        self.assertTrue(self.view.drag.blocked)
+        self.assertIs(self.view.layout, drawing)
+        self.move(0, .25)
+        self.assertFalse(self.view.drag.blocked)
+        self.assertIsNot(self.view.layout, drawing)
+
+    def test_component_drag_carries_only_its_own_ground_and_undoes_together(self):
+        circuit = compile_circuit('V1(5) between(a,0);\nR1(1k) between(b,0);', render_only=True)
+        button = Qt.MouseButton.LeftButton
+        for marker in ((0, -3), (0, -2.5)):
+            with self.subTest(marker=marker):
+                v1, r1 = circuit.components
+                local_lead = [((0, -2.5), marker)] if marker != (0, -2.5) else []
+                drawing = Layout(
+                    symbols=[(v1, (0, 0), (0, -2.5), '+'), (r1, (8, 0), (12, 0), '+')],
+                    positions={'V1': (0, 0), 'R1': (8, 0)}, grounds=[marker, (13, 0)],
+                    wires={'0': local_lead + [((12, 0), (13, 0))]},
+                    ground_rotations={marker: 1}, label_offsets={('ground', *marker): (.25, .25)},
+                    pin_grid=.25,
+                )
+                self.view.clear()
+                self.view.draw(circuit, layout=drawing)
+                self.start_pos = self.view.mapFromScene(point((0, -1.25)))
+                self.view.start_drag('component', 'V1', self.key, self.start_pos)
+                end = self.move(2, -2)
+                self.assertFalse(self.view.drag.blocked)
+                preview = self.view.layout
+                dx, dy = preview.positions['V1']
+                self.assertNotEqual((dx, dy), (0, 0))
+                moved_marker = marker[0] + dx, marker[1] + dy
+                self.assertEqual(preview.grounds, [moved_marker, (13, 0)])
+                self.assertEqual(preview.ground_rotations, {moved_marker: 1})
+                self.assertEqual(preview.label_offsets[('ground', *moved_marker)], (.25, .25))
+                self.assertEqual(preview.positions['R1'], (8, 0))
+                self.assertTrue(preserves_nets(circuit, preview))
+                QTest.mouseRelease(self.view.viewport(), button, pos=end)
+                self.assertIs(self.view.layout, preview)
+
+                self.start_pos = self.view.mapFromScene(point(moved_marker))
+                self.view.start_drag('ground', '0', self.key, self.start_pos, terminal=moved_marker)
+                end = self.move(0, -1)
+                self.assertFalse(self.view.drag.blocked)
+                self.assertNotEqual(self.view.layout.grounds[0], moved_marker)
+                self.assertEqual(self.view.layout.positions['V1'], preview.positions['V1'])
+                self.assertTrue(preserves_nets(circuit, self.view.layout))
+                QTest.mouseRelease(self.view.viewport(), button, pos=end)
+                self.view.undo_placement()
+                self.assertIs(self.view.layout, preview)
+                self.view.undo_placement()
+                self.assertIs(self.view.layout, drawing)
+
+    def test_shared_ground_moves_only_with_its_entire_selected_group(self):
+        circuit = compile_circuit(
+            'R1(1k) between(a,0);\nR2(2k) between(b,0);\nR3(3k) between(c,0);',
+            render_only=True,
+        )
+        r1, r2, r3 = circuit.components
+        ground = (4, -2)
+        separate = (13, 0)
+        drawing = Layout(
+            symbols=[(r1, (0, 0), (4, 0), '+'), (r2, (0, 6), (4, 6), '+'), (r3, (8, 0), (12, 0), '+')],
+            positions={'R1': (0, 0), 'R2': (0, 6), 'R3': (8, 0)}, grounds=[ground, separate],
+            wires={'0': [(ground, (4, 0)), ((4, 0), (4, 6)), ((12, 0), separate)]}, pin_grid=.25,
+        )
+        self.view.draw(circuit, layout=drawing)
+        self.start_pos = self.view.mapFromScene(point((2, 0)))
+        self.view.start_drag('component', 'R1', self.key, self.start_pos)
+        end = self.move(0, -1)
+        self.assertFalse(self.view.drag.blocked)
+        self.assertEqual(self.view.layout.grounds, [ground, separate])
+        self.assertTrue(preserves_nets(circuit, self.view.layout))
+        QTest.mouseRelease(self.view.viewport(), Qt.MouseButton.LeftButton, pos=end)
+        self.view.undo_placement()
+
+        self.view.selection_key = self.key
+        self.view.selected_symbols = {'R1', 'R2'}
+        self.start_pos = self.view.mapFromScene(point((2, 0)))
+        self.view.start_drag('component', 'R1', self.key, self.start_pos)
+        end = self.move(0, -1)
+        self.assertFalse(self.view.drag.blocked)
+        dx, dy = self.view.layout.positions['R1']
+        self.assertNotEqual((dx, dy), (0, 0))
+        self.assertEqual(self.view.layout.grounds, [(ground[0] + dx, ground[1] + dy), separate])
+        self.assertEqual(self.view.layout.positions['R2'], (dx, 6 + dy))
+        self.assertEqual(self.view.layout.positions['R3'], (8, 0))
+        self.assertTrue(preserves_nets(circuit, self.view.layout))
+        QTest.mouseRelease(self.view.viewport(), Qt.MouseButton.LeftButton, pos=end)
+        self.view.undo_placement()
+        self.assertIs(self.view.layout, drawing)
 
     def test_split_end_drag_joins_wire_interior_and_undo_restores_markers(self):
         circuit = compile_circuit('R1(1k) between(a,n);\nR2(2k) between(n,b);', render_only=True)
@@ -226,6 +337,59 @@ class SchematicDragTest(unittest.TestCase):
             self.assertTrue(any(a[1] == b[1] == -row * step for a, b in self.view.layout.wires["a"]))
             self.assertTrue(preserves_nets(self.circuit, self.view.layout))
 
+    def test_wire_slide_moves_a_full_row_through_close_tees_without_jumping_a_gap(self):
+        circuit = compile_circuit(
+            "Rleft(1k) between(a,d);\nRtee1(1k) between(a,b);\n"
+            "Rtee2(1k) between(a,c);\nRisland(1k) between(a,e);",
+            render_only=True,
+        )
+        left, first, second, island = circuit.components
+        symbols = [
+            (left, (0, -2), (0, -5), "+"),
+            (first, (5, 4), (5, 7), "+"),
+            (second, (5.25, 2), (9.25, 2), "+"),
+            (island, (12, -2), (12, -5), "+"),
+        ]
+        clicked = ((0, 0), (5, 0))
+        separate = [((12, -2), (12, 0)), ((12, 0), (14, 0))]
+        drawing = Layout(
+            symbols=symbols, positions={part.name: a for part, a, _, _ in symbols}, pin_grid=.25,
+            connectors=[("a", (10, 0), "a", True, False), ("a", (14, 0), "a", True, False)],
+            wires={"a": [((0, -2), (0, 0)), clicked, ((5, 0), (5.25, 0)),
+                          ((5.25, 0), (10, 0)), ((5, 0), (5, 4)), ((5.25, 0), (5.25, 2)),
+                          *separate]},
+        )
+        self.view.draw(circuit, layout=drawing)
+        self.view.start_drag("wire", "a", self.key, self.view.mapFromScene(point((2, 0))), clicked)
+        end = self.view.mapFromScene(point((2, -1)))
+        self.view.preview_drag(end)
+        self.assertFalse(self.view.drag.blocked)
+        preview = self.view.layout
+        self.assertEqual(preview.symbols, symbols)
+        self.assertEqual(preview.connectors, drawing.connectors)
+        self.assertIn(((5, -1), (5.25, -1)), preview.wires["a"])
+        self.assertIn(((5.25, -1), (10, -1)), preview.wires["a"])
+        self.assertEqual([edge for edge in preview.wires["a"] if edge[0][0] >= 12], separate)
+        self.assertNotIn(((5, 0), (5.25, 0)), preview.wires["a"])
+        self.assertTrue(preserves_nets(circuit, preview))
+        QTest.mouseRelease(self.view.viewport(), Qt.MouseButton.LeftButton, pos=end)
+        self.view.undo_placement()
+        self.assertEqual(self.view.layout, drawing)
+
+    def test_wire_slide_folds_back_an_unanchored_return_bend(self):
+        circuit = compile_circuit("Rleft(1k) between(a,d);\nRright(1k) between(a,b);", render_only=True)
+        left, right = circuit.components
+        clicked = ((0, 0), (10, 0))
+        drawing = Layout(
+            symbols=[(left, (0, -2), (0, -5), "+"), (right, (4, 2), (4, 5), "+")],
+            positions={"Rleft": (0, -2), "Rright": (4, 2)}, pin_grid=.25,
+            wires={"a": [((0, -2), (0, 0)), clicked, ((10, 0), (10, 2)), ((4, 2), (10, 2))]},
+        )
+        moved, _ = move_wire(circuit, drawing, "a", clicked, -1)
+        self.assertTrue(preserves_nets(circuit, moved))
+        self.assertEqual(moved.symbols, drawing.symbols)
+        self.assertEqual(moved.wires["a"], [((0, -2), (0, -1)), ((0, -1), (4, -1)), ((4, -1), (4, 2))])
+
     def test_clear_bodies_can_move_even_when_lead_bounds_overlap(self):
         # Horizontal leads overlap in x, but the component bodies are separate.
         moved = move_symbol(self.circuit, self.original, "R1", (3.5, 3))
@@ -252,6 +416,105 @@ class SchematicDragTest(unittest.TestCase):
         QTest.mouseRelease(view.viewport(), Qt.MouseButton.LeftButton, pos=end)
         self.assertEqual(view.level_offsets[key], offset)
         self.assertTrue(preserves_nets(view.levels[key], view.manual_layouts[key]))
+
+    def test_opamp_context_menu_flips_only_inputs_and_preserves_wiring(self):
+        for source in ('op1(plus,minus,out);', 'op1(plus,minus,out,vcc,vee);',
+                       'op1(plus,minus,out,vcc,vee,gain1,gain8,bypass);'):
+            with self.subTest(source=source):
+                circuit = compile_circuit(source, render_only=True)
+                amp = circuit.components[0]
+                drawing = Layout(symbols=[(amp, (0, 0), (4, 0), '+')],
+                                 positions={amp.name: (0, 0)}, pin_grid=.25)
+                pins = dict(drawing.pins())
+                drawing.boundary = {
+                    net: ((-4, y) if net in {'plus', 'minus'} else (7, y) if net == 'out' else (x, 2 * y))
+                    for net, (x, y) in pins.items()
+                }
+                drawing.wires = {net: [(pin, drawing.boundary[net])] for net, pin in pins.items()}
+                self.view.draw(circuit, layout=drawing)
+                at = self.view.mapFromScene(point((2, 0)))
+                action_text = 'Flip +/− inputs'
+                actions = []
+
+                def choose_flip():
+                    menu = self.app.activePopupWidget()
+                    actions.extend(action.text() for action in menu.actions())
+                    action = next((action for action in menu.actions() if action.text() == action_text), None)
+                    if action is not None:
+                        action.trigger()
+                    menu.close()
+
+                QTimer.singleShot(0, choose_flip)
+                self.view.contextMenuEvent(QContextMenuEvent(QContextMenuEvent.Reason.Mouse,
+                                                            at, self.view.mapToGlobal(at)))
+                self.assertIn(action_text, actions)
+                flipped = self.view.layout
+                self.assertEqual(flipped.positions, drawing.positions)
+                self.assertEqual(dict(flipped.pins()), {**pins, 'plus': pins['minus'], 'minus': pins['plus']})
+                for net in pins.keys() - {'plus', 'minus'}:
+                    self.assertEqual(flipped.wires[net], drawing.wires[net])
+                self.assertTrue(preserves_nets(circuit, flipped))
+                self.assertEqual(restore_layout(pack_layout(flipped), circuit, tuple(drawing.boundary)), flipped)
+                self.view.undo_placement()
+                self.assertEqual(self.view.layout, drawing)
+
+    def test_chip_drag_carries_feedback_and_side_passives_and_alt_moves_it_alone(self):
+        path = Path(__file__).resolve().parents[2] / 'examples/advanced/synth/HeadphoneJack_DaisySeed3.ckt'
+        circuit = compile_circuit(path.read_text(encoding='utf-8-sig'), path=path, render_only=True)
+        view = self.view
+        view.draw(circuit)
+        original = view.layout
+        chip, a, b, _ = next(symbol for symbol in original.symbols if symbol[0].name == '@method:1')
+        center = (a[0] + b[0]) / 2, a[1]
+        stage = {chip.name, 'Rfeedback_AudioChannel_1', 'Cfeedback_AudioChannel_1',
+                 'Rin_AudioChannel_1', 'Cinput_AudioChannel_1', 'RloadLeft'}
+        start = view.mapFromScene(point(center))
+        end = view.mapFromScene(point((center[0], center[1] + 1)))
+
+        QTest.mousePress(view.viewport(), Qt.MouseButton.LeftButton, pos=start)
+        self.assertEqual(view.drag.stage_group, stage)
+        view.preview_drag(end)
+        self.assertFalse(view.drag.blocked)
+        self.assertTrue(view.selection_items)
+        preview = view.layout
+        for name, (x, y) in original.positions.items():
+            self.assertEqual(preview.positions[name], (x, y + 1) if name in stage else (x, y))
+        for net in ('AudioChannel_1.inverting', 'preamp_left'):
+            self.assertEqual(preview.wires[net], [((x, y + 1), (u, v + 1))
+                                                  for (x, y), (u, v) in original.wires[net]])
+        self.assertTrue(preserves_nets(view.levels[self.key], preview))
+        QTest.mouseRelease(view.viewport(), Qt.MouseButton.LeftButton, pos=end)
+        view.undo_placement()
+        self.assertEqual(view.layout, original)
+
+        view.selection_key = self.key
+        view.selected_symbols.update(stage)
+        start = view.mapFromScene(point(center))
+        end = view.mapFromScene(point((center[0] + .5, center[1] - .25)))
+        alt = Qt.KeyboardModifier.AltModifier
+        QTest.mousePress(view.viewport(), Qt.MouseButton.LeftButton, alt, start)
+        self.assertFalse(view.drag.stage_group or view.drag.selection or view.drag.attached_grounds)
+        view.preview_drag(end)
+        self.assertFalse(view.drag.blocked)
+        preview = view.layout
+        self.assertEqual(preview.positions, {**original.positions, chip.name: (a[0] + .5, a[1] - .25)})
+        self.assertEqual(preview.grounds, original.grounds)
+        self.assertTrue(preserves_nets(view.levels[self.key], preview))
+        QTest.mouseRelease(view.viewport(), Qt.MouseButton.LeftButton, alt, end)
+        view.undo_placement()
+        self.assertEqual(view.layout, original)
+
+        resistor = 'Rfeedback_AudioChannel_1'
+        _, a, b, _ = next(symbol for symbol in original.symbols if symbol[0].name == resistor)
+        center = (a[0] + b[0]) / 2, a[1]
+        start = view.mapFromScene(point(center))
+        end = view.mapFromScene(point((center[0] + .5, center[1])))
+        QTest.mousePress(view.viewport(), Qt.MouseButton.LeftButton, pos=start)
+        self.assertFalse(view.drag.stage_group)
+        view.preview_drag(end)
+        self.assertFalse(view.drag.blocked)
+        self.assertEqual(view.layout.positions, {**original.positions, resistor: (a[0] + .5, a[1])})
+        QTest.mouseRelease(view.viewport(), Qt.MouseButton.LeftButton, pos=end)
 
 
 class WireParsingTypesTest(unittest.TestCase):

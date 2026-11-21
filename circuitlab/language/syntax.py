@@ -4,6 +4,8 @@
 # retaining original line numbers for errors and schematic source edits.
 
 import re
+
+from circuitlab.language.comments import mask_comments
 from dataclasses import dataclass, field
 
 from circuitlab.model.graph import CircuitError
@@ -39,6 +41,7 @@ UNAVAILABLE_MODEL = re.compile(r"model\s*=\s*unavailable", re.I)
 # battery and transistor declarations instead require a device name;
 # their field/value validation happens when the builder reads the body.
 INLINE = re.compile(r"(series|parallel)\s*(?:\(([^()]*)\)\s*)?\{", re.I)
+GROUP_MARKER = re.compile(r"\(\s*(end\s+)?(series|parallel)\s*\)", re.I)
 BATTERY_BRACE = re.compile(r"battery\s+([A-Za-z][A-Za-z0-9_]*)\s*\{", re.I)
 TRANSISTOR = re.compile(r"transistor\s+([A-Za-z][A-Za-z0-9_]*)\s*\{", re.I)
 # Declarations configure an op-number device; connection calls keep their old form.
@@ -192,7 +195,6 @@ def analysis_mode(source):
     # Mode inference uses textual cues, not a solved circuit. Discard line
     # comments and braced transistor fields before looking for AC markers,
     # so device net/model names are less likely to be mistaken for source units.
-    source = re.sub(r"#.*", "", source)
     # Transistor fields name nets and models, even if they end in Vpk or Arms.
     # Math operators (especially |) are not mixed-source separators. Model
     # parameters likewise do not choose mode. Count nested properties braces
@@ -340,8 +342,8 @@ _LEGACY_END = re.compile(r"\(\s*end\s+", re.I)
 def _logical_lines(source):
     """Join continued pin lists/expressions, retaining the opening line number."""
     pending, opened, parentheses = [], 0, 0
-    for number, raw in enumerate(source.splitlines(), 1):
-        line = raw.split("#", 1)[0].strip()
+    for number, raw in enumerate(mask_comments(source).splitlines(), 1):
+        line = raw.strip()
         if pending and not parentheses:
             # A blank component value is a placeholder. Keep it separate from
             # the next assignment or closing marker, while allowing a value
@@ -388,9 +390,7 @@ def source_rows(source, *, legacy_markers=True):
     # Count physical source lines once, including blank/comment-only lines.
     # All fragments emitted from a physical line retain this same location.
     for number, raw in _logical_lines(source):
-        # This normalization treats the first # as the start of a line comment
-        # before block tokenization, then removes outer whitespace.
-        line = raw.split("#", 1)[0].strip()
+        line = raw.strip()
         # Enable brace-aware splitting inside an active block or when a known
         # block header begins the line. Leave other top-level legacy rows on
         # their existing path rather than splitting raw punctuation everywhere.

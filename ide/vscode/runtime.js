@@ -6,7 +6,7 @@ const { execFile, spawn } = require("node:child_process");
 const { existsSync, readFileSync, readdirSync, realpathSync } = require("node:fs");
 const path = require("node:path");
 const vscode = require("vscode");
-const { analyzeSource } = require("./structure");
+const { analyzeSource, maskComments } = require("./structure");
 const { HoverClient } = require("./hover-client");
 
 const language = { language: "ooc" };
@@ -25,6 +25,33 @@ const symbolKinds = {
 
 function range(document, start, end) {
     return new vscode.Range(document.positionAt(start), document.positionAt(end));
+}
+
+function toggleLineComment(editor) {
+    if (editor?.document.languageId !== "ooc") return;
+    const lines = new Set();
+    for (const selection of editor.selections) {
+        // A selection ending at column zero leaves that last line untouched.
+        let end = selection.end.line;
+        if (!selection.isEmpty && selection.end.character === 0) end--;
+        for (let line = selection.start.line; line <= end; line++) lines.add(line);
+    }
+    const remove = [];
+    let hasLegacy = false;
+    for (const number of lines) {
+        const line = editor.document.lineAt(number);
+        if (line.isEmptyOrWhitespace) continue;
+        const prefix = /^[ \t]*(#|\/\/) ?/.exec(line.text);
+        if (!prefix) return vscode.commands.executeCommand("editor.action.commentLine");
+        hasLegacy ||= prefix[1] === "#";
+        remove.push(new vscode.Range(number, line.firstNonWhitespaceCharacterIndex, number, prefix[0].length));
+    }
+    // The built-in action handles all ordinary // toggles and preserves the
+    // editor's spacing and multi-selection behavior.
+    if (!hasLegacy) return vscode.commands.executeCommand("editor.action.commentLine");
+    return editor.edit(edit => {
+        for (const marker of remove) edit.delete(marker);
+    });
 }
 
 function documentSymbol(document, node) {
@@ -318,9 +345,7 @@ function activate(context, shared = {}) {
             const keywords = [], overrides = [], measurements = [];
             if (editor.document.languageId === "ooc") {
                 // Mask quoted paths and comments without changing UTF-16 offsets.
-                const code = editor.document.getText().replace(
-                    /"(?:\\.|[^"\\\r\n])*"?|#[^\r\n]*/g, match => " ".repeat(match.length),
-                );
+                const code = maskComments(editor.document.getText(), true);
                 const tokens = /@override\b|\b(?:analog|digital)\b(?=\s*(?::\s*math\b|\{|\(|[A-Za-z_]|$))/gim;
                 for (const match of code.matchAll(tokens)) {
                     (match[0].startsWith("@") ? overrides : keywords).push(
@@ -510,6 +535,7 @@ function activate(context, shared = {}) {
         vscode.commands.registerCommand("ooc.check", () => runCircuit("check")),
         vscode.commands.registerCommand("ooc.solve", () => runCircuit("solve")),
         vscode.commands.registerCommand("ooc.openSchematic", () => runCircuit("open")),
+        vscode.commands.registerCommand("ooc.toggleLineComment", () => toggleLineComment(vscode.window.activeTextEditor)),
     );
 }
 

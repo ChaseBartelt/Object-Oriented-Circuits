@@ -24,6 +24,7 @@ from circuitlab.language.syntax import (
     BATTERY_BRACE,
     CALL,
     DEFAULT_TERMINALS,
+    GROUP_MARKER,
     INLINE,
     MAIN,
     MATH_BRACE,
@@ -435,8 +436,9 @@ def expand_main(rows: list[SourceRow], instances: list[MethodInstance], *, impor
     # Yield bound source rows lazily in execution order. parent contains this
     # invocation's wire/value mappings; active is the current call ancestry,
     # not a global visited set, so repeated sibling calls remain legal.
-    def expand(body, parent, active, *, top_level=False):
+    def expand(body, parent, active, *, top_level=False, group_depth=0):
         opaque_depth = 0
+        braced_groups = []
         for text, line, origin in body:
             # Use each body row's source file while retaining the current invocation's
             # scope and bindings. Imported method bodies therefore report their own
@@ -458,6 +460,17 @@ def expand_main(rows: list[SourceRow], instances: list[MethodInstance], *, impor
                     line,
                     path=origin.path,
                 )
+            if text.endswith("{"):
+                section = SECTION.fullmatch(text)
+                is_group = bool(INLINE.fullmatch(text) or (
+                    section and section[1].casefold() not in NET_METHODS
+                ))
+                braced_groups.append(is_group)
+                group_depth += is_group
+            elif text == "}" and braced_groups:
+                group_depth -= braced_groups.pop()
+            elif marker := GROUP_MARKER.fullmatch(text):
+                group_depth += -1 if marker[1] else 1
             # Only whole call-shaped statements are candidates for method expansion.
             # Leave component placements, assignments, braces, and built-in opamp
             # calls for electrical construction rather than interpreting them here.
@@ -466,6 +479,14 @@ def expand_main(rows: list[SourceRow], instances: list[MethodInstance], *, impor
                 yield text, line, parent
                 continue
             key = call[1].casefold()
+            # In a structural group, component calls supply a value instead of
+            # pins. Lower them through the existing assignment path, including
+            # switch state parsing, mode selection, and source provenance.
+            if (group_depth > 0 and key not in definitions and key not in GATE_HELP
+                    and key[0].upper() in {*UNITS, "S"}
+                    and not SWITCH_CALL.fullmatch(call[1])):
+                yield f"{call[1]} = {call[2]}", line, parent
+                continue
             # Ordinary recursion identity is the method name. A built-in/overridden
             # gate will refine this to (name, full_pin_count), matching its override
             # lookup. passed stores explicit raw-to-resolved wire argument pairs.
@@ -636,7 +657,8 @@ def expand_main(rows: list[SourceRow], instances: list[MethodInstance], *, impor
                 yield header, line, binding
             # Expand nested calls with this invocation in the recursion ancestry,
             # then close any structural wrapper using the call's line and binding.
-            yield from expand(child, binding, (*active, method_key))
+            yield from expand(child, binding, (*active, method_key),
+                              group_depth=group_depth + (not net_method))
             if not net_method:
                 yield "}", line, binding
 

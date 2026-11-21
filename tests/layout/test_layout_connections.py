@@ -10,16 +10,172 @@ import unittest
 
 from circuitlab.language.compiler import compile_circuit
 from circuitlab.layout.automatic import compact_amplifier
-from circuitlab.layout.checks import preserves_nets
+from circuitlab.layout.checks import mark_crossings, preserves_nets, segments_intersect
 from circuitlab.layout.editing import move_connector, split_wire
-from circuitlab.layout.geometry import Layout
+from circuitlab.layout.geometry import Layout, rotate_point
+from circuitlab.layout.ground_clearance import clear_ground_marks, ground_strokes
 from circuitlab.layout.persistence import pack_layout, restore_layout
+from circuitlab.layout.tee_cleanup import reattach_tee_runs
 from circuitlab.layout.wiring import labeled
 from circuitlab.math.report import component_labels
 from circuitlab.model.graph import Component
 
 
 class LayoutConnectionsTest(unittest.TestCase):
+    def test_fresh_ground_marks_face_outward_only_on_clear_horizontal_leads(self):
+        for terminals, a, b, ground, turns in (
+            ("0,a", (0, 0), (4, 0), (-.5, 0), 1),
+            ("a,0", (0, 0), (4, 0), (4.5, 0), 3),
+            ("a,0", (0, 4), (0, 0), (0, -.5), 0),
+        ):
+            with self.subTest(ground=ground):
+                circuit = compile_circuit(f'R1(1k) between({terminals});', render_only=True)
+                part = circuit.components[0]
+                pin = a if part.p == "0" else b
+                drawing = Layout(
+                    symbols=[(part, a, b, '+')], positions={part.name: a},
+                    grounds=[ground], wires={'0': [(pin, ground)]}, pin_grid=.25,
+                )
+                self.assertIs(clear_ground_marks(circuit, drawing), drawing)
+                faced = clear_ground_marks(circuit, drawing, face_leads=True)
+                self.assertEqual(faced.ground_rotations.get(ground, 0), turns)
+                self.assertEqual(faced.grounds, drawing.grounds)
+                self.assertEqual(faced.wires, drawing.wires)
+                self.assertTrue(preserves_nets(circuit, faced))
+                boundary = replace(drawing, boundary={'0': ground})
+                self.assertIs(clear_ground_marks(circuit, boundary, face_leads=True), boundary)
+
+        circuit = compile_circuit('R1(1k) between(a,0);\nR2(1k) between(b,c);', render_only=True)
+        first, second = circuit.components
+        drawing = Layout(
+            symbols=[(first, (0, 0), (4, 0), '+'), (second, (6.5, .25), (10.5, .25), '+')],
+            positions={first.name: (0, 0), second.name: (6.5, .25)},
+            grounds=[(4.5, 0)], boundary={'b': (4.75, .25)}, pin_grid=.25,
+            wires={'0': [((4, 0), (4.5, 0))], 'b': [((4.75, .25), (6.5, .25))]},
+        )
+        self.assertIs(clear_ground_marks(circuit, drawing, face_leads=True), drawing)
+
+    def test_exclusive_ground_lead_loses_jogs_without_moving_aligned_marker(self):
+        circuit = compile_circuit('R1(1k) between(a,0);', render_only=True)
+        part = circuit.components[0]
+        pin, ground = (0, 0), (0, -1)
+        run = [pin, (0, -.25), (.25, -.25), (.25, -.75), (0, -.75), ground]
+        drawing = Layout(
+            symbols=[(part, (-4, 0), pin, '+')], positions={part.name: (-4, 0)},
+            grounds=[ground], wires={'0': list(zip(run, run[1:]))}, pin_grid=.25,
+        )
+        before = deepcopy(drawing)
+        result = clear_ground_marks(circuit, drawing)
+        self.assertEqual(drawing, before)
+        self.assertEqual(result.grounds, [ground])
+        self.assertEqual(result.wires['0'], [(ground, pin)])
+        self.assertTrue(preserves_nets(circuit, result))
+
+    def test_optimize_shortens_opamp_ground_jog_without_crossing_input_wire(self):
+        circuit = compile_circuit('R1(1k) between(minus,a);\nop1(0,minus,out);', render_only=True)
+        resistor, amp = circuit.components
+        pin, ground = (0, -.25), (-.75, -2)
+        for lane, new_ground, turns in ((-1.5, (-.25, -.25), 1), (-.5, (0, -.5), 0)):
+            with self.subTest(input_lane=lane):
+                input_wire = [((0, .25), (lane, .25)), ((lane, .25), (lane, -3))]
+                drawing = Layout(
+                    symbols=[(amp, (0, 0), (4, 0), '-'), (resistor, (lane, -3), (lane, -6), '+')],
+                    positions={amp.name: (0, 0), resistor.name: (lane, -3)},
+                    grounds=[ground], pin_grid=.25,
+                    wires={'0': [(pin, (0, -2)), ((0, -2), ground)], 'minus': input_wire},
+                )
+                mark_crossings(drawing)
+                before = deepcopy(drawing)
+                self.assertTrue(preserves_nets(circuit, drawing))
+                result = clear_ground_marks(circuit, drawing, opamp_sideways=True)
+                self.assertEqual(result.grounds, [new_ground])
+                self.assertEqual(result.ground_rotations.get(new_ground, 0), turns)
+                self.assertEqual(result.wires['0'], [(new_ground, pin)])
+                self.assertEqual(result.wires['minus'], input_wire)
+                self.assertFalse(result.crossings)
+                self.assertTrue(preserves_nets(circuit, result))
+                self.assertEqual(drawing, before)
+
+    def test_ground_bars_clear_crossing_wire_at_each_rotation(self):
+        circuit = compile_circuit('R1(1k) between(a,0);\nR2(1k) between(b,c);', render_only=True)
+        for turns in range(4):
+            with self.subTest(turns=turns):
+                def rotate(point):
+                    return rotate_point(point, (0, 0), (0, 0), turns)
+
+                first, second = circuit.components
+                ground = rotate((0, -1))
+                symbols = [(first, rotate((-4, 0)), rotate((0, 0)), '+'),
+                           (second, rotate((1, -1)), rotate((5, -1)), '+')]
+                wire = [(rotate((1, -1)), rotate((.25, -1))),
+                        (rotate((.25, -1)), rotate((.25, -2.25)))]
+                drawing = Layout(
+                    symbols=symbols, positions={part.name: a for part, a, _, _ in symbols},
+                    grounds=[ground], ground_rotations={ground: turns}, pin_grid=.25,
+                    boundary={'b': rotate((.25, -2.25))},
+                    wires={'0': [(rotate((0, 0)), ground)], 'b': wire},
+                )
+                self.assertTrue(preserves_nets(circuit, drawing))
+                self.assertTrue(any(
+                    segments_intersect(edge, stroke) for edge in wire for stroke in ground_strokes(ground, turns)
+                ))
+                before = deepcopy(drawing)
+                result = clear_ground_marks(circuit, drawing)
+                new_ground = rotate((0, -.5))
+                self.assertEqual(result.grounds, [new_ground])
+                self.assertEqual(result.ground_rotations, {new_ground: turns})
+                self.assertEqual(result.wires['b'], wire)
+                self.assertFalse(any(
+                    segments_intersect(edge, stroke) for edge in wire for stroke in ground_strokes(new_ground, turns)
+                ))
+                self.assertTrue(preserves_nets(circuit, result))
+                self.assertEqual(drawing, before)
+                self.assertIs(clear_ground_marks(circuit, result), result)
+                boundary = replace(drawing, boundary={**drawing.boundary, '0': ground})
+                self.assertIs(clear_ground_marks(circuit, boundary), boundary)
+
+    def test_tee_detour_reconnects_at_incoming_row_without_moving_ports(self):
+        source = "Rfeed(1k) between(n,d);\nRtop(1k) between(n,b);\nRbottom(1k) between(n,c);"
+        circuit = compile_circuit(source, render_only=True)
+        feed, top, bottom = circuit.components
+        symbols = [(feed, (0, 6), (-4, 6), "+"), (top, (10, 8), (10, 11), "+"),
+                   (bottom, (10, 0), (10, -3), "+")]
+        drawing = Layout(
+            symbols=symbols, positions={part.name: a for part, a, _, _ in symbols}, pin_grid=.25,
+            wires={"n": [((0, 6), (8, 6)), ((8, 6), (8, 2)), ((8, 2), (10, 2)),
+                         ((10, 0), (10, 2)), ((10, 2), (10, 8))]},
+            junctions={"n": [(10, 2)]},
+        )
+        self.assertTrue(preserves_nets(circuit, drawing))
+        before = deepcopy(drawing)
+        cleaned = reattach_tee_runs(circuit, drawing)
+        self.assertEqual(cleaned.symbols, symbols)
+        self.assertEqual(cleaned.wires["n"], [((0, 6), (10, 6)), ((10, 0), (10, 6)), ((10, 6), (10, 8))])
+        self.assertEqual(cleaned.junctions, {"n": [(10, 6)]})
+        self.assertTrue(preserves_nets(circuit, cleaned))
+        self.assertEqual(drawing, before)
+        self.assertIs(reattach_tee_runs(circuit, cleaned), cleaned)
+
+        anchored = replace(drawing, boundary={"n": (8, 2)})
+        self.assertIs(reattach_tee_runs(circuit, anchored), anchored)
+        crowded = compile_circuit(source + "\nRblock(1k) between(x,y);", render_only=True)
+        block = crowded.components[-1]
+        blocked = replace(drawing, symbols=[*symbols, (block, (9, 5), (9, 7), "+")],
+                          positions={**drawing.positions, block.name: (9, 5)})
+        self.assertTrue(preserves_nets(crowded, blocked))
+        self.assertIs(reattach_tee_runs(crowded, blocked), blocked)
+
+        # A short leg turning directly into a fixed pin can also be removed.
+        pin_symbols = [(feed, (8, 6), (4, 6), "+"), *symbols[1:]]
+        pin_jog = replace(drawing, symbols=pin_symbols,
+                          positions={**drawing.positions, feed.name: (8, 6)},
+                          wires={"n": drawing.wires["n"][1:]})
+        straight = reattach_tee_runs(circuit, pin_jog)
+        self.assertEqual(straight.symbols, pin_symbols)
+        self.assertIn(((8, 6), (10, 6)), straight.wires["n"])
+        self.assertNotIn(((8, 6), (8, 2)), straight.wires["n"])
+        self.assertTrue(preserves_nets(circuit, straight))
+
     def islands(self, count=2):
         source = 'R1(1k) between(a,n);\nR2(2k) between(n,b);'
         if count == 3:

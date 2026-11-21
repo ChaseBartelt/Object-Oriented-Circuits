@@ -2,7 +2,7 @@
   "name": "ooc-language",
   "displayName": "Object-Oriented Circuits",
   "description": "Edit, navigate, and check Object-Oriented Circuits (.ckt) files.",
-  "version": "0.8.8",
+  "version": "0.8.11",
   "publisher": "echoingfarts",
   "license": "MIT",
   "engines": { "vscode": "^1.90.0" },
@@ -45,7 +45,21 @@
       { "command": "ooc.checkForUpdates", "category": "OOC", "title": "Check for Updates" },
       { "command": "ooc.check", "category": "OOC", "title": "Check Circuit" },
       { "command": "ooc.solve", "category": "OOC", "title": "Solve Circuit" },
-      { "command": "ooc.openSchematic", "category": "OOC", "title": "Run Circuit / Open Schematic", "icon": "$(play)" }
+      { "command": "ooc.openSchematic", "category": "OOC", "title": "Run Circuit / Open Schematic", "icon": "$(play)" },
+      { "command": "ooc.toggleLineComment", "category": "OOC", "title": "Toggle Line Comment" }
+    ],
+    "keybindings": [
+      {
+        "command": "ooc.toggleLineComment",
+        "key": "ctrl+shift+3",
+        "when": "editorTextFocus && !editorReadonly && editorLangId == ooc"
+      },
+      {
+        "command": "ooc.toggleLineComment",
+        "key": "ctrl+/",
+        "mac": "cmd+/",
+        "when": "editorTextFocus && !editorReadonly && editorLangId == ooc"
+      }
     ],
     "menus": {
       "editor/title": [

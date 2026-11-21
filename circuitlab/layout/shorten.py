@@ -4,32 +4,57 @@
 # keep an explicit Optimize wiring action from becoming an unbounded background process.
 
 import math
+from collections import Counter
 from dataclasses import replace
-from itertools import product
 from statistics import median_low
 
-from circuitlab.layout.checks import mark_crossings, preserves_nets, segments_intersect
-from circuitlab.layout.editing import _symbol_bounds, move_symbol
+from circuitlab.layout.branch_alignment import stacked_alignment_candidates
+from circuitlab.layout.checks import clear_of_bodies, mark_crossings, preserves_nets
+from circuitlab.layout.editing import move_symbol
+from circuitlab.layout.geometry import rotate_point, symbol_bounds, wire_axis
 from circuitlab.layout.grid import align_layout
-from circuitlab.layout.wire_edit import route_anchors, wire_graph, replace_route, terminal_run
+from circuitlab.layout.lead_spacing import shorten_symbol_leads
+from circuitlab.layout.passive_alignment import align_passive_tees, rotate_detoured_passives, rotate_passive
+from circuitlab.layout.route_quality import crossing_count, improves_placement, layout_span, wire_length, wiring_cost
+from circuitlab.layout.tee_cleanup import reattach_tee_runs
+from circuitlab.layout.wire_edit import graph_edges, replace_route, route_anchors, route_trial, wire_graph
+from circuitlab.math.report import component_labels
 
 
-def wire_length(layout):
-    return sum(math.dist(a, b) for edges in layout.wires.values() for a, b in edges)
+def _detour(edges):
+    points = [point for edge in edges for point in edge]
+    if not points:
+        return 0
+    xs, ys = zip(*points)
+    span = (max(xs) - min(xs)) + (max(ys) - min(ys))
+    return sum(math.dist(a, b) for a, b in edges) - span + 0.4 * len(edges)
 
 
-def clear_of_bodies(edges, layout):
-    for symbol in layout.symbols:
-        a, b = _symbol_bounds(symbol, layout.rotations.get(symbol[0].name, 0), body_only=True)
-        left, right = sorted((a[0], b[0]))
-        bottom, top = sorted((a[1], b[1]))
-        borders = (((left,bottom),(right,bottom)), ((right,bottom),(right,top)),
-                   ((right,top),(left,top)), ((left,top),(left,bottom)))
-        for edge in edges:
-            if (any(left < p[0] < right and bottom < p[1] < top for p in edge)
-                    or any(segments_intersect(edge, border) for border in borders)):
-                return False
-    return True
+def _runs_between_attachments(graph, anchors):
+    """List each run once, stopping at a junction or fixed contact."""
+    stops = anchors | {point for point, neighbors in graph.items() if len(neighbors) != 2}
+    seen = set()
+    for start in sorted(stops):
+        for neighbor in sorted(graph.get(start, ())):
+            if frozenset((start, neighbor)) in seen:
+                continue
+            run = [start, neighbor]
+            seen.add(frozenset(run))
+            while run[-1] not in stops:
+                choices = graph[run[-1]] - {run[-2]}
+                if len(choices) != 1:
+                    break
+                end, = choices
+                edge = frozenset((run[-1], end))
+                if edge in seen:
+                    break
+                seen.add(edge)
+                run.append(end)
+            yield run
+
+
+def _run_detour(run):
+    return sum(math.dist(a, b) for a, b in zip(run, run[1:])) - math.dist(run[0], run[-1])
 
 
 # Remove unnecessary bends only where terminals and junction anchors remain attached.
@@ -37,45 +62,26 @@ def straighten(circuit, original, budget=24, *, simplify=False):
     drawing = original
     length = None
     attempts = 0
-    for net in list(original.wires):
+    nets = sorted(original.wires, key=lambda net: -_detour(original.wires[net]))
+    for net in nets:
         anchors = route_anchors(drawing, net)
         graph = wire_graph(drawing.wires.get(net, ()), anchors)
-        stops = anchors | {p for p, neighbors in graph.items() if len(neighbors) != 2}
-        seen = set()
-        runs = []
-        for start in sorted(stops):
-            for neighbor in sorted(graph.get(start, ())):
-                if frozenset((start, neighbor)) in seen:
-                    continue
-                run = [start, neighbor]
-                seen.add(frozenset(run))
-                while run[-1] not in stops:
-                    choices = graph[run[-1]] - {run[-2]}
-                    if len(choices) != 1:
-                        break
-                    end = next(iter(choices))
-                    edge = frozenset((run[-1], end))
-                    if edge in seen:
-                        break
-                    seen.add(edge)
-                    run.append(end)
-                runs.append(run)
-        runs.sort(key=lambda r: -(sum(math.dist(a,b) for a,b in zip(r,r[1:])) - math.dist(r[0],r[-1])))
+        runs = sorted(_runs_between_attachments(graph, anchors), key=lambda run: -_run_detour(run))
         for run in runs:
             start, end = run[0], run[-1]
             run_edges = list(zip(run, run[1:]))
             old_length = sum(math.dist(a, b) for a, b in run_edges)
-            minimum = abs(start[0]-end[0]) + abs(start[1]-end[1])
+            minimum = abs(start[0] - end[0]) + abs(start[1] - end[1])
             # Stair-step routes can have optimal length but unnecessary bends.
             # Keep deliberately diagonal leads that are shorter than Manhattan.
             if old_length < minimum - 1e-8 or (old_length <= minimum + 1e-8 and (not simplify or len(run) <= 3)):
                 continue
             remaining = None
-            for corner in ((start[0],end[1]), (end[0],start[1])):
+            for corner in ((start[0], end[1]), (end[0], start[1])):
                 if attempts >= budget:
                     return drawing
                 attempts += 1
-                edges = [(a,b) for a,b in ((start,corner),(corner,end)) if a != b]
+                edges = [(a, b) for a, b in ((start, corner), (corner, end)) if a != b]
                 if not clear_of_bodies(edges, drawing):
                     continue
                 if remaining is None:
@@ -84,11 +90,8 @@ def straighten(circuit, original, budget=24, *, simplify=False):
                     # An earlier shortcut may already have replaced part of this run.
                     if any(b not in current.get(a, ()) for a, b in run_edges):
                         break
-                    remaining = [(a,b) for a,neighbors in current.items() for b in neighbors
-                                 if a < b and frozenset((a,b)) not in removed]
-                trial = replace(drawing, wires=dict(drawing.wires),
-                                junctions={n: list(points) for n, points in drawing.junctions.items()},
-                                labels=dict(drawing.labels), crossings={})
+                    remaining = [edge for edge in graph_edges(current) if frozenset(edge) not in removed]
+                trial = route_trial(drawing)
                 replace_route(trial, net, remaining + edges)
                 mark_crossings(trial)
                 if length is None:
@@ -97,56 +100,60 @@ def straighten(circuit, original, budget=24, *, simplify=False):
                 shorter = trial_length < length - 1e-8
                 simpler = (simplify and trial_length <= length + 1e-8
                            and len(trial.wires.get(net, ())) < len(drawing.wires.get(net, ()))
-                           and sum(map(len, trial.crossings.values())) <= sum(map(len, drawing.crossings.values())))
-                if (shorter or simpler) and preserves_nets(circuit, trial):
+                           and crossing_count(trial) <= crossing_count(drawing))
+                if ((shorter or simpler) and wiring_cost(trial) < wiring_cost(drawing) - 1e-8
+                        and preserves_nets(circuit, trial)):
                     drawing = trial
                     length = trial_length
                     break
     return drawing
 
 
-def _rotate_passive(circuit, drawing, symbol, turns):
-    """Reconnect both rotated terminals together, avoiding an invalid half-turn."""
-    name = symbol[0].name
-    rotations = dict(drawing.rotations)
-    rotations[name] = (rotations.get(name, 0) + turns) % 4
-    base = replace(drawing, rotations=rotations)
-    old_pins = list(drawing.pins())
-    leads = []
-    for (net, start), (_, end) in zip(old_pins, base.pins()):
-        if start == end:
+def _rail_routes(anchors):
+    """Propose a shared horizontal or vertical trunk with straight terminal leads."""
+    for axis in (0, 1):
+        across = 1 - axis
+        coordinates = [point[across] for point in anchors]
+        lanes = dict.fromkeys((median_low(coordinates), Counter(coordinates).most_common(1)[0][0]))
+        for lane in lanes:
+            taps = [tuple(lane if i == across else point[i] for i in (0, 1)) for point in anchors]
+            first, last = min(taps), max(taps)
+            yield [(first, last), *((a, b) for a, b in zip(anchors, taps) if a != b)]
+
+
+def _share_trunks(circuit, drawing, budget=20, *, protected_nets=()):
+    """Replace a zigzagging multi-pin net with a common trunk where it fits."""
+    separated = {net for net, *_ in drawing.connectors}
+    nets = sorted(drawing.wires, key=lambda net: -_detour(drawing.wires[net]))
+    pins = tuple(drawing.pins())
+    for net in nets:
+        edges = drawing.wires[net]
+        if (net in circuit.grounds or net in separated or net in protected_nets
+                or len(edges) < 3 or ("net", net) in drawing.label_offsets):
             continue
-        anchors = route_anchors(drawing, net)
-        graph = wire_graph(drawing.wires.get(net, ()), anchors)
-        # A terminal shared with another component remains a fixed attachment.
-        fixed = anchors - {start}
-        if old_pins.count((net, start)) > 1 or start in drawing.boundary.values():
-            fixed.add(start)
-        run = terminal_run(graph, start, fixed)
-        removed = {frozenset(edge) for edge in zip(run, run[1:])}
-        remaining = [(a,b) for a,neighbors in graph.items() for b in neighbors
-                     if a < b and frozenset((a,b)) not in removed]
-        target = run[-1]
-        choices = []
-        for corner in ((end[0], target[1]), (target[0], end[1])):
-            edges = [(a,b) for a,b in ((end,corner),(corner,target)) if a != b]
-            if clear_of_bodies(edges, base) and edges not in choices:
-                choices.append(edges)
-        if not choices:
-            return None
-        leads.append((net, remaining, choices))
-    if len(leads) != 2 or leads[0][0] == leads[1][0]:
-        return None
-    best = None
-    for pair in product(*(choices for _, _, choices in leads)):
-        trial = replace(base, wires=dict(base.wires), labels=dict(base.labels),
-                        junctions={n: list(points) for n, points in base.junctions.items()}, crossings={})
-        for (net, remaining, _), edges in zip(leads, pair):
-            replace_route(trial, net, remaining + edges)
-        mark_crossings(trial)
-        if preserves_nets(circuit, trial) and (best is None or wire_length(trial) < wire_length(best)):
-            best = trial
-    return best
+        anchors = sorted(route_anchors(drawing, net, pins))
+        if len(anchors) < 3:
+            continue
+        best = drawing
+        previous_length = sum(math.dist(a, b) for a, b in edges)
+        for route in _rail_routes(anchors):
+            if sum(math.dist(a, b) for a, b in route) > previous_length + 1e-8:
+                continue
+            if budget <= 0:
+                return best
+            budget -= 1
+            if not clear_of_bodies(route, drawing):
+                continue
+            trial = route_trial(drawing)
+            replace_route(trial, net, route)
+            if net in drawing.labels:
+                trunk = max(trial.wires[net], key=lambda edge: (wire_axis(edge) == 0, math.dist(*edge)))
+                trial.labels[net] = tuple((a + b) / 2 for a, b in zip(*trunk))
+            mark_crossings(trial)
+            if wiring_cost(trial) < wiring_cost(best) - 1e-8 and preserves_nets(circuit, trial):
+                best = trial
+        drawing = best
+    return drawing
 
 
 def _move_candidates(drawing, symbol, grid):
@@ -168,45 +175,6 @@ def _move_candidates(drawing, symbol, grid):
         if delta not in seen:
             seen.add(delta)
             yield delta
-
-
-def _span(layout):
-    points = [point for symbol in layout.symbols
-              for point in _symbol_bounds(symbol, layout.rotations.get(symbol[0].name, 0))]
-    points += [point for edges in layout.wires.values() for edge in edges for point in edge]
-    return sum(max(p[axis] for p in points) - min(p[axis] for p in points) for axis in (0, 1)) if points else 0
-
-
-def _improves(circuit, before, after, *, moved=None, grid=0, compact=False):
-    change = wire_length(after) - wire_length(before)
-    if change >= -1e-8 and not (compact and change <= 1e-8 and _span(after) < _span(before) - 1e-8):
-        return False
-    old_edges = {frozenset(edge) for edges in before.wires.values() for edge in edges}
-    changed = [edge for edges in after.wires.values() for edge in edges
-               if frozenset(edge) not in old_edges]
-    grid = grid or before.pin_grid
-    if grid and any(abs(v / grid - round(v / grid)) > 1e-6
-                    for edge in changed for point in edge for v in point):
-        return False
-    if compact:
-        # Whole groups move, so also check unchanged wires and standalone ports
-        # against their new bodies, not only the coordinates that were rewritten.
-        changed = [edge for edges in after.wires.values() for edge in edges]
-        changed += [(pin, pin) for _, pin in after.pins()]
-        changed += [(p, p) for p in after.grounds + list(after.boundary.values())]
-        changed += [(p, p) for _, p, *_ in after.connectors]
-    if not clear_of_bodies(changed, after):
-        return False
-    if moved is not None:
-        # Moving a body must not cover an existing wire or an unattached pin.
-        body = replace(after, symbols=[moved])
-        edges = [edge for edges in after.wires.values() for edge in edges]
-        edges += [(pin, pin) for _, pin in after.pins()]
-        edges += [(p, p) for p in after.grounds + list(after.boundary.values())]
-        edges += [(p, p) for _, p, *_ in after.connectors]
-        if not clear_of_bodies(edges, body):
-            return False
-    return preserves_nets(circuit, after)
 
 
 def _close_gap(layout, axis, low, high, amount, grid):
@@ -259,17 +227,35 @@ def _close_gap(layout, axis, low, high, amount, grid):
     return result
 
 
+def _occupied_intervals(drawing, axis, captions):
+    for symbol in drawing.symbols:
+        part, start, end, _ = symbol
+        turns = drawing.rotations.get(part.name, 0)
+        a, b = symbol_bounds(symbol, turns)
+        low, high = sorted((a[axis], b[axis]))
+        if captions and part.kind != "H":
+            x, y = ((v + w) / 2 for v, w in zip(start, end))
+            lines = captions[part.name]
+            name_width = len(lines[0]) if len(lines[0]) <= 24 else 6
+            width = .18 * max(name_width, *(len(line) for line in lines[1:]), 0)
+            height = .36 * len(lines)
+            axis_of_symbol = wire_axis(tuple(rotate_point(p, start, end, turns) for p in (start, end)))
+            if axis == 0:
+                caption_low, caption_high = (x - .62 - width, x) if axis_of_symbol == 1 else (x - width / 2, x + width / 2)
+            else:
+                caption_low, caption_high = (y - height / 2, y + height / 2) if axis_of_symbol == 1 else (y, y + .65 + height)
+            low, high = min(low, caption_low), max(high, caption_high)
+        yield low, high
+
+
 # Close empty space between groups without resizing parts or changing their relative order.
-def compact_spacing(circuit, drawing, *, budget=36, grid=.25, grid_safe=False):
+def compact_spacing(circuit, drawing, *, budget=36, grid=.25, grid_safe=False, reserve_captions=False):
     """Close empty rows/columns together without resizing or reordering parts."""
     if len(drawing.symbols) < 2:
         return drawing
+    captions = component_labels(circuit) if reserve_captions else None
     for axis in (0, 1):
-        intervals = sorted(
-            (min(a[axis], b[axis]), max(a[axis], b[axis]))
-            for symbol in drawing.symbols
-            for a, b in [_symbol_bounds(symbol, drawing.rotations.get(symbol[0].name, 0))]
-        )
+        intervals = sorted(_occupied_intervals(drawing, axis, captions))
         gaps = []
         end = intervals[0][1]
         for low, high in intervals[1:]:
@@ -286,7 +272,7 @@ def compact_spacing(circuit, drawing, *, budget=36, grid=.25, grid_safe=False):
                     break
                 attempts += 1
                 trial = _close_gap(drawing, axis, low, high, amount, drawing.pin_grid)
-                if trial is not None and _improves(circuit, drawing, trial, grid=drawing.pin_grid, compact=True):
+                if trial is not None and improves_placement(circuit, drawing, trial, grid=drawing.pin_grid, compact=True):
                     if grid_safe and not trial.pin_grid and align_layout(circuit, trial) is None:
                         continue
                     drawing = trial
@@ -294,9 +280,9 @@ def compact_spacing(circuit, drawing, *, budget=36, grid=.25, grid_safe=False):
     return drawing
 
 
-def reposition(circuit, drawing, *, budget=36, grid=0.25):
+def reposition(circuit, drawing, *, budget=36, grid=0.25, fixed_parts=()):
     """Try a bounded set of local moves, keeping only shorter valid drawings."""
-    names = sorted(drawing.symbols, key=lambda s: -sum(
+    names = sorted((symbol for symbol in drawing.symbols if symbol[0].name not in fixed_parts), key=lambda s: -sum(
         math.dist(a, b) for net in set(s[0].terminal_nets)
         for a, b in drawing.wires.get(net, ())))
     attempts = 0
@@ -312,40 +298,94 @@ def reposition(circuit, drawing, *, budget=36, grid=0.25):
                 continue
             trial = straighten(circuit, trial, budget=8, simplify=True)
             moved = next(s for s in trial.symbols if s[0].name == symbol[0].name)
-            if _improves(circuit, best, trial, moved=moved, grid=grid):
+            if improves_placement(circuit, best, trial, moved=moved, grid=grid):
                 best = trial
         drawing = best
     return drawing
 
 
-# Treat optimization as an explicit transaction with deterministic, bounded proposals.
-# Every accepted change must preserve nets so the caller can safely offer a single undo.
-def optimize_layout(circuit, original, *, flip_budget=4, move_parts=False, grid=0.25):
-    """Keep all edits optional, deterministic, bounded and electrically checked."""
-    drawing = straighten(circuit, original, simplify=move_parts)
-    if move_parts:
-        compacted = compact_spacing(circuit, drawing, grid=grid)
-        if len(drawing.symbols) > 12 and _span(compacted) < .9 * _span(drawing):
-            # A large group move already supplies the useful improvement; keep
-            # the synchronous viewer action out of a full per-part search.
-            return reposition(circuit, compacted, budget=8, grid=grid)
-        drawing = compacted
-    # Try the most heavily wired passive components first. Sources and devices
-    # with directional behavior are never flipped by this pass.
-    candidates = sorted((s for s in drawing.symbols if s[0].kind in {'R','C','L','X','K'}),
-        key=lambda s: -sum(math.dist(a,b) for net in s[0].terminal_nets for a,b in drawing.wires.get(net, ())))
-    for symbol in candidates[:flip_budget]:
+def _align_stacks(circuit, drawing, *, budget=8, grid=0.25):
+    trial = min(stacked_alignment_candidates(circuit, drawing, budget=budget, grid=grid),
+                key=lambda candidate: wiring_cost(candidate[0]), default=None)
+    return trial if trial is not None else (drawing, frozenset())
+
+
+def refine_automatic_layout(circuit, drawing):
+    """Try short, grid-safe placement changes on a freshly routed drawing."""
+    size = len(drawing.symbols)
+    grid = drawing.pin_grid
+    if not grid:
+        return drawing
+    stack_parts = frozenset()
+    if size <= 64:
+        drawing, stack_parts = _align_stacks(circuit, drawing, budget=3, grid=grid)
+        drawing = align_passive_tees(circuit, drawing, budget=4, fixed_parts=stack_parts)
+    drawing = shorten_symbol_leads(circuit, drawing)
+    if size > 48:
+        return drawing
+
+    if not drawing.boundary:
+        drawing = rotate_detoured_passives(circuit, drawing, grid=grid, fixed_parts=stack_parts)
+    drawing = straighten(circuit, drawing, budget=12, simplify=True)
+    drawing = reattach_tee_runs(circuit, drawing, budget=8)
+    drawing, aligned_parts = _align_stacks(circuit, drawing, budget=3, grid=grid)
+    stack_parts |= aligned_parts
+
+    candidate = compact_spacing(
+        circuit, drawing, budget=8 if size <= 32 else 12, grid=grid, reserve_captions=True,
+    )
+    if 8 < size <= 32:
+        candidate = reposition(circuit, candidate, budget=8, grid=grid, fixed_parts=stack_parts)
+        if not candidate.boundary and candidate.uses_packages:
+            candidate = rotate_detoured_passives(
+                circuit, candidate, budget=12, grid=grid, fixed_parts=stack_parts,
+            )
+    return candidate if crossing_count(candidate) <= crossing_count(drawing) else drawing
+
+
+def _reorient_passives(circuit, drawing, budget, *, move_parts=False, fixed_parts=()):
+    """Try the most heavily wired passive components first."""
+    def connected_length(symbol):
+        return sum(math.dist(a, b) for net in symbol[0].terminal_nets for a, b in drawing.wires.get(net, ()))
+
+    candidates = (symbol for symbol in drawing.symbols
+                  if symbol[0].name not in fixed_parts and symbol[0].kind in {"R", "C", "L", "X", "K"})
+    rotations = (2, 1, 3) if move_parts else (2,)
+    for symbol in sorted(candidates, key=lambda symbol: -connected_length(symbol))[:budget]:
         best = drawing
-        # The explicit Optimize action can also align vertical passives with
-        # horizontal signal flow (and vice versa). Initial render stays bounded.
-        for turns in ((2, 1, 3) if move_parts else (2,)):
-            trial = _rotate_passive(circuit, drawing, symbol, turns)
+        for turns in rotations:
+            trial = rotate_passive(circuit, drawing, symbol, turns)
             if trial is None:
-                trial = move_symbol(circuit, drawing, symbol[0].name, (0,0), rotate=turns)
+                trial = move_symbol(circuit, drawing, symbol[0].name, (0, 0), rotate=turns)
             if trial is None:
                 continue
             trial = straighten(circuit, trial, budget=8, simplify=move_parts)
-            if _improves(circuit, best, trial, moved=symbol if turns % 2 else None):
+            if improves_placement(circuit, best, trial, moved=symbol if turns % 2 else None):
                 best = trial
         drawing = best
-    return reposition(circuit, drawing, grid=grid) if move_parts else drawing
+    return drawing
+
+
+def optimize_layout(circuit, original, *, flip_budget=None, move_parts=False, grid=0.25):
+    """Run bounded wiring edits that the viewer can commit as a single undo step."""
+    if not move_parts:
+        budget = 4 if flip_budget is None else flip_budget
+        return _reorient_passives(circuit, straighten(circuit, original), budget)
+
+    drawing = shorten_symbol_leads(circuit, original, overlaps_only=True)
+    drawing = straighten(circuit, drawing, simplify=True)
+    drawing, stack_parts = _align_stacks(circuit, drawing, grid=grid)
+    protected_nets = {net for part, *_ in drawing.symbols if part.name in stack_parts for net in part.terminal_nets}
+    drawing = _share_trunks(circuit, drawing, protected_nets=protected_nets)
+    compacted = compact_spacing(circuit, drawing, grid=grid, reserve_captions=True)
+    compact_enough = len(drawing.symbols) > 12 and layout_span(compacted) < .9 * layout_span(drawing)
+    move_budget = 8 if compact_enough else 36
+    if flip_budget is None:
+        flip_budget = max(4, min(8, len(compacted.symbols) // 3))
+
+    drawing = _reorient_passives(circuit, compacted, flip_budget, move_parts=True, fixed_parts=stack_parts)
+    drawing = reposition(circuit, drawing, budget=move_budget, grid=grid, fixed_parts=stack_parts)
+    drawing = align_passive_tees(circuit, drawing, fixed_parts=stack_parts)
+    drawing = rotate_detoured_passives(circuit, drawing, grid=grid, fixed_parts=stack_parts)
+    drawing = _align_stacks(circuit, drawing, grid=grid)[0]
+    return reattach_tee_runs(circuit, drawing)

@@ -24,13 +24,16 @@ from PySide6.QtWidgets import QApplication, QPushButton, QToolTip
 
 from circuitlab.layout.gates import GateLayouts, default_gate_layout, gate_preview
 from circuitlab.viewer.legacy import GateLayoutDialog, MainWindow
-from circuitlab.layout.geometry import symbol_pins
+from circuitlab.layout.geometry import rotate_point, symbol_pins
+from circuitlab.layout.grid import align_layout
 from circuitlab.layout.checks import preserves_nets
-from circuitlab.layout.persistence import pack_layout, placement_path, strip_placement, layout_payload
+from circuitlab.layout.persistence import (
+    layout_payload, pack_layout, placement_path, read_placement, restore_layout, strip_placement,
+)
 from circuitlab.math.report import component_labels
 from circuitlab.layout.checks import mark_crossings as _mark_crossings
 from circuitlab.layout.routing import fast_layout
-from circuitlab.layout.editing import move_ground, move_symbol
+from circuitlab.layout.editing import move_ground, move_symbol, move_symbols, move_wire
 from circuitlab.viewer.schematic import SCALE, point
 from circuitlab.viewer.snapping import grid_step, snap_radius
 from circuitlab.exporters.spice import export_spice
@@ -434,8 +437,14 @@ main { nand(supply, 0, input_a, input_b, out); }
 
         def drag(name, start, dx, dy):
             before = schematic.layout.positions[name]
-            end = start + QPoint(round(dx * schematic.transform().m11() * SCALE),
-                                 round(dy * schematic.transform().m11() * SCALE))
+            circuit = schematic.levels[None, "auto"]
+            shifts = ((dx, -dy), (0, 3), (0, -3), (-3, 0), (3, 0), (-1, 0), (0, -1))
+            shift = next((move for move in shifts if move_symbol(
+                circuit, schematic.layout, name, move,
+            ) is not None), None)
+            self.assertIsNotNone(shift)
+            scale = schematic.transform().m11() * SCALE
+            end = start + QPoint(round(shift[0] * scale), round(-shift[1] * scale))
             QTest.mousePress(schematic.viewport(), Qt.MouseButton.LeftButton, pos=start)
             QTest.mouseMove(schematic.viewport(), end)
             self.wait_for_drag_preview(schematic, end)
@@ -477,10 +486,19 @@ main { nand(supply, 0, input_a, input_b, out); }
             QTest.mouseClick(viewport, Qt.MouseButton.LeftButton, ctrl, center(name))
         self.assertEqual(schematic.selected_symbols, {"RA", chip})
         self.assertFalse(schematic.expanded)
-        self.assertEqual(len(schematic.selection_items), 2)
+        outline, = schematic.selection_items
+        for name in ("RA", chip):
+            self.assertTrue(outline.rect().contains(schematic.mapToScene(center(name))))
 
         start = center(chip)
-        end = start + QPoint(0, round(3 * schematic.transform().m11() * SCALE))
+        circuit = schematic.levels[None, "auto"]
+        shifts = ((0, -3), (0, 3), (3, 0), (-3, 0), (0, -1), (0, 1))
+        shift = next((move for move in shifts if move_symbols(
+            circuit, original, schematic.selected_symbols, move,
+        ) is not None), None)
+        self.assertIsNotNone(shift)
+        scale = schematic.transform().m11() * SCALE
+        end = start + QPoint(round(shift[0] * scale), round(-shift[1] * scale))
         QTest.mousePress(viewport, Qt.MouseButton.LeftButton, ctrl, start)
         QTest.mouseMove(viewport, end)
         self.wait_for_drag_preview(schematic, end)
@@ -574,15 +592,17 @@ main { nand(supply, 0, input_a, input_b, out); }
 
     def test_ground_drag_snaps_directly_below_its_source_pin(self):
         win = self.window
-        win.open_path(FIXTURES / "refactor" / "timer555.ckt")
+        win.open_path(FIXTURES / "voltage_divider.ckt")
         schematic = win.schematic
         key = None, "auto"
         original, circuit = schematic.layout, schematic.levels[key]
-        ground = original.grounds[1]
-        pin = next(b for part, _, b, _ in original.symbols if part.name == "VReset")
-        schematic.manual_layouts[key] = move_ground(circuit, original, ground, (0.5, -0.28))
+        pin = next(b for part, _, b, _ in original.symbols if part.kind == "V")
+        index, ground = min(enumerate(original.grounds), key=lambda entry: dist(entry[1], pin))
+        offset = move_ground(circuit, original, ground, (-0.5, -0.28))
+        self.assertIsNotNone(offset)
+        schematic.manual_layouts[key] = offset
         schematic.redraw(schematic.saved_pins)
-        x, y = schematic.layout.grounds[1]
+        x, y = schematic.layout.grounds[index]
         start = schematic.mapFromScene(point((x, y - 0.42)))
         end = start + QPoint(round((pin[0] - x) * schematic.transform().m11() * SCALE) + 1, 12)
 
@@ -590,7 +610,7 @@ main { nand(supply, 0, input_a, input_b, out); }
         QTest.mouseMove(schematic.viewport(), end)
         self.wait_for_drag_preview(schematic, end)
         preview = schematic.layout
-        moved = preview.grounds[1]
+        moved = preview.grounds[index]
         self.assertEqual(moved[0], pin[0])
         self.assertIn(tuple(sorted((moved, pin))), preview.wires["0"])
         QTest.mouseRelease(schematic.viewport(), Qt.MouseButton.LeftButton, pos=end)
@@ -648,7 +668,9 @@ main { nand(supply, 0, input_a, input_b, out); }
         schematic = win.schematic
         original = schematic.layout
         x, y = original.grounds[-1]
-        cursor = schematic.mapFromScene(point((x, y - 0.42)))
+        end = (x, y)
+        initial = original.ground_rotations.get(end, 0)
+        cursor = schematic.mapFromScene(point(rotate_point((x, y - 0.42), end, end, initial)))
         event = QContextMenuEvent(
             QContextMenuEvent.Reason.Mouse, cursor, schematic.viewport().mapToGlobal(cursor)
         )
@@ -657,13 +679,16 @@ main { nand(supply, 0, input_a, input_b, out); }
             actions = dict(call.args for call in menu.return_value.addAction.call_args_list)
             self.assertEqual(list(actions)[:2], ["Rotate clockwise", "Rotate counterclockwise"])
             actions["Rotate counterclockwise"]()
-            self.assertEqual(schematic.layout.ground_rotations[(x, y)], 3)
+            self.assertEqual(schematic.layout.ground_rotations.get(end, 0), (initial - 1) % 4)
             schematic.undo_placement()
             actions["Rotate clockwise"]()
-        self.assertEqual(schematic.layout.ground_rotations[(x, y)], 1)
+        self.assertEqual(schematic.layout.ground_rotations.get(end, 0), (initial + 1) % 4)
         a, b = next(edge for edge in original.wires["0"] if (x, y) in edge)
         pin = a if b == (x, y) else b
-        start = schematic.mapFromScene(point((x - 0.42, y)))
+        facing = 1 if x < pin[0] else 3
+        if (initial + 1) % 4 != facing:
+            schematic.rotate_ground((None, "auto"), end, direction=facing - (initial + 1) % 4)
+        start = schematic.mapFromScene(point(rotate_point((x, y - 0.42), end, end, facing)))
         end = start + schematic.mapFromScene(point(pin)) - schematic.mapFromScene(point((x, y)))
         QTest.mousePress(schematic.viewport(), Qt.MouseButton.LeftButton, pos=start)
         self.assertEqual(schematic.drag.kind, "ground")
@@ -671,7 +696,7 @@ main { nand(supply, 0, input_a, input_b, out); }
         layout = schematic.layout
         self.assertAlmostEqual(layout.grounds[-1][0], pin[0])
         self.assertAlmostEqual(layout.grounds[-1][1], pin[1])
-        self.assertEqual(layout.ground_rotations[layout.grounds[-1]], 1)
+        self.assertEqual(layout.ground_rotations[layout.grounds[-1]], facing)
         self.assertEqual(len(layout.wires["0"]), len(original.wires["0"]) - 1)
         self.assertTrue(preserves_nets(schematic.levels[None, "auto"], layout))
 
@@ -827,16 +852,32 @@ main { nand(supply, 0, input_a, input_b, out); }
             self.assertEqual(Path(win.file_model.rootPath()), second)
             self.assertEqual(win.editor_tabs.count(), 1)
 
-    def test_bjt_oscillator_runs_and_pauses_in_results(self):
+    def test_bjt_oscillator_runs_and_pauses_in_scope_sidebar(self):
         win = self.window
         win.open_path(FIXTURES / "bjt_oscillator.ckt")
-        win.views.setCurrentWidget(win.results)
         scope = win.scope
+        self.app.processEvents()
+        self.assertTrue(win.schematic.isVisible())
+        self.assertFalse(scope.isVisible())
+        full_width = win.schematic.width()
+        win.scope_toggle.click()
+        self.app.processEvents()
+        self.assertTrue(win.schematic.isVisible())
+        self.assertTrue(scope.isVisible())
+        self.assertLess(win.schematic.width(), full_width)
         scope.node.setCurrentText("c1")
         scope.initial.setCurrentText("C1")
         scope.voltage.setValue(1)
         scope.run.click()
         self.assertEqual(scope.run.text(), "Pause")
+        simulation = scope.simulation
+        win.scope_toggle.click()
+        self.app.processEvents()
+        self.assertFalse(scope.isVisible())
+        self.assertEqual(win.schematic.width(), full_width)
+        self.assertTrue(scope.timer.isActive())
+        win.scope_toggle.click()
+        self.assertIs(scope.simulation, simulation)
         for _ in range(35):
             scope.pending[1].result(timeout=5)
             scope.advance()
@@ -951,10 +992,16 @@ main { nand(supply, 0, input_a, input_b, out); }
 
     def test_resistor_drag_snaps_its_pin_level_with_a_branched_wire(self):
         win = self.window
-        win.open_path(FIXTURES / "refactor" / "timer555.ckt")
+        fixture = FIXTURES / "refactor" / "timer555.ckt"
+        win.open_path(fixture)
         schematic = win.schematic
         key = None, "auto"
-        circuit, original = schematic.levels[key], schematic.layout
+        circuit = schematic.levels[key]
+        mode, records = read_placement(fixture)
+        original = restore_layout(records[None, mode], circuit, ())
+        self.assertIsNotNone(original)
+        original = align_layout(circuit, original)
+        self.assertIsNotNone(original)
         left, right, discharge = (pin for net, pin in original.pins() if net == "discharge")
         tee = ((left[0] + right[0]) / 2, left[1])
         bend = tee[0], discharge[1]
@@ -972,7 +1019,9 @@ main { nand(supply, 0, input_a, input_b, out); }
 
         for shift in (0.38, -0.38):
             with self.subTest(shift=shift):
-                schematic.manual_layouts[key] = move_symbol(circuit, straight, "RB", (0, shift))
+                moved = move_symbol(circuit, straight, "RB", (0, shift))
+                self.assertIsNotNone(moved)
+                schematic.manual_layouts[key] = moved
                 schematic.redraw(schematic.saved_pins)
                 _, a, b, _ = next(
                     symbol for symbol in schematic.layout.symbols if symbol[0].name == "RB"
@@ -997,22 +1046,35 @@ main { nand(supply, 0, input_a, input_b, out); }
 
     def test_wire_drag_previews_a_perpendicular_slide_without_editing_source(self):
         win = self.window
-        win.open_path(FIXTURES / "refactor" / "timer555.ckt")
+        fixture = FIXTURES / "refactor" / "timer555.ckt"
+        win.open_path(fixture)
         schematic = win.schematic
         source = win.editor.toPlainText()
-        original = schematic.layout
+        circuit = schematic.levels[None, "auto"]
+        mode, records = read_placement(fixture)
+        original = restore_layout(records[None, mode], circuit, ())
+        self.assertIsNotNone(original)
+        original = align_layout(circuit, original)
+        self.assertIsNotNone(original)
+        schematic.draw(schematic.circuit, layout=original)
 
         for vertical in (False, True):
             with self.subTest(vertical=vertical):
                 schematic.reset_placement()
-                a, b = max(
+                circuit = schematic.levels[None, "auto"]
+                edges = sorted(
                     ((a, b) for a, b in original.wires["supply"]
                      if (a[0] == b[0]) == vertical),
                     key=lambda edge: abs(edge[1][int(vertical)] - edge[0][int(vertical)]),
+                    reverse=True,
                 )
+                move = next(((edge, delta) for edge in edges for delta in (0.5, -0.5)
+                             if move_wire(circuit, original, "supply", edge, delta)[0] is not None), None)
+                self.assertIsNotNone(move)
+                (a, b), delta = move
                 middle = ((a[0] + b[0]) / 2, (a[1] + b[1]) / 2)
                 start = schematic.mapFromScene(point(middle))
-                scale = round(0.5 * schematic.transform().m11() * SCALE)
+                scale = round(delta * schematic.transform().m11() * SCALE)
                 end = start + QPoint(scale if vertical else 0, 0 if vertical else -scale)
                 QTest.mousePress(schematic.viewport(), Qt.MouseButton.LeftButton, pos=start)
                 self.assertEqual(schematic.drag.kind, "wire")
@@ -1024,7 +1086,7 @@ main { nand(supply, 0, input_a, input_b, out); }
                 self.assertNotEqual(preview.wires["supply"], original.wires["supply"])
                 axis = 0 if vertical else 1
                 self.assertTrue(any(
-                    p[axis] == q[axis] and 0.35 < p[axis] - a[axis] < 0.65
+                    p[axis] == q[axis] and abs(p[axis] - a[axis] - delta) < 0.15
                     for p, q in preview.wires["supply"]
                 ))
                 QTest.mouseRelease(schematic.viewport(), Qt.MouseButton.LeftButton, pos=end)
@@ -1035,14 +1097,18 @@ main { nand(supply, 0, input_a, input_b, out); }
 
     def test_shift_drag_can_use_shorter_diagonal_leads(self):
         win = self.window
-        win.open_path(FIXTURES / "refactor" / "timer555.ckt")
+        fixture = FIXTURES / "refactor" / "timer555.ckt"
+        win.open_path(fixture)
         schematic = win.schematic
-        original = schematic.layout
+        mode, records = read_placement(fixture)
+        original = restore_layout(records[None, mode], schematic.levels[None, "auto"], ())
+        self.assertIsNotNone(original)
+        schematic.draw(schematic.circuit, layout=original)
         _, a, b, _ = next(symbol for symbol in original.symbols if symbol[0].name == "RA")
         middle = point(((a[0] + b[0]) / 2, (a[1] + b[1]) / 2))
         start = schematic.mapFromScene(middle)
         scale = round(schematic.transform().m11() * SCALE)
-        end = start + QPoint(2 * scale, -scale)
+        end = start + QPoint(scale, -scale)
         shift = Qt.KeyboardModifier.ShiftModifier
         QTest.mousePress(schematic.viewport(), Qt.MouseButton.LeftButton, shift, start)
         QTest.mouseRelease(schematic.viewport(), Qt.MouseButton.LeftButton, shift, end)
@@ -1056,14 +1122,19 @@ main { nand(supply, 0, input_a, input_b, out); }
 
     def test_move_toward_a_wire_bend_shortens_the_route(self):
         win = self.window
-        win.open_path(FIXTURES / "refactor" / "timer555.ckt")
+        fixture = FIXTURES / "refactor" / "timer555.ckt"
+        win.open_path(fixture)
         schematic = win.schematic
-        original = schematic.layout
+        mode, records = read_placement(fixture)
+        circuit = schematic.levels[None, "auto"]
+        original = restore_layout(records[None, mode], circuit, ())
+        self.assertIsNotNone(original)
+        schematic.draw(schematic.circuit, layout=original)
         _, a, b, _ = next(symbol for symbol in original.symbols if symbol[0].name == "RA")
         middle = point(((a[0] + b[0]) / 2, (a[1] + b[1]) / 2))
         start = schematic.mapFromScene(middle)
         scale = round(schematic.transform().m11() * SCALE)
-        end = start + QPoint(0, 3 * scale)
+        end = start + QPoint(scale, 0)
         QTest.mousePress(schematic.viewport(), Qt.MouseButton.LeftButton, pos=start)
         QTest.mouseRelease(schematic.viewport(), Qt.MouseButton.LeftButton, pos=end)
         self.assertLess(
@@ -1077,6 +1148,7 @@ main { nand(supply, 0, input_a, input_b, out); }
         schematic = win.schematic
         source = win.editor.toPlainText()
         original = schematic.layout
+        turns = original.rotations.get("RA", 0)
         _, a, b, _ = next(symbol for symbol in original.symbols if symbol[0].name == "RA")
         pos = schematic.mapFromScene(point(((a[0] + b[0]) / 2, (a[1] + b[1]) / 2)))
         menu_event = QContextMenuEvent(
@@ -1087,11 +1159,11 @@ main { nand(supply, 0, input_a, input_b, out); }
             actions = dict(call.args for call in menu.return_value.addAction.call_args_list)
             self.assertEqual(list(actions), ["Edit value…", "Rotate clockwise", "Rotate counterclockwise", "Optimize wiring"])
             actions["Rotate counterclockwise"]()
-            self.assertEqual(schematic.layout.rotations["RA"], 3)
+            self.assertEqual(schematic.layout.rotations.get("RA", 0), (turns - 1) % 4)
             self.assertTrue(preserves_nets(schematic.levels[None, "auto"], schematic.layout))
             schematic.undo_placement()
             actions["Rotate clockwise"]()
-        self.assertEqual(schematic.layout.rotations["RA"], 1)
+        self.assertEqual(schematic.layout.rotations.get("RA", 0), (turns + 1) % 4)
         self.assertTrue(preserves_nets(schematic.levels[None, "auto"], schematic.layout))
         self.assertEqual(win.editor.toPlainText(), source)
         self.assertFalse(win.editor.document().isModified())

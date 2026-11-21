@@ -53,6 +53,7 @@
         "0": { "name": "punctuation.section.group.end.ooc" }
       },
       "patterns": [
+        { "include": "#comments" },
         { "include": "#wire-count-reference" },
         { "include": "#wire-count-group" },
         { "include": "#strings" },
@@ -71,6 +72,7 @@
       "begin": "\\(",
       "end": "\\)|(?=#)|$",
       "patterns": [
+        { "include": "#comments" },
         { "include": "#wire-count-reference" },
         { "include": "#wire-count-group" },
         { "include": "#strings" },
@@ -96,18 +98,41 @@
       }
     },
     "comments": {
-      "name": "comment.line.number-sign.ooc",
-      "begin": "#",
-      "beginCaptures": {
-        "0": { "name": "punctuation.definition.comment.ooc" }
-      },
-      "end": "$",
       "patterns": [
         {
-          "name": "storage.type.annotation.ooc",
-          "match": "(?<![A-Za-z0-9_])@(?:param|pin)\\b"
+          "name": "comment.line.number-sign.ooc",
+          "begin": "#",
+          "beginCaptures": {
+            "0": { "name": "punctuation.definition.comment.ooc" }
+          },
+          "end": "$",
+          "patterns": [{ "include": "#doc-annotation" }]
+        },
+        {
+          "name": "comment.line.double-slash.ooc",
+          "begin": "//",
+          "beginCaptures": {
+            "0": { "name": "punctuation.definition.comment.ooc" }
+          },
+          "end": "$",
+          "patterns": [{ "include": "#doc-annotation" }]
+        },
+        {
+          "name": "comment.block.ooc",
+          "begin": "/\\*",
+          "end": "\\*/",
+          "beginCaptures": {
+            "0": { "name": "punctuation.definition.comment.ooc" }
+          },
+          "endCaptures": {
+            "0": { "name": "punctuation.definition.comment.ooc" }
+          }
         }
       ]
+    },
+    "doc-annotation": {
+      "name": "storage.type.annotation.ooc",
+      "match": "(?<![A-Za-z0-9_])@(?:param|pin)\\b"
     },
     "strings": {
       "name": "string.quoted.double.ooc",
@@ -115,10 +140,13 @@
       "beginCaptures": {
         "0": { "name": "punctuation.definition.string.begin.ooc" }
       },
-      "end": "\"|(?=#)|$",
+      "end": "\"|$",
       "endCaptures": {
         "0": { "name": "punctuation.definition.string.end.ooc" }
-      }
+      },
+      "patterns": [
+        { "name": "constant.character.escape.ooc", "match": "\\\\." }
+      ]
     },
     "interpolation": {
       "name": "meta.interpolation.ooc",
@@ -184,6 +212,7 @@
             "3": { "name": "keyword.other.property.ooc" },
             "4": {
               "patterns": [
+                { "include": "#comments" },
                 {
                   "name": "support.function.ooc",
                   "match": "(?i)\\b(?:op[0-9]+|oocCollectorComparator)\\b"
@@ -328,6 +357,7 @@
     },
     "expression": {
       "patterns": [
+        { "include": "#comments" },
         { "include": "#strings" },
         {
           "begin": "\\(",

@@ -11,7 +11,7 @@ from uuid import uuid4
 
 from PySide6.QtCore import QTimer, QSignalBlocker, QEventLoop
 from PySide6.QtGui import QTextCursor
-from PySide6.QtWidgets import QHBoxLayout, QInputDialog, QMessageBox
+from PySide6.QtWidgets import QInputDialog, QMessageBox
 
 from circuitlab.layout.persistence import pack_layout, embed_placement, strip_placement, layout_payload
 from circuitlab.tooling.source_edits import SourceEdit, edit_switch, edit_value, source_target
@@ -29,7 +29,7 @@ class SourceUndo:
 
 
 class SourceTools:
-    def __init__(self, window, canvas):
+    def __init__(self, window, controls):
         self.window = window
         self.view = window.schematic
         self.sender = None
@@ -49,9 +49,8 @@ class SourceTools:
         self.position_timer.setInterval(80)
         self.position_timer.timeout.connect(self.preview_position)
         self.view.undo_handler = self.undo
-        # Include the editing toolbar, which often keeps focus after a dialog.
-        # The legacy text editor is outside this page and keeps its own undo.
-        self.view.undo_shortcut.setParent(canvas.parentWidget() if hasattr(window, 'editor') else window)
+        # Include the editing toolbar while keeping the legacy text editor's own undo.
+        self.view.undo_shortcut.setParent(window.views if hasattr(window, 'editor') else window)
         self.view.history_cleared.connect(self.source_changed)
         self.timeout = QTimer(window)
         self.timeout.setSingleShot(True)
@@ -63,13 +62,10 @@ class SourceTools:
         self.view.switch_requested.connect(self.toggle_switch)
         self.view.position_changed.connect(self.adjust_position)
         self.view.optimization_finished.connect(lambda message: window.status.setText(message))
-        row = QHBoxLayout()
-        row.addStretch()
-        optimize = button('Optimize wiring', self.view.optimize_wiring, row)
-        optimize.setToolTip('Shorten routes and reposition parts while preserving connections. Ctrl+Z undoes it.')
-        undo = button('Undo', self.undo, row)
+        undo = button('Undo', self.undo, controls)
         undo.setToolTip('Undo the last component edit or layout move (Ctrl+Z).')
-        canvas.addLayout(row)
+        optimize = button('Optimize wiring', self.view.optimize_wiring, controls)
+        optimize.setToolTip('Shorten routes and reposition parts while preserving connections. Ctrl+Z undoes it.')
 
     # Resolve the active circuit, root document, current text, and include reader together.
     # Every proposed edit must refer to this same accepted document revision.
@@ -152,7 +148,7 @@ class SourceTools:
 
     def preview_scope(self, circuit):
         if self.window.scope.circuit is not circuit:
-            self.window.scope.set_circuit(circuit, preserve_state=True)
+            self.window.scope_sidebar.set_circuit(circuit, preserve_state=True)
 
     def cancel_position(self, *, restore=True):
         self.position_generation += 1

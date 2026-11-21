@@ -18,6 +18,16 @@ class ChipPackageTest(unittest.TestCase):
     def setUpClass(cls):
         cls.app = QApplication.instance() or QApplication([])
 
+    def assert_title_inside_package(self, view, part):
+        _, body = view.packages[part.name]
+        title = next(item for item in view.scene().items()
+                     if isinstance(item, QGraphicsSimpleTextItem) and item.data(0) == "hood"
+                     and item.data(1) == part.name)
+        text = title.sceneBoundingRect()
+        self.assertTrue(body.contains(text))
+        self.assertAlmostEqual(text.center().x(), body.center().x())
+        self.assertLess(text.center().y(), body.center().y())
+
     def test_lt1677_pin_rows_and_number_labels_follow_the_physical_package(self):
         # All eight nets are distinct, so the model also needs an implicit 0 port.
         circuit = compile_circuit("""
@@ -29,7 +39,8 @@ class ChipPackageTest(unittest.TestCase):
         view.draw(circuit)
         drawing = view.layout
         symbol, = drawing.symbols
-        _, a, b, _ = symbol
+        part, a, b, _ = symbol
+        self.assert_title_inside_package(view, part)
         pins = dict(symbol_pins(*symbol, grid=drawing.pin_grid))
         for side, column in (
             (a[0], ("trim1", "minus", "plus", "vee")),
@@ -47,3 +58,10 @@ class ChipPackageTest(unittest.TestCase):
         self.assertLess(labels["1"].y(), labels["4"].y())
         self.assertNotIn("9", labels)
         self.assertTrue(preserves_nets(view.levels[None, "auto"], drawing))
+
+    def test_transistor_package_title_is_centered_inside_the_top(self):
+        circuit = compile_circuit("transistor Q1(base, collector, 0, npn);", render_only=True)
+        view = SchematicView()
+        self.addCleanup(view.close)
+        view.draw(circuit)
+        self.assert_title_inside_package(view, view.layout.symbols[0][0])

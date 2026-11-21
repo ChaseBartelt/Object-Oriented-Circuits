@@ -5,10 +5,10 @@ import unittest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtGui import QTextDocument
+from PySide6.QtGui import QTextCursor, QTextDocument
 from PySide6.QtWidgets import QApplication
 
-from circuitlab.viewer.editor import CircuitHighlighter
+from circuitlab.viewer.editor import CircuitEditor, CircuitHighlighter
 
 
 class SyntaxColorsTest(unittest.TestCase):
@@ -64,6 +64,32 @@ class SyntaxColorsTest(unittest.TestCase):
         self.assertEqual(self.color("analog", "analog"),"#659cd7")
         self.assertEqual(self.color("digital", "digital"),"#659cd7")
         self.assertEqual(self.color("analogous = 1;", "analogous"),"#7fd5e6")
+
+    def test_slash_comments_keep_block_state_and_protect_quoted_paths(self):
+        source = 'include("chips//part/*file*/.ckt"); // @pin analog\n/* digital\n😀 property */ analog { }'
+        self.assertEqual(self.color(source, "//part"), "#d6b88c")
+        self.assertEqual(self.color(source, "/*file"), "#d6b88c")
+        self.assertEqual(self.color(source, "@pin"), "#b5d49d")
+        self.assertEqual(self.color(source, "analog"), "#9bc68b")
+        self.assertEqual(self.color(source, "digital"), "#9bc68b")
+        self.assertEqual(self.color(source, "property"), "#9bc68b")
+        self.assertEqual(self.color(source, "analog", occurrence=1), "#659cd7")
+
+    def test_comment_context_skips_completion_and_keeps_brace_indentation(self):
+        editor = CircuitEditor()
+        self.addCleanup(editor.close)
+        for source, expected in (
+            ("main {\n    /* start\n    R", None),
+            ("main {\n    // R", None),
+            ("main {\n    /* start\n    */ R", "R"),
+        ):
+            editor.setPlainText(source)
+            editor.moveCursor(QTextCursor.MoveOperation.End)
+            self.assertEqual(editor._completion_prefix(), expected)
+        editor.setPlainText("main { // comment")
+        editor.moveCursor(QTextCursor.MoveOperation.End)
+        editor.insert_newline(editor.textCursor())
+        self.assertTrue(editor.toPlainText().endswith("\n    "))
 
     def test_existing_components_gate_calls_and_wire_counts_keep_their_colors(self):
         source = "main { i=count; Rload(1k) between(in,w*i); op1(w^,0,w*i); nor(vcc,0,a,y); }"

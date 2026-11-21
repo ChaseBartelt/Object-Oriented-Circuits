@@ -16,6 +16,7 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import QCompleter, QPlainTextEdit, QTextEdit, QToolTip, QWidget
 
+from circuitlab.language.comments import mask_comments
 from circuitlab.language.gates import GATE_HELP
 from circuitlab.language.syntax import OP, OPAMP_BRACE, TRANS_CALL
 from circuitlab.language.wire_counts import COUNT_REFERENCE, is_count_reference
@@ -36,7 +37,26 @@ NUMBER_TOKEN = re.compile(
     r"V(?:rms|pk|pp)?|A(?:rms|pk|pp)?|Ω|F|H|s|W|J|C|°)|[pnuµμmkMG]|%))?"
     r"(?=cos\s*\(|[^A-Za-z0-9_.]|$)"
 )
-PROTECTED_TOKEN = re.compile(r'"(?:\\.|[^"\\])*"|"(?:\\.|[^"\\])*$|#.*')
+PROTECTED_TOKEN = re.compile(r'"(?:\\.|[^"\\])*"?|(?://|#).*|/\*.*?(?:\*/|$)')
+BLOCK_COMMENT = 1
+
+
+def _line_tokens(text, continued):
+    """Find strings and comments, retaining the open-comment state for Qt."""
+    spans, offset = [], 0
+    block_comment, line_comment = False, False
+    if continued:
+        end = text.find("*/")
+        if end < 0:
+            return [(0, len(text), True)], True, False
+        offset = end + 2
+        spans.append((0, offset, True))
+    for token in PROTECTED_TOKEN.finditer(text, offset):
+        value = token[0]
+        spans.append((*token.span(), not value.startswith('"')))
+        block_comment = value.startswith("/*") and not value[2:].endswith("*/")
+        line_comment = value.startswith(("//", "#"))
+    return spans, block_comment, line_comment
 
 
 class CircuitHighlighter(QSyntaxHighlighter):
@@ -91,10 +111,11 @@ class CircuitHighlighter(QSyntaxHighlighter):
         def paint(start, end, style):
             self.setFormat(offsets[start], offsets[end] - offsets[start], style)
 
-        protected = list(PROTECTED_TOKEN.finditer(text))
+        protected, continued, _ = _line_tokens(text, self.previousBlockState() == BLOCK_COMMENT)
+        self.setCurrentBlockState(BLOCK_COMMENT if continued else 0)
         masked = list(text)
-        for token in protected:
-            masked[token.start():token.end()] = " " * len(token[0])
+        for start, end, _ in protected:
+            masked[start:end] = " " * (end - start)
         code = "".join(masked)
         for pattern, color, group in self.rules:
             for match in pattern.finditer(code):
@@ -116,16 +137,15 @@ class CircuitHighlighter(QSyntaxHighlighter):
             # analog equations, values and control headers stays arithmetic.
             if location and location[3] == token[0].strip():
                 paint(token.start(), token.end(), QColor("#e3b5f5"))
-        for token in protected:
-            comment = token[0].startswith("#")
-            paint(token.start(), token.end(), QColor("#9bc68b" if comment else "#d6b88c"))
+        for start, end, comment in protected:
+            paint(start, end, QColor("#9bc68b" if comment else "#d6b88c"))
             if not comment:
                 continue
-            for match in re.finditer(r"@[A-Za-z]+\b", token[0]):
+            for match in re.finditer(r"@[A-Za-z]+\b", text[start:end]):
                 fmt = QTextCharFormat()
                 fmt.setForeground(QColor("#b5d49d"))
                 fmt.setFontWeight(QFont.Weight.Bold)
-                paint(token.start() + match.start(), token.start() + match.end(), fmt)
+                paint(start + match.start(), start + match.end(), fmt)
 
 
 class Gutter(QWidget):
@@ -190,8 +210,8 @@ class CircuitEditor(QPlainTextEdit):
         self.updateRequest.connect(self.update_gutter)
         self.resize_gutter()
 
-    def _before_cursor(self):
-        cursor = self.textCursor()
+    def _before_cursor(self, cursor=None):
+        cursor = QTextCursor(cursor) if cursor is not None else self.textCursor()
         cursor.setPosition(0, QTextCursor.MoveMode.KeepAnchor)
         return cursor.selectedText().replace("\u2029", "\n")
 
@@ -199,12 +219,18 @@ class CircuitEditor(QPlainTextEdit):
         return SourceInfo(self.toPlainText(), self.read_imports).method_signatures()
 
     def _completion_prefix(self):
-        if self.textCursor().hasSelection():
+        cursor = self.textCursor()
+        if cursor.hasSelection():
             return None
-        before = self._before_cursor()
+        before = self._before_cursor(cursor)
+        raw_line = before.rsplit("\n", 1)[-1]
+        _, block_comment, line_comment = _line_tokens(
+            raw_line, cursor.block().previous().userState() == BLOCK_COMMENT,
+        )
+        if block_comment or line_comment:
+            return None
+        before = mask_comments(before)
         line = before.rsplit("\n", 1)[-1]
-        if "#" in line:
-            return None
         statement = re.split(r"[;{}]", line)[-1].lstrip()
         if statement and not IDENTIFIER.fullmatch(statement):
             return None
@@ -253,7 +279,7 @@ class CircuitEditor(QPlainTextEdit):
         end.movePosition(
             QTextCursor.MoveOperation.EndOfBlock, QTextCursor.MoveMode.KeepAnchor
         )
-        suffix = end.selectedText().lstrip()
+        suffix = mask_comments(end.selectedText()).lstrip()
         method = self.method_signatures().get(name.casefold())
         if suffix.startswith("("):
             cursor.insertText(name)
@@ -361,20 +387,20 @@ class CircuitEditor(QPlainTextEdit):
 
     def insert_newline(self, cursor):
         cursor.setPosition(cursor.selectionStart())
-        before = cursor.block().text().partition("#")[0][: cursor.positionInBlock()]
-        indent = re.match(r"[ \t]*", before)[0]
-        if before.rstrip().endswith("{"):
+        before = self._before_cursor(cursor)
+        line = before.rsplit("\n", 1)[-1]
+        indent = re.match(r"[ \t]*", line)[0]
+        if mask_comments(before).rsplit("\n", 1)[-1].rstrip().endswith("{"):
             indent += "\t" if indent.startswith("\t") else INDENT
         self.textCursor().insertText("\n" + indent)
 
     def dedent_brace(self, cursor):
         before = self._before_cursor()
         line = before.rsplit("\n", 1)[-1]
-        if line.strip():
+        if line.strip() or cursor.block().previous().userState() == BLOCK_COMMENT:
             return False
         openings = []
-        for text in before.splitlines():
-            code = text.partition("#")[0]
+        for code in mask_comments(before).splitlines():
             for char in code:
                 if char == "{":
                     openings.append(re.match(r"[ \t]*", code)[0])
@@ -444,11 +470,8 @@ class CircuitEditor(QPlainTextEdit):
     # The caller adds the document line before requesting a compiler-backed trace.
     @staticmethod
     def wire_at(cursor):
-        source = SourceInfo(cursor.block().text())
-        location = source.wire_at(0, cursor.positionInBlock())
-        if location is not None:
-            return (cursor.blockNumber() + 1, *location[1:])
-        return None
+        source = SourceInfo(cursor.document().toPlainText())
+        return source.wire_at(cursor.blockNumber(), cursor.positionInBlock())
 
     def resize_gutter(self):
         width = (

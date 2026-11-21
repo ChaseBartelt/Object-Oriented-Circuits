@@ -5,7 +5,8 @@
 
 // Tolerant source scanning for editor navigation. Compilation still decides
 // whether the statements and their electrical connections are valid.
-const TOKEN = /#[^\r\n]*|"[^"\r\n]*"?|\$\{[^}\r\n]*(?:\}|(?=\r|\n|$))|\r\n|[\r\n(){};]/g;
+const TOKEN = /"(?:\\[^\r\n]|[^"\\\r\n])*"?|\$\{[^}\r\n]*(?:\}|(?=\r|\n|$))|\r\n|[\r\n(){};]/g;
+const PROTECTED = /"(?:\\[^\r\n]|[^"\\\r\n])*"?|\/\/[^\r\n]*|\/\*[\s\S]*?(?:\*\/|$)|#[^\r\n]*/g;
 const DECLARATION = /^(circuit|chip|gate|series|parallel)[ \t]+([A-Za-z_][A-Za-z0-9_]*)(?:[ \t]*\(.*\))?$/id;
 const DEVICE_BLOCK = /^(battery|transistor)[ \t]+([A-Za-z](?:[A-Za-z0-9_]|\$\{[^}]*\})*)$/id;
 const MAIN = /^(main)(?:[ \t]+([A-Za-z_][A-Za-z0-9_]*))?(?:[ \t]*\([ \t]*\))?$/id;
@@ -17,6 +18,12 @@ const INCLUDE = /^include[ \t]*\([ \t]*"([^"\r\n]+)"[ \t]*\)$/id;
 const CALL = /^([A-Za-z][A-Za-z0-9_]*)[ \t]*\((?:[^()]|\([^()]*\))*\)$/id;
 const DO_TAIL = /^while[ \t]*\(.*\)$/i;
 const NON_METHODS = new Set(["include", "connector"]);
+
+// Preserve UTF-16 offsets and line breaks for editor ranges and statement bounds.
+function maskComments(text, maskStrings = false) {
+    return text.replace(PROTECTED, token => !maskStrings && token.startsWith('"')
+        ? token : token.replace(/[^\r\n]/g, " "));
+}
 
 function nodeFor(match, nameGroup, kindGroup, start, end) {
     const [from, to] = match.indices[nameGroup];
@@ -80,6 +87,7 @@ function legacyMarker(text, start, previousEnd) {
 // Use one token walk for structure and references so both features agree on source offsets.
 // The frame stack keeps nested braced/legacy blocks and do/while tails attached correctly.
 function scanDocument(text) {
+    text = maskComments(text);
     const structure = [];
     const references = [];
     const frames = [{ children: structure }];
@@ -146,7 +154,7 @@ function scanDocument(text) {
             continue;
         }
         const after = at + token.length;
-        if (token[0] === "#" || token[0] === "\r" || token[0] === "\n") {
+        if (token[0] === "\r" || token[0] === "\n") {
             finishStatement(at);
             previousEnd = after;
             parens = 0;
@@ -212,4 +220,4 @@ function parseReferences(text) {
     return scanDocument(text).references;
 }
 
-module.exports = { analyzeSource: scanDocument, parseStructure, parseReferences };
+module.exports = { analyzeSource: scanDocument, parseStructure, parseReferences, maskComments };

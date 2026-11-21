@@ -45,6 +45,7 @@ from circuitlab.language.syntax import (
     BJT_TYPES,
     CALL,
     FREQUENCY,
+    GROUP_MARKER,
     INLINE,
     MATH_BRACE,
     MATH_INLINE,
@@ -728,7 +729,7 @@ class Compiler:
         assignment = ASSIGNMENT.fullmatch(text)
         # Retain the legacy (series)/(parallel) form with explicit matching end
         # markers. It uses the same group tree as braces but cannot be closed by }.
-        if marker := re.fullmatch(r"\(\s*(end\s+)?(series|parallel)\s*\)", text, re.I):
+        if marker := GROUP_MARKER.fullmatch(text):
             close, kind = marker[1], marker[2].lower()
             if close:
                 if not group or group.braced or group.mode != kind or not group.entries:

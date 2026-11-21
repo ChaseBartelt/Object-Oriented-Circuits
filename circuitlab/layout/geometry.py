@@ -12,6 +12,7 @@ from circuitlab.model.graph import Component
 BJT_PIN_OFFSET = 0.85
 POT_PIN_OFFSET = 0.85
 PACKAGE_WIDTH = 6.8
+PACKAGE_WIRE_CLEARANCE = 0.25
 
 
 @dataclass(frozen=True)
@@ -49,6 +50,12 @@ def pin_offset(value, grid=0):
     return math.copysign(max(1, math.floor(abs(value) / grid + 0.5)) * grid, value)
 
 
+def opamp_body(a, b):
+    """Keep the triangle centered as its input and output leads get shorter."""
+    middle = (a[0] + b[0]) / 2
+    return middle - .75, middle + .95
+
+
 # The physical package order runs down one side and back up the other, so header order
 # continues to match package pin numbering.
 def package_pins(part, grid=0):
@@ -81,6 +88,12 @@ def package_half_height(part, grid=0):
         return max(0.8, rows / 2 + 0.2, (rows - 1) / 2 * max(1, 2 * grid) + 0.2)
     return max(0.8, (len(part.package_pins) + 1) // 2 / 2 + 0.2,
                max((abs(offset) for _, _, _, offset in package_pins(part, grid)), default=0) + 0.2)
+
+
+def package_body_corners(part, a, b, grid=0):
+    """Return the outline corners, excluding the leads to the side pins."""
+    half_height = package_half_height(part, grid)
+    return (a[0] + .55, a[1] - half_height), (b[0] - .55, a[1] + half_height)
 
 
 # Use the device-specific contact positions rather than treating every glyph as a simple
@@ -127,6 +140,37 @@ def symbol_pins(part, a, b, top, *, grid=0):
         yield part.n, b
 
 
+def routed_pins(symbol, turns, grid=0):
+    """Return physical contacts after applying the symbol's rotation."""
+    _, a, b, _ = symbol
+    return tuple((net, rotate_point(pin, a, b, turns)) for net, pin in symbol_pins(*symbol, grid=grid))
+
+
+def symbol_bounds(symbol, turns, *, body_only=False):
+    """Return opposite corners of the rotated symbol or its body."""
+    part, a, b, _ = symbol
+    if part.kind == "O" and body_only:
+        left, right = opamp_body(a, b)
+        return rotate_point((left, a[1] - .72), a, b, turns), rotate_point((right, a[1] + .72), a, b, turns)
+    height = (
+        package_half_height(part) if part.kind == "H"
+        else 2.0 if part.kind == "A" else 1.4 if part.kind == "O" and part.vplus
+        else 0.9 if part.kind in {"Q", "O", "S", "P"}
+        else 0.6 if part.kind == "K" else 0.45
+    )
+    if body_only and (axis := wire_axis((a, b))) is not None:
+        half_body = {"C": .18, "V": .48, "I": .48}.get(part.kind, .75)
+        inset = {"H": .55, "A": .8, "Q": .8, "S": .8, "P": .8}.get(
+            part.kind, max(0, abs(a[axis] - b[axis]) / 2 - half_body)
+        )
+        x_pad, y_pad = (-inset, height) if axis == 0 else (0.6 if part.kind == "K" else 0.45, -inset)
+    else:
+        x_pad, y_pad = 0.45, height
+    lo = min(a[0], b[0]) - x_pad, min(a[1], b[1]) - y_pad
+    hi = max(a[0], b[0]) + x_pad, max(a[1], b[1]) + y_pad
+    return rotate_point(lo, a, b, turns), rotate_point(hi, a, b, turns)
+
+
 @dataclass
 class Layout:
     """Drawing coordinates with positive y up, keyed by electrical net."""
@@ -153,10 +197,7 @@ class Layout:
     def pins(self):
         """Yield the physical pin coordinates and the net attached to each."""
         for symbol in self.symbols:
-            part, a, b, _ = symbol
-            turns = self.rotations.get(part.name, 0)
-            for net, pin in symbol_pins(*symbol, grid=self.pin_grid):
-                yield net, rotate_point(pin, a, b, turns)
+            yield from routed_pins(symbol, self.rotations.get(symbol[0].name, 0), self.pin_grid)
 
     def visible_segments(self, net):
         """Cut visual gaps at crossings while retaining the original net ID."""
@@ -314,10 +355,32 @@ def ground_at(layout, point, name="0"):
     layout.junctions.setdefault(name, []).append(point)
 
 
+def ground_lead(layout, terminal, name="0", *, turns=0, length=.5):
+    """Draw a straight ground lead and point its symbol away from the terminal."""
+    x, y = terminal
+    end = rotate_point((x, y - length), terminal, terminal, turns)
+    if end != terminal:
+        add_wire(layout, name, terminal, end)
+    ground_at(layout, end, name)
+    if turns:
+        layout.ground_rotations[end] = turns
+
+
 def place_symbol(layout, part, first_net, start, end):
     a, b = (start, end) if part.p == first_net else (end, start)
     layout.symbols.append((part, a, b, "+"))
     layout.positions[part.name] = a
+
+
+def inline_grounded_voltage(layout, source, net, ground, terminal, *, left, lead=.25):
+    """Attach one isolated voltage source and its return to a side pin."""
+    direction = -1 if left else 1
+    x, y = terminal
+    near = (x + direction * lead, y)
+    far = (near[0] + direction * 2.5, y)
+    place_symbol(layout, source, net, near, far)
+    add_wire(layout, net, terminal, near)
+    ground_lead(layout, far, ground, turns=1 if left else 3, length=.75)
 
 
 # Drawing orientation follows which terminal is grounded, not the sign of the source value.

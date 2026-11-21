@@ -7,7 +7,7 @@ from tempfile import TemporaryDirectory
 import unittest
 
 from circuitlab.language.compiler import compile_circuit
-from circuitlab.tooling.source_edits import edit_switch
+from circuitlab.tooling.source_edits import edit_switch, edit_value
 
 
 class SwitchEditsTest(unittest.TestCase):
@@ -60,11 +60,28 @@ class SwitchEditsTest(unittest.TestCase):
             with self.subTest(name=name, state=state), self.assertRaises(ValueError):
                 edit_switch(circuit, name, state, self.path, source, self.reader)
 
-    def test_legacy_switch_rows_can_be_toggled(self):
-        source = 'S1 input output closed # keep legacy comment\nR1 output 0 1k\n'
+    def test_edits_compact_group_entries_without_touching_neighbors_or_wires(self):
+        source = ('/* Start with a commented-out button.\n'
+                  '   Sbutton(off); */ main { series(v,out) { Sbutton ( closed ); '
+                  'R2(10k /* keep note */); } } // keep comment\n')
         circuit = compile_circuit(source, path=self.path, render_only=True)
-        plan = edit_switch(circuit, 'S1', False, self.path, source, self.reader)
-        self.assertEqual(plan.after, source.replace('closed', 'open'))
+        opened = edit_switch(circuit, 'Sbutton', False, self.path, source, self.reader)
+        self.assertEqual(opened.after, source.replace('( closed )', '( open )'))
+        cleared = edit_value(circuit, 'R2', '', self.path, source, self.reader)
+        self.assertEqual(cleared.after, source.replace('R2(10k ', 'R2( '))
+        original_nets = [(part.name, part.terminal_nets) for part in circuit.components]
+        for plan in (opened, cleared):
+            edited = compile_circuit(plan.after, path=self.path, render_only=True)
+            self.assertEqual([(part.name, part.terminal_nets) for part in edited.components], original_nets)
+        self.assertFalse(self.path.exists())
+
+    def test_legacy_switch_rows_can_be_toggled(self):
+        for source in ('S1 input output closed # keep legacy comment\nR1 output 0 1k\n',
+                       '(series) S1(closed) (end series) // keep comment\n'):
+            with self.subTest(source=source):
+                circuit = compile_circuit(source, path=self.path, render_only=True)
+                plan = edit_switch(circuit, 'S1', False, self.path, source, self.reader)
+                self.assertEqual(plan.after, source.replace('closed', 'open'))
 
 
 if __name__ == '__main__':

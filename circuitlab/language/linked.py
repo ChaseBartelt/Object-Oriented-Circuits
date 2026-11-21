@@ -12,6 +12,7 @@ from circuitlab.language.document import compile_document, elaborate_document
 from circuitlab.model.graph import CircuitError
 from circuitlab.math.numbers import set_known
 from circuitlab.language.math_blocks import remap_equation
+from circuitlab.language.comments import mask_comments
 from circuitlab.language.syntax import INCLUDE, NET_METHODS, OVERRIDE, SECTION, analysis_mode, has_chip, source_rows
 
 # Locate the bundled definitions relative to this module in the installed
@@ -97,13 +98,8 @@ def read_includes(source, path, read_source=None):
         files[path] = text
         imports[path] = []
         depth = 0
-        for i, line in enumerate(lines):
-            # First match the whole physical line, preserving a # inside a quoted
-            # include path. The fallback accepts an ordinary trailing # comment.
-            # This pass recognizes include directives before document elaboration.
-            include = INCLUDE.fullmatch(line.strip()) or INCLUDE.fullmatch(
-                line.partition("#")[0].strip()
-            )
+        for i, code in enumerate(mask_comments(text).splitlines()):
+            include = INCLUDE.fullmatch(code.strip())
             if include:
                 # Imports must be top-level directives. Report the including file and
                 # its one-based physical line, rather than a later expanded row number.
@@ -131,12 +127,13 @@ def read_includes(source, path, read_source=None):
                 # Retain the direct edge even for a cached target. Definition visibility
                 # depends on which file includes which, not merely on the loaded set.
                 imports[path].append(target)
-                lines[i] = ""
+                # Preserve any block-comment delimiters beside the directive.
+                start, end = len(code) - len(code.lstrip()), len(code.rstrip())
+                lines[i] = lines[i][:start] + " " * (end - start) + lines[i][end:]
             else:
                 # Track brace nesting on non-include lines after stripping comments.
                 # This is an include-placement check; the language parser performs
                 # the later statement and block validation.
-                code = line.partition("#")[0]
                 depth += code.count("{") - code.count("}")
         files[path] = "\n".join(lines)
         # Only completed files leave the active path. They stay cached in files

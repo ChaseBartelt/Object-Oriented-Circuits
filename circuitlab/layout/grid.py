@@ -7,30 +7,33 @@ import math
 from collections import defaultdict
 from dataclasses import replace
 
-from circuitlab.layout.checks import mark_crossings, preserves_nets, segments_intersect
+from circuitlab.layout.checks import clear_package_wires, mark_crossings, preserves_nets, segments_intersect
 from circuitlab.layout.editing import move_ground
 from circuitlab.layout.wire_edit import clean_point, replace_route, route_anchors, wire_graph
 
 
 # Build and validate a complete aligned candidate before changing the displayed layout.
 # This lets the viewer keep one undo step for an operation affecting many terminals.
-def align_layout(circuit, original, step=0.25):
+def align_layout(circuit, original, step=0.25, *, prune_cycles=False, keep_package_clearance=False):
     """Return a connected grid layout, or None if rounding would join distinct nets.
 
     Pin spacing belongs to the drawing, not the component/model. Legacy layouts
     keep their original geometry until this explicit operation is requested.
+    Fresh layouts may also require the original clearance around package bodies.
     """
     if not math.isfinite(step) or not 0 < step <= 16:
         raise ValueError("Grid spacing must be positive and at most 16")
     # Small rounding biases can resolve a congested half-cell without relocating
     # the circuit. Never accept a partial result or change the netlist to fit it.
     for bias in (0, -0.2, 0.2):
-        drawing = _aligned(original, step, bias)
+        drawing = _aligned(original, step, bias, prune_cycles=prune_cycles)
+        if keep_package_clearance and not clear_package_wires(drawing):
+            continue
         mark_crossings(drawing)
         if preserves_nets(circuit, drawing):
             return drawing
         repaired = _clear_ground_contact(circuit, drawing, step)
-        if repaired is not None:
+        if repaired is not None and (not keep_package_clearance or clear_package_wires(repaired)):
             return repaired
     return None
 
@@ -67,7 +70,7 @@ def _clear_ground_contact(circuit, drawing, step):
     return None
 
 
-def _aligned(original, step, bias):
+def _aligned(original, step, bias, *, prune_cycles=False):
     def snap(pos):
         return tuple(round(math.floor(value / step + 0.5 + bias) * step, 8) for value in pos)
 
@@ -119,5 +122,5 @@ def _aligned(original, step, bias):
             if a != b:
                 routes[net].append((a, b))
     for net, edges in routes.items():
-        replace_route(drawing, net, edges)
+        replace_route(drawing, net, edges, prune_cycles=prune_cycles)
     return drawing

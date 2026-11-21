@@ -19,7 +19,6 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QInputDialog,
     QLabel,
-    QListWidget,
     QListWidgetItem,
     QMainWindow,
     QMessageBox,
@@ -33,6 +32,7 @@ from PySide6.QtWidgets import (
 )
 
 from circuitlab.math.analysis import analyze, diagnostics
+from circuitlab.language.comments import mask_comments
 from circuitlab.language.compiler import compile_circuit
 from circuitlab.language.syntax import analysis_mode
 from circuitlab.viewer.device_reference import DeviceReference
@@ -49,13 +49,25 @@ from circuitlab.math.quantities import QUANTITIES
 from circuitlab.math.report import component_labels, pin_rows, result_rows
 from circuitlab.layout.routing import fast_layout
 from circuitlab.viewer.schematic import SchematicView
-from circuitlab.viewer.scope import Oscilloscope
+from circuitlab.viewer.scope import ScopeSidebar, ScopeToggle
 from circuitlab.exporters.spice import export_spice
 from circuitlab.language.syntax import MAIN, has_chip, source_rows
 from circuitlab.tooling.session import includes_files, issue_for
 from circuitlab.tooling.trace import wire_trace
 from circuitlab.exporters.verilog import compile_chips, export_verilog
-from circuitlab.viewer.widgets import MODES, STYLESHEET, button, grid_button, probe_text, search_text, GateLayoutDialog, Results, write_bytes
+from circuitlab.viewer.widgets import (
+    MODES,
+    STYLESHEET,
+    DiagnosticsList,
+    GateLayoutDialog,
+    Results,
+    SchematicHeader,
+    button,
+    grid_button,
+    probe_text,
+    search_text,
+    write_bytes,
+)
 from circuitlab.viewer.exports import export_file, hierarchy_layouts, write_companions
 
 MIXED_TEMPLATES = {
@@ -113,8 +125,6 @@ class MainWindow(QMainWindow):
         self.views.addTab(self._create_schematic_page(), "Schematic")
 
         self.results = Results()
-        self.scope = Oscilloscope()
-        self.results.layout().insertWidget(0, self.scope)
         self.views.addTab(self.results, "Results")
         self.status = QLabel("Open a circuit or enter known quantities.")
         self.status.setTextFormat(Qt.TextFormat.PlainText)
@@ -239,8 +249,7 @@ class MainWindow(QMainWindow):
         self.editor_tabs.tabCloseRequested.connect(self.close_tab)
         source_layout.addWidget(self.editor_tabs, 1)
         self.editor = self.add_tab()
-        self.issues = QListWidget()
-        self.issues.setMaximumHeight(95)
+        self.issues = DiagnosticsList()
         self.issues.itemClicked.connect(self.select_diagnostic)
         source_layout.addWidget(self.issues)
         return source_panel
@@ -409,8 +418,6 @@ class MainWindow(QMainWindow):
         page = QWidget()
         canvas = QVBoxLayout(page)
         canvas.setContentsMargins(0, 0, 0, 0)
-        controls = QHBoxLayout()
-        controls.setContentsMargins(4, 4, 4, 0)
         settings = QSettings("Electric Circuits", "Object-Oriented Circuits")
         self.schematic = SchematicView(DeviceLayouts(settings))
         self.schematic.device_layout_requested.connect(self.edit_device_layouts)
@@ -422,12 +429,14 @@ class MainWindow(QMainWindow):
         self.schematic.pin_requested.connect(self.name_pin)
         self.schematic.pin_renamed.connect(self.name_pin)
         self.schematic.pin_removed.connect(lambda net: self.write_pin(net, None))
-        self.schematic.move_refused.connect(
-            lambda: self.status.setText("Try an open spot where the existing nets can stay connected.")
-        )
+        self.scope_sidebar = ScopeSidebar(self.schematic)
+        self.scope = self.scope_sidebar.scope
+        self.scope_toggle = ScopeToggle(self.views, self.scope_sidebar)
+        self.schematic_header = SchematicHeader(self.views, self.scope_toggle)
+        controls = self.schematic_header.primary
         self.wire_style = QComboBox()
         for label, mode, tip in (
-            ("Auto layout", "auto", "Use matching net labels when wires get crowded."),
+            ("Auto layout", "auto", "Arrange parts with continuous wiring."),
             (
                 "Labeled connectors",
                 "labeled",
@@ -455,17 +464,16 @@ class MainWindow(QMainWindow):
         self.pin_button.setToolTip(
             "Place a named probe on a wire, connector, or component terminal."
         )
+        grid_button(self.schematic, controls, alignment_layout=self.schematic_header.secondary)
+        controls = self.schematic_header.secondary
         button("Zoom in", lambda: self.schematic.zoom(1.4), controls)
-        grid_button(self.schematic, controls)
         button("Zoom out", lambda: self.schematic.zoom(1 / 1.4), controls)
         button("Fit", self.schematic.fit, controls)
+        self.source_tools = SourceTools(self, controls)
         button("Export LTspice .asc", self.export_ltspice, controls).setToolTip(
             "Save this layout as an editable LTspice schematic."
         )
-        controls.addStretch()
-        canvas.addLayout(controls)
-        self.source_tools = SourceTools(self, canvas)
-        canvas.addWidget(self.schematic)
+        canvas.addWidget(self.scope_sidebar, 1)
         return page
 
     def _create_menus(self):
@@ -616,6 +624,7 @@ class MainWindow(QMainWindow):
             item.setData(Qt.ItemDataRole.UserRole + 1, str(issue.path) if issue.path else None)
             item.setToolTip(issue.message)
             self.issues.addItem(item)
+        self.issues.fit_rows(status=not issues)
 
     def select_diagnostic(self, item):
         path = item.data(Qt.ItemDataRole.UserRole + 1)
@@ -645,7 +654,7 @@ class MainWindow(QMainWindow):
             return
         self.circuit_text = code
         if not getattr(getattr(self, "source_tools", None), "internal_refresh", False):
-            self.scope.set_circuit(None)
+            self.scope_sidebar.set_circuit(None)
         self.set_solution(None)
         if self.effective_mode() != self.picker_mode:
             self.refresh_picker()
@@ -667,18 +676,18 @@ class MainWindow(QMainWindow):
     def compile_source(self, *, preserve_scope=False):
         source = self.editor.toPlainText()
         if not preserve_scope:
-            self.scope.set_circuit(None)
+            self.scope_sidebar.set_circuit(None)
         self.set_solution(None)
         self.schematic.clear(preserve_placement=True)
         issues = []
-        if not any(row.partition("#")[0].strip() for row in source.splitlines()):
-            self.scope.set_circuit(None)
+        if not mask_comments(source).strip():
+            self.scope_sidebar.set_circuit(None)
             self.status.setText("Open a circuit or enter known quantities.")
         elif self.library_preview(source) or (has_chip(source) and not self.includes_files(source)):
             try:
                 self._draw_source(source, "dc", preserve_scope=preserve_scope)
             except CircuitError as error:
-                self.scope.set_circuit(None)
+                self.scope_sidebar.set_circuit(None)
                 issues = [self.issue(error)]
                 self.status.setText(issues[0].message)
             else:
@@ -697,7 +706,7 @@ class MainWindow(QMainWindow):
             try:
                 self._draw_source(source, mode, preserve_scope=preserve_scope)
             except CircuitError:
-                self.scope.set_circuit(None)
+                self.scope_sidebar.set_circuit(None)
             if issues:
                 self.status.setText(issues[0].message)
             elif self.solution and self.solution.network:
@@ -735,13 +744,14 @@ class MainWindow(QMainWindow):
                 source += preview
             circuit = self.build_circuit(source, mode, render_only=True)
         self.schematic.draw(circuit, self.pins)
-        self.scope.set_circuit(circuit, preserve_state=preserve_scope)
+        self.scope_sidebar.set_circuit(circuit, preserve_state=preserve_scope)
 
     def render_source(self):
         try:
             self._draw_source(self.editor.toPlainText(), self.mode.currentData())
         except CircuitError as error:
             self.schematic.clear(preserve_placement=True)
+            self.scope_sidebar.set_circuit(None)
             issue = self.issue(error)
             self.show_issues([issue])
             self.status.setText(issue.message)
