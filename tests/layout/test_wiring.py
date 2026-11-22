@@ -356,7 +356,7 @@ class SchematicWiring(unittest.TestCase):
                         any(pin in segment for segment in drawing.wires["bus"])
                     )
 
-    def test_grounded_series_parallel_branches_share_placement_in_wire_views(self):
+    def test_grounded_series_parallel_branches_keep_connections_and_direction(self):
         for branch_lengths in ((1, 2), (2, 3, 2), (1, 1, 1, 1, 1)):
             with self.subTest(branch_lengths=branch_lengths):
                 lines = ["V1 vin 0 18", "Rfeed vin out 1k"]
@@ -368,9 +368,20 @@ class SchematicWiring(unittest.TestCase):
                 labels = component_labels(circuit)
                 auto = schematic_layout(circuit, labels, "auto")
                 all_wires = schematic_layout(circuit, labels, "routed")
-                self.assertEqual(auto, all_wires)
+                if all(length == 1 for length in branch_lengths):
+                    # Automatic placement groups direct parallel devices onto
+                    # shared rails; the explicit routed view retains its placement.
+                    bank = [(a, b) for part, a, b, _ in auto.symbols
+                            if part.name not in {"V1", "Rfeed"}]
+                    self.assertEqual(len({a[0] for a, _ in bank}), len(bank))
+                    self.assertEqual(len({a[1] for a, _ in bank}), 1)
+                    self.assertEqual(len({b[1] for _, b in bank}), 1)
+                    self.assertEqual(len(auto.grounds), 2)
+                else:
+                    self.assertEqual(auto, all_wires)
+                    self.assertEqual(len(auto.grounds), 1 + len(branch_lengths))
                 self.assertTrue(preserves_nets(circuit, auto))
-                self.assertEqual(len(auto.grounds), 1 + len(branch_lengths))
+                self.assertTrue(preserves_nets(circuit, all_wires))
                 for part, a, b, _ in auto.symbols:
                     self.assertEqual(a[1] == b[1], part.name == "Rfeed")
 

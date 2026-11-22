@@ -603,7 +603,7 @@ class SchematicDragTest(unittest.TestCase):
 
         resistor = 'Rfeedback_AudioChannel_1'
         _, a, b, _ = next(symbol for symbol in original.symbols if symbol[0].name == resistor)
-        center = (a[0] + b[0]) / 2, a[1]
+        center = (a[0] + b[0]) / 2, (a[1] + b[1]) / 2
         start = view.mapFromScene(point(center))
         end = view.mapFromScene(point((center[0] + .5, center[1])))
         QTest.mousePress(view.viewport(), Qt.MouseButton.LeftButton, pos=start)

@@ -15,6 +15,7 @@ from circuitlab.layout.geometry import ChipPackage, rotate_point, symbol_bounds,
 from circuitlab.layout.grid import align_layout
 from circuitlab.layout.lead_spacing import shorten_symbol_leads
 from circuitlab.layout.passive_alignment import align_passive_tees, rotate_detoured_passives, rotate_passive
+from circuitlab.layout.parallel_banks import align_parallel_banks, parallel_bank_names
 from circuitlab.layout.route_quality import crossing_count, improves_placement, layout_span, wire_length, wiring_cost
 from circuitlab.layout.tee_cleanup import reattach_tee_runs
 from circuitlab.layout.wire_edit import graph_edges, replace_route, route_anchors, route_trial, wire_graph
@@ -315,7 +316,7 @@ def _package_columns(drawing):
     columns = defaultdict(list)
     for part, a, b, _ in drawing.symbols:
         if isinstance(part, ChipPackage) and not drawing.rotations.get(part.name):
-            columns[a[0], b[0]].append(part.name)
+            columns[round((a[0] + b[0]) / 2, 8)].append(part.name)
     return frozenset(name for column in columns.values() if len(column) > 1 for name in column)
 
 
@@ -325,10 +326,13 @@ def refine_automatic_layout(circuit, drawing):
     grid = drawing.pin_grid
     if not grid:
         return drawing
+    drawing = align_parallel_banks(circuit, drawing, grid=grid)
+    bank_parts = parallel_bank_names(drawing)
     package_columns = _package_columns(drawing)
     stack_parts = frozenset()
     if size <= 64:
         drawing, stack_parts = _align_stacks(circuit, drawing, budget=3, grid=grid)
+        stack_parts |= bank_parts
         drawing = align_passive_tees(circuit, drawing, budget=4, fixed_parts=stack_parts)
     drawing = shorten_symbol_leads(circuit, drawing)
     if size > 48:
@@ -339,7 +343,7 @@ def refine_automatic_layout(circuit, drawing):
     drawing = straighten(circuit, drawing, budget=12, simplify=True)
     drawing = reattach_tee_runs(circuit, drawing, budget=8)
     drawing, aligned_parts = _align_stacks(circuit, drawing, budget=3, grid=grid)
-    stack_parts |= aligned_parts
+    stack_parts |= aligned_parts | bank_parts
 
     candidate = compact_spacing(
         circuit, drawing, budget=8 if size <= 32 else 12, grid=grid, reserve_captions=True,
@@ -381,11 +385,14 @@ def optimize_layout(circuit, original, *, flip_budget=None, move_parts=False, gr
     """Run bounded wiring edits that the viewer can commit as a single undo step."""
     if not move_parts:
         budget = 4 if flip_budget is None else flip_budget
-        return _reorient_passives(circuit, straighten(circuit, original), budget)
+        return _reorient_passives(circuit, straighten(circuit, original), budget,
+                                 fixed_parts=parallel_bank_names(original))
 
     drawing = shorten_symbol_leads(circuit, original, overlaps_only=True)
+    drawing = align_parallel_banks(circuit, drawing, grid=grid)
     drawing = straighten(circuit, drawing, simplify=True)
     drawing, stack_parts = _align_stacks(circuit, drawing, grid=grid)
+    stack_parts |= parallel_bank_names(drawing)
     protected_nets = {net for part, *_ in drawing.symbols if part.name in stack_parts for net in part.terminal_nets}
     drawing = _share_trunks(circuit, drawing, protected_nets=protected_nets)
     compacted = compact_spacing(circuit, drawing, grid=grid, reserve_captions=True)

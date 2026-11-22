@@ -1,0 +1,90 @@
+
+# LT1677 LEFT AUDIO AMPLIFIER
+# Analog Discovery Wavegen test
+#
+# LT1677 pin 2 = Inverting input
+# LT1677 pin 3 = Non-inverting input
+# LT1677 pin 4 = Negative supply (-5V)
+# LT1677 pin 6 = Audio output
+# LT1677 pin 7 = Positive supply (+5V)
+#
+# Gain = -1
+# Test frequency = 1 kHz
+
+include("LT1677");
+
+f = 1k;
+
+# Analog Discovery power supplies
+battery Positive {
+    V = 5;
+    wire = vcc;
+}
+
+battery Negative {
+    Vneg = 5;
+    wire = vee;
+}
+
+# Simulated Analog Discovery Wavegen W1
+Vwavegen(0.1 Vrms) between(audio_in, 0);
+
+# Five-pin headphone jack
+# Pin 1 = Sleeve (GND)
+# Pin 2 = Ring (Right)
+# Pin 3 = Auxiliary switch
+# Pin 4 = Auxiliary switch
+# Pin 5 = Tip (Left)
+#
+# The 10k resistor represents a test load,
+# NOT a resistor inside the physical jack.
+
+chip HeadphoneJack5(sleeve, ring, aux3, aux4, tip) {
+    Rtest(10k) between(tip, sleeve);
+}
+
+main {
+
+    # INPUT COUPLING CAPACITORS
+    # Three in parallel = 1.68uF
+
+    C1(560nF) between(audio_in, coupled);
+    C2(560nF) between(audio_in, coupled);
+    C3(560nF) between(audio_in, coupled);
+
+    # INVERTING AMPLIFIER
+    Rin(10k) between(coupled, inverting);
+
+    Rfeedback(10k) between(audio_out, inverting);
+
+    # LT1677 physical pin order (1 through 8)
+    LT1677(
+        trim1,
+        inverting,
+        0,
+        vee,
+        nc5,
+        audio_out,
+        vcc,
+        trim8
+    );
+
+    # POWER SUPPLY DECOUPLING
+    Cpositive(100nF) between(vcc, 0);
+    Cnegative(100nF) between(vee, 0);
+
+    # HEADPHONE JACK
+    # Left channel only
+    HeadphoneJack5(
+        0,
+        unused_ring,
+        unused_aux3,
+        unused_aux4,
+        audio_out
+    );
+
+    # VOLTAGE MEASUREMENTS
+    measure = V audio_in 0;
+    measure = V coupled 0;
+    measure = V audio_out 0;
+}

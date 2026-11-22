@@ -19,8 +19,7 @@ class AudioLayoutTest(unittest.TestCase):
     def assert_stacked_packages(self, circuit, drawing, count):
         packages = [(a, b) for part, a, b, _ in drawing.symbols if part.kind == "H"]
         self.assertEqual(len(packages), count)
-        self.assertEqual(len({a[0] for a, _ in packages}), 1)
-        self.assertEqual(len({b[0] for _, b in packages}), 1)
+        self.assertEqual(len({(a[0] + b[0]) / 2 for a, b in packages}), 1)
         self.assertEqual(len({a[1] for a, _ in packages}), count)
         self.assertTrue(preserves_nets(circuit, drawing))
         self.assertTrue(clear_package_wires(drawing))
@@ -77,10 +76,34 @@ class AudioLayoutTest(unittest.TestCase):
             _, a, b, _ = next(symbol for symbol in drawing.symbols if symbol[0].name == name)
             self.assertEqual(a[0], b[0])
 
-    def test_stereo_headphone_channels_keep_aligned_inputs_and_feedback(self):
-        source = (Path(__file__).resolve().parents[2] / "examples" / "advanced" / "synth"
-                  / "HeadphoneJack_DaisySeed3.ckt")
-        compiled = compile_circuit(source.read_text(encoding="utf-8"), path=source, render_only=True)
+    def test_parallel_input_banks_and_series_loads_keep_aligned_stages(self):
+        source = """
+        chip Amp(trim1, minus, plus, vn, nc, out, vp, trim2) {
+            op1(plus, minus, out, vp, vn);
+        }
+        Vpos(5V) between(vcc,0);
+        Vneg(-5V) between(vee,0);
+        Vleft(1V) between(audio_left,0);
+        Vright(1V) between(audio_right,0);
+        circuit AudioChannel(input, amp_out, jack_out, positive, negative, ground) {
+            C1(560nF) between(input,coupled);
+            C2(560nF) between(input,coupled);
+            C3(560nF) between(input,coupled);
+            Rin(10k) between(coupled,inverting);
+            Rfeedback(10k) between(amp_out,inverting);
+            Amp(trim1,inverting,ground,negative,nc5,amp_out,positive,trim8);
+            Routput(100) between(amp_out,jack_out);
+            Cpositive(100nF) between(positive,ground);
+            Cnegative(100nF) between(negative,ground);
+        }
+        main {
+            AudioChannel(audio_left,preamp_left,headphone_tip,vcc,vee,0);
+            AudioChannel(audio_right,preamp_right,headphone_ring,vcc,vee,0);
+            RloadLeft(10k) between(headphone_tip,0);
+            RloadRight(10k) between(headphone_ring,0);
+        }
+        """
+        compiled = compile_circuit(source, render_only=True)
         _, circuit, _, _ = next(hood_levels(compiled, set()))
         drawing = schematic_layout(circuit, component_labels(circuit), "auto")
         self.assert_stacked_packages(circuit, drawing, 2)
@@ -90,8 +113,7 @@ class AudioLayoutTest(unittest.TestCase):
         drawing = refine_automatic_layout(circuit, aligned)
         self.assert_stacked_packages(circuit, drawing, 2)
         self.assert_short_passive_leads(drawing)
-        # The example now includes parallel input capacitors and output isolation
-        # resistors. Their wiring should still stay well below the generic fallback.
+        # Parallel input capacitors and series output resistors must stay compact.
         self.assertLess(wire_length(drawing), 320)
         self.assertFalse(drawing.connectors)
 
@@ -102,10 +124,10 @@ class AudioLayoutTest(unittest.TestCase):
             signal_y = symbols[f"V{channel.lower()}"][0][1]
             self.assertTrue(all(point[1] == signal_y for point in symbols[f"Rin{suffix}"]))
             capacitors = [symbols[f"C{number}{suffix}"] for number in (1, 2, 3)]
-            self.assertEqual(len({a[1] for a, _ in capacitors}), 3)
-            self.assertEqual(len({(a[0], b[0]) for a, b in capacitors}), 1)
+            self.assertEqual(len({a[0] for a, _ in capacitors}), 3)
+            self.assertEqual(len({(a[1], b[1]) for a, b in capacitors}), 1)
             for a, b in capacitors:
-                self.assertEqual(a[1], b[1])
+                self.assertEqual(a[0], b[0])
             a, b = symbols[f"Rfeedback{suffix}"]
             self.assertEqual(a[1], b[1])
             self.assertIn(f"Routput{suffix}", symbols)
@@ -149,6 +171,132 @@ class AudioLayoutTest(unittest.TestCase):
         self.assert_short_passive_leads(drawing)
         self.assertFalse(drawing.connectors)
         self.assertEqual(len(drawing.symbols), len(circuit.components))
+
+    def test_headphone_connector_keeps_all_packages_stacked_in_viewer(self):
+        from circuitlab.viewer.schematic import build_schematic_layout
+
+        path = (Path(__file__).resolve().parents[2] / "examples" / "advanced" / "synth"
+                / "HeadphoneJack_DaisySeed3.ckt")
+        compiled = compile_circuit(path.read_text(encoding="utf-8"), path=path, render_only=True)
+        _, circuit, _, _ = next(hood_levels(compiled, set()))
+        drawing = build_schematic_layout(circuit, "auto")
+        package_count = sum(part.kind == "H" for part in circuit.components)
+        self.assertGreaterEqual(package_count, 2)
+        self.assert_stacked_packages(circuit, drawing, package_count)
+        self.assert_short_passive_leads(drawing)
+        connector_nets = [net for net, *_ in drawing.connectors]
+        self.assertEqual(len(connector_nets), len(set(connector_nets)))
+        for net in connector_nets:
+            self.assertEqual(sum(pin_net == net for pin_net, _ in drawing.pins()), 1)
+        self.assertEqual(len(drawing.symbols), len(circuit.components))
+        self.assertEqual(restore_layout(pack_layout(drawing), circuit, ()), drawing)
+
+    def test_generic_analog_packages_stack_with_different_pin_orders_and_connector(self):
+        from circuitlab.viewer.schematic import build_schematic_layout
+
+        # Both amplifier inputs and the output are on the same package side.
+        # This deliberately cannot use the opposing-pin feedback stage template.
+        source = """
+        chip DriveCell(plus, minus, out, vp, vn) {
+            op1(plus,minus,out,vp,vn);
+        }
+        chip MonitorSocket(left, right, ground) { model = unavailable; }
+        Vpos(9V) between(vp,0);
+        Vneg(-9V) between(vn,0);
+        main {
+            for (int i=0; i<2; i++) {
+                Vsig*{i}(1V) between(signal*{i},0);
+                Rin*{i}(10k) between(signal*{i},minus*{i});
+                Rfeedback*{i}(10k) between(out*{i},minus*{i});
+                Routput*{i}(100) between(out*{i},jack*{i});
+                DriveCell(0,minus*{i},out*{i},vp,vn);
+            }
+            MonitorSocket(jack0,jack1,0);
+        }
+        """
+        compiled = compile_circuit(source, render_only=True)
+        _, circuit, _, _ = next(hood_levels(compiled, set()))
+        drawing = schematic_layout(circuit, component_labels(circuit), "auto")
+        self.assert_stacked_packages(circuit, drawing, 3)
+        drawing = build_schematic_layout(circuit, "auto")
+        self.assert_stacked_packages(circuit, drawing, 3)
+        self.assert_short_passive_leads(drawing)
+        connector_nets = [net for net, *_ in drawing.connectors]
+        self.assertEqual(len(connector_nets), len(set(connector_nets)))
+        for net in connector_nets:
+            self.assertEqual(sum(pin_net == net for pin_net, _ in drawing.pins()), 1)
+        self.assertEqual(len(drawing.symbols), len(circuit.components))
+
+    def test_generic_analog_package_column_centers_different_widths(self):
+        from circuitlab.viewer.schematic import build_schematic_layout
+
+        header = ",".join(f"p{i}" for i in range(36))
+        arguments = ",".join(["out", "0", *(f"aux{i}" for i in range(34))])
+        source = f"""
+        chip DriveCell(plus, minus, out, vp, vn) {{
+            op1(plus,minus,out,vp,vn);
+        }}
+        chip WideLink({header}) {{ model = unavailable; }}
+        Vpos(5V) between(vp,0);
+        Vsig(1V) between(signal,0);
+        main {{
+            Rin(10k) between(signal,sense);
+            Rfeedback(10k) between(out,sense);
+            DriveCell(0,sense,out,vp,0);
+            WideLink({arguments});
+        }}
+        """
+        compiled = compile_circuit(source, render_only=True)
+        _, circuit, _, _ = next(hood_levels(compiled, set()))
+        drawing = build_schematic_layout(circuit, "auto")
+        self.assert_stacked_packages(circuit, drawing, 2)
+        widths = {abs(b[0] - a[0]) for part, a, b, _ in drawing.symbols if part.kind == "H"}
+        self.assertEqual(len(widths), 2)
+        self.assert_short_passive_leads(drawing)
+        self.assertEqual(len(drawing.symbols), len(circuit.components))
+
+    def test_generic_chip_regions_keep_sources_compact_at_the_top(self):
+        from circuitlab.layout.geometry import package_body_corners
+        from circuitlab.viewer.schematic import build_schematic_layout
+
+        header = ",".join(f"p{i}" for i in range(40))
+        arguments = ",".join(["signal0", "signal1", "0", *(f"nc{i}" for i in range(37))])
+        source = f"""
+        chip SourceBoard({header}) {{ model = unavailable; }}
+        chip Driver(plus, minus, out, vp, vn) {{ op1(plus,minus,out,vp,vn); }}
+        Vpos(5V) between(vp,0);
+        Vneg(-5V) between(vn,0);
+        main {{
+            SourceBoard({arguments});
+            for (int i=0; i<2; i++) {{
+                Cfirst*{{i}}(100n) between(signal*{{i}},coupled*{{i}});
+                Csecond*{{i}}(220n) between(signal*{{i}},coupled*{{i}});
+                Rin*{{i}}(10k) between(coupled*{{i}},sense*{{i}});
+                Rfeedback*{{i}}(10k) between(out*{{i}},sense*{{i}});
+                Rload*{{i}}(10k) between(out*{{i}},0);
+                Driver(0,sense*{{i}},out*{{i}},vp,vn);
+            }}
+        }}
+        """
+        compiled = compile_circuit(source, render_only=True)
+        _, circuit, _, _ = next(hood_levels(compiled, set()))
+        drawing = build_schematic_layout(circuit, "auto")
+        self.assert_stacked_packages(circuit, drawing, 3)
+        self.assert_short_passive_leads(drawing)
+        packages = [(part, a, b) for part, a, b, _ in drawing.symbols if part.kind == "H"]
+        sources = [((a[0] + b[0]) / 2, (a[1] + b[1]) / 2)
+                   for part, a, b, _ in drawing.symbols if part.is_source]
+        self.assertEqual(len(sources), 2)
+        self.assertEqual(len({y for _, y in sources}), 1)
+        highest_chip = max(package_body_corners(part, a, b, drawing.pin_grid)[1][1]
+                           for part, a, b in packages)
+        self.assertTrue(all(y > highest_chip for _, y in sources))
+        self.assertLessEqual(max(x for x, _ in sources) - min(x for x, _ in sources), 12)
+        # Compact regions should not inherit a distant column from a wide seed.
+        chip_x = (packages[0][1][0] + packages[0][2][0]) / 2
+        for part, a, b, _ in drawing.symbols:
+            if part.kind in {"R", "C"}:
+                self.assertLessEqual(abs((a[0] + b[0]) / 2 - chip_x), 20, part.name)
 
     def test_every_style_preserves_all_eight_pin_nets_without_model_symbols(self):
         circuit = compile_circuit("op1(plus,minus,out,vcc,gnd,g1,g8,bypass);", render_only=True)

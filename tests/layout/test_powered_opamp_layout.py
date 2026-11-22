@@ -9,7 +9,7 @@ from circuitlab.exporters.ltspice import export_hierarchy
 from circuitlab.language.compiler import compile_circuit
 from circuitlab.layout.checks import preserves_nets
 from circuitlab.layout.editing import move_symbol
-from circuitlab.layout.geometry import rotate_point, symbol_pins
+from circuitlab.layout.geometry import package_body_corners, rotate_point, symbol_pins
 from circuitlab.layout.grid import align_layout
 from circuitlab.layout.hierarchy import hood_levels
 from circuitlab.layout.persistence import pack_layout, restore_layout
@@ -52,10 +52,10 @@ main {
 """
 
 
-def fresh_package_layout(source=FOLLOWERS):
+def fresh_package_layout(source=FOLLOWERS, *, mode="auto"):
     full = compile_circuit(source, path=EXAMPLES / "model_overrides.ckt", render_only=True)
     _, circuit, _, _ = next(hood_levels(full, set()))
-    drawing = schematic_layout(circuit, component_labels(circuit), "auto")
+    drawing = schematic_layout(circuit, component_labels(circuit), mode)
     return full, circuit, align_layout(circuit, drawing)
 
 
@@ -81,8 +81,8 @@ class PoweredOpampLayoutTest(unittest.TestCase):
             for at in drawing.grounds
         ))
 
-    def test_local_package_sources_and_ground_pins_follow_the_pin_rows(self):
-        full, circuit, drawing = fresh_package_layout()
+    def test_routed_package_sources_and_ground_pins_follow_the_pin_rows(self):
+        full, circuit, drawing = fresh_package_layout(mode="routed")
         self.assertIsNotNone(drawing)
         self.assertTrue(preserves_nets(circuit, drawing))
         package = next(symbol for symbol in drawing.symbols if symbol[0].kind == "H")
@@ -116,13 +116,16 @@ class PoweredOpampLayoutTest(unittest.TestCase):
         self.assertEqual(connections["Vpositive"][0], ("pos", "0"))
         self.assertEqual(connections["Vnegative"][0], ("0", "neg"))
 
-    def test_package_feedback_stage_docks_exclusive_supply_without_bends(self):
+    def test_package_feedback_stage_keeps_supplies_above_the_chips(self):
         _, circuit, drawing = fresh_package_layout(PACKAGE_STAGE)
         self.assertIsNotNone(drawing)
         self.assertTrue(preserves_nets(circuit, drawing))
         package = next(symbol for symbol in drawing.symbols if symbol[0].kind == "H")
-        self.assert_inline_source(drawing, package, "Vnegative")
-        self.assert_inline_source(drawing, package, "Vpositive")
+        top = package_body_corners(*package[:3], drawing.pin_grid)[1][1]
+        for name in ("Vnegative", "Vpositive"):
+            source = next(symbol for symbol in drawing.symbols if symbol[0].name == name)
+            _, a, b, _ = source
+            self.assertGreater(min(a[1], b[1]), top)
 
     def test_shared_supply_stays_on_general_routing(self):
         source = FOLLOWERS.replace("main {", "main {\n    Rload(10k) between(pos, 0);")

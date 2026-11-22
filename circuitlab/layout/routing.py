@@ -36,9 +36,11 @@ from circuitlab.layout.checks import clear_of_bodies, clear_package_wires, prese
 from circuitlab.layout.checks import mark_crossings as _mark_crossings
 from circuitlab.layout.grid import align_layout
 from circuitlab.layout.package_stages import package_stage_layout
+from circuitlab.layout.parallel_banks import align_parallel_banks
 from circuitlab.layout.route_quality import crossing_count, wire_length
 from circuitlab.layout.search import (
     circuit_instance_cells, evolve_placements, feedback_pairs, feedback_stage_cells, placement_penalty,
+    stacked_package_cells,
 )
 from circuitlab.layout.shorten import compact_spacing, optimize_layout
 from circuitlab.layout.wire_edit import count_wire_bends
@@ -67,10 +69,13 @@ def schematic_layout(circuit, labels, mode):
                 continue
             edges = [edge for segments in candidate.wires.values() for edge in segments]
             if clear_of_bodies(edges, candidate):
-                return candidate
+                return align_parallel_banks(circuit, candidate)
     parts = circuit.components
     if len(parts) > 64 or any(part.kind == "H" for part in parts):
-        return fast_layout(circuit, labels)
+        # Digital package previews have neither electrical parts nor their owners.
+        analog = bool(circuit.owners) or any(part.kind != "H" for part in parts)
+        drawing = fast_layout(circuit, labels, stack_packages=mode == "auto" and analog)
+        return align_parallel_banks(circuit, drawing) if mode == "auto" else drawing
     conventional = compact(circuit, labels) or signal_flow(circuit)
     if conventional and preserves_nets(circuit, conventional):
         layout = conventional
@@ -81,10 +86,11 @@ def schematic_layout(circuit, labels, mode):
     # Keep direct series joins and rail geometry; accept only group moves that
     # also survive the viewer's subsequent grid snap. Saved placements bypass
     # this generator; dense packages retain fast_layout's existing margins.
-    return compact_spacing(circuit, optimize_layout(circuit, layout), budget=12, grid_safe=True)
+    drawing = compact_spacing(circuit, optimize_layout(circuit, layout), budget=12, grid_safe=True)
+    return align_parallel_banks(circuit, drawing) if mode == "auto" else drawing
 
 
-def fast_layout(circuit, labels, *, boundary=(), shorten=True):
+def fast_layout(circuit, labels, *, boundary=(), shorten=True, stack_packages=False):
     """Route a small fixed set of placements and skip iterative refinement."""
     parts = circuit.components
     if not parts:
@@ -101,6 +107,8 @@ def fast_layout(circuit, labels, *, boundary=(), shorten=True):
     if not pins:
         return labeled(circuit, labels)
     inline = _inline_grounded_parts(circuit, pins, boundary)
+    if stack_packages:
+        inline = {net: details for net, details in inline.items() if not parts[details[0]].is_source}
     order = next(_orders(parts, pins, circuit.grounds))
     center = math.ceil(math.sqrt(len(parts) * 0.72))
     widths = (center,) if len(parts) > 32 else range(max(1, center - 1), center + 2)
@@ -121,6 +129,8 @@ def fast_layout(circuit, labels, *, boundary=(), shorten=True):
         candidates.extend(circuit_instance_cells(circuit, candidates[0], units, feedback_pairs(parts)))
 
     def route(cells, regular, pack_tracks, attached):
+        if stack_packages:
+            cells = stacked_package_cells(circuit, cells)
         drawing = _channel_layout(
             circuit, labels, pins, set(), reversed_parts, cells, set(),
             tight=True, regular=regular, boundary=boundary, pack_tracks=pack_tracks, attached=attached,
@@ -172,6 +182,8 @@ def fast_layout(circuit, labels, *, boundary=(), shorten=True):
     # compact placements cannot keep nets distinct.
     for width in (len(parts), 1):
         cells = {i: divmod(index, width) for index, i in enumerate(sources + others)}
+        if stack_packages:
+            cells = stacked_package_cells(circuit, cells)
         drawing = _channel_layout(
             circuit, labels, pins, set(), reversed_parts, cells, set(), regular=True, boundary=boundary,
         )

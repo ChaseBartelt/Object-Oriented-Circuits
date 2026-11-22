@@ -7,6 +7,119 @@ from collections import defaultdict
 from random import Random
 
 
+def stacked_package_cells(circuit, initial):
+    """Build compact chip-centered regions with sources above one package column."""
+    from collections import deque
+    from circuitlab.layout.automatic import series_runs
+    from circuitlab.layout.geometry import component_pins
+
+    parts = circuit.components
+    packages = [i for i in initial if parts[i].kind == "H"]
+    if not packages:
+        return initial
+
+    def instance(index):
+        name = parts[index].name
+        return int(name[8:]) if name.startswith("@method:") else None
+
+    def ancestors(owner):
+        result = []
+        while owner is not None:
+            result.append(owner)
+            owner = circuit.instances[owner].parent
+        return result
+
+    packages.sort(key=lambda i: (instance(i) if instance(i) is not None else parts[i].order, i))
+    families = {i: ancestors(instance(i)) for i in packages}
+    ranks = {package: rank for rank, package in enumerate(packages)}
+    sources = sorted((i for i in initial if parts[i].is_source), key=lambda i: (parts[i].order, i))
+    neighbors = defaultdict(list)
+    for i in initial:
+        for net in set(parts[i].terminal_nets) - circuit.grounds:
+            neighbors[net].append(i)
+    # Shared supply rails must not make one chip claim another chip's signal path.
+    supplies = {net for i in sources for net in parts[i].terminal_nets
+                if sum(j in packages for j in neighbors[net]) > 1}
+    pins = defaultdict(list)
+    for i, net, left, _ in component_pins(parts):
+        if i in families and net not in circuit.grounds:
+            pins[i].append((net, -1 if left else 1))
+    reach = {}
+    for package in packages:
+        queue = deque((net, side, 0) for net, side in pins[package])
+        visited = set()
+        while queue:
+            net, side, distance = queue.popleft()
+            if net in visited:
+                continue
+            visited.add(net)
+            for i in neighbors[net]:
+                if i in families or i in sources:
+                    continue
+                reach.setdefault((package, i), (distance, side))
+                if net not in supplies:
+                    queue.extend((other, side, distance + 1) for other in parts[i].terminal_nets
+                                 if other not in circuit.grounds and other not in supplies)
+
+    assigned, sides = {}, {}
+    for i in initial.keys() - set(sources) - families.keys():
+        family = ancestors(circuit.owners.get(parts[i].name))
+
+        def proximity(package):
+            shared = next((depth for depth, owner in enumerate(family) if owner in families[package]), len(family))
+            return shared, reach.get((package, i), (len(parts), 1))[0], ranks[package]
+
+        package = min(packages, key=proximity)
+        assigned[i] = package
+        sides[i] = reach.get((package, i), (0, 1))[1]
+
+    source_nets = {net for i in sources for net in parts[i].terminal_nets} - circuit.grounds
+    shunts = sorted((i for i in assigned if parts[i].kind in {"R", "C", "L", "X", "Z"}
+                     and bool(set(parts[i].terminal_nets) & circuit.grounds)
+                     and bool(set(parts[i].terminal_nets) & source_nets)),
+                    key=lambda i: (parts[i].order, i))
+    for i in shunts:
+        del assigned[i]
+    banks = defaultdict(list)
+    for i in assigned:
+        if parts[i].kind in {"R", "C", "L", "X", "Z", "D"} and parts[i].p != parts[i].n:
+            banks[frozenset((parts[i].p, parts[i].n))].append(i)
+    runs, _ = series_runs(circuit)
+    units, used = [], set()
+    for unit in [*(bank for bank in banks.values() if len(bank) > 1), *runs]:
+        if (set(unit) <= assigned.keys() and not used.intersection(unit)
+                and len({assigned[i] for i in unit}) == 1):
+            units.append(tuple(unit))
+            used.update(unit)
+    units.extend((i,) for i in assigned.keys() - used)
+    units.sort(key=lambda unit: min((parts[i].order, i) for i in unit))
+    groups = {package: {-1: [], 1: []} for package in packages}
+    for unit in units:
+        first = min(unit, key=lambda i: reach.get((assigned[i], i), (len(parts), 1))[0])
+        groups[assigned[first]][sides[first]].append(unit)
+    widths = {side: max(2, max((len(unit) for branches in groups.values() for unit in branches[side]), default=0))
+              for side in (-1, 1)}
+    column = widths[-1]
+    cells = {i: (0, col) for col, i in enumerate([*sources, *shunts])}
+    top = int(bool(sources or shunts))
+    for package in packages:
+        cells[package] = top, column
+        height = 1
+        for side, branches in groups[package].items():
+            row = used_columns = 0
+            for unit in branches:
+                if used_columns + len(unit) > widths[side]:
+                    row += 1
+                    used_columns = 0
+                for offset, i in enumerate(unit):
+                    distance = used_columns + (len(unit) - offset if side < 0 else offset + 1)
+                    cells[i] = top + row, column + side * distance
+                used_columns += len(unit)
+                height = max(height, row + 1)
+        top += height
+    return cells
+
+
 def feedback_pairs(parts):
     """Find passive branches that connect an op-amp output to a sensing pin."""
     by_terminals = defaultdict(list)

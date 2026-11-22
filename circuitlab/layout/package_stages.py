@@ -1,12 +1,12 @@
 """Conventional layouts for packaged amplifiers and their passive networks."""
 
-from collections import Counter, defaultdict
+from collections import defaultdict
 from dataclasses import dataclass
 from itertools import product
 from math import ceil
 
 from circuitlab.layout.geometry import (
-    ChipPackage, Layout, add_wire, ground_at, ground_lead, inline_grounded_voltage,
+    ChipPackage, Layout, add_wire, ground_at, ground_lead,
     package_half_height, package_pins, place_symbol, quad_package,
 )
 from circuitlab.layout.checks import mark_crossings
@@ -94,7 +94,7 @@ def _input_chain(sense, output, package, feedback, owners, grounds):
 
 
 def _load_paths(output, package, feedback, owners, grounds):
-    """Keep grounded output chains together, including series output resistors."""
+    """Keep passive output chains together up to ground or a package contact."""
     first = defaultdict(list)
     for part in owners[output]:
         if part not in (package, *feedback):
@@ -111,6 +111,8 @@ def _load_paths(output, package, feedback, owners, grounds):
             used.update(branch.parts)
             net = branch.end
             remaining = [part for part in owners[net] if part not in branch.parts]
+            if remaining and all(isinstance(part, ChipPackage) for part in remaining):
+                break
         paths.append(tuple(path))
     return tuple(paths)
 
@@ -173,31 +175,43 @@ def _grounded_branch(drawing, part, net, x, y):
 def _draw_input_path(drawing, stage, sense_pin, sense_x, pitch):
     """Run series sections and parallel input banks along the sensing pin row."""
     _, sense_y = sense_pin
-    source_x = sense_x - pitch * len(stage.path) - 1.75
+    widths = [pitch if len(branch.parts) == 1 else FEEDBACK_PITCH * (len(branch.parts) - 1) + 2
+              for branch in stage.path]
+    source_x = sense_x - sum(widths) - .25
     return_y = _grounded_branch(drawing, stage.source, stage.input_net, source_x, sense_y)
     previous_x = source_x
-    for index, branch in enumerate(stage.path):
-        start = source_x + (pitch - branch.span) / 2 + pitch * index
-        end = start + branch.span
-        add_wire(drawing, branch.start, (previous_x, sense_y), (start, sense_y))
-        center_offset = round((len(branch.parts) - 1) * FEEDBACK_PITCH / (2 * GRID)) * GRID
-        rows = [sense_y - center_offset + offset * FEEDBACK_PITCH
-                for offset in range(len(branch.parts))]
-        for part, row in zip(branch.parts, rows):
-            half = _span(part) / 2
-            center = (start + end) / 2
-            a, b = (center - half, row), (center + half, row)
-            add_wire(drawing, branch.start, (start, sense_y), (start, row), a)
-            add_wire(drawing, branch.end, b, (end, row), (end, sense_y))
-            place_symbol(drawing, part, branch.start, a, b)
-        previous_x = end
-        return_y = min(return_y, min(rows) - .5)
+    slot = source_x
+    for branch, width in zip(stage.path, widths):
+        if len(branch.parts) == 1:
+            start = slot + (width - branch.span) / 2
+            end = start + branch.span
+            add_wire(drawing, branch.start, (previous_x, sense_y), (start, sense_y))
+            place_symbol(drawing, branch.parts[0], branch.start, (start, sense_y), (end, sense_y))
+            previous_x = end
+        else:
+            top, bottom = sense_y + branch.span / 2, sense_y - branch.span / 2
+            columns = [slot + .75 + i * FEEDBACK_PITCH for i in range(len(branch.parts))]
+            add_wire(drawing, branch.start, (previous_x, sense_y), (slot + .25, sense_y),
+                     (slot + .25, top), (columns[-1], top))
+            add_wire(drawing, branch.end, (columns[0], bottom), (slot + width - .25, bottom),
+                     (slot + width - .25, sense_y))
+            for part, x in zip(branch.parts, columns):
+                half = _span(part) / 2
+                a, b = (x, sense_y + half), (x, sense_y - half)
+                add_wire(drawing, branch.start, (x, top), a)
+                add_wire(drawing, branch.end, b, (x, bottom))
+                place_symbol(drawing, part, branch.start, a, b)
+            drawing.junctions.setdefault(branch.start, []).extend((x, top) for x in columns[1:-1])
+            drawing.junctions.setdefault(branch.end, []).extend((x, bottom) for x in columns[1:-1])
+            previous_x = slot + width - .25
+            return_y = min(return_y, bottom - .5)
+        slot += width
     add_wire(drawing, stage.sense, (previous_x, sense_y), sense_pin)
     drawing.junctions.setdefault(stage.sense, []).append((sense_x, sense_y))
     return return_y
 
 
-def _draw_stage(drawing, stage, y, height, grounds, supply_pins, local_sources, pitch):
+def _draw_stage(drawing, stage, y, height, grounds, supply_pins, pitch, outputs):
     left, right = 0, 7
     place_symbol(drawing, stage.package, stage.package.p, (left, y), (right, y))
     package_contacts = list(package_pins(stage.package, GRID))
@@ -208,35 +222,28 @@ def _draw_stage(drawing, stage, y, height, grounds, supply_pins, local_sources, 
     sense_y, output_y = pins[stage.sense][1], pins[stage.output][1]
     sense_x, output_x = left - 1.5, right + 1.5
     load_y = output_y - .75 if stage.loads else output_y
-    local_left = local_right = False
-    for _, net, on_left, _ in package_contacts:
-        if net not in local_sources:
-            continue
-        pin_y = pins[net][1]
-        if on_left:
-            local_left = True
-            if pin_y > sense_y:
-                sense_x = left - 4.5
-        else:
-            local_right = True
-            if pin_y > load_y:
-                output_x = right + 4.5
 
     input_return_y = _draw_input_path(drawing, stage, pins[stage.sense], sense_x, pitch)
     bottom_y = min(y - height, input_return_y)
 
     feedback_start = y + height + FEEDBACK_CLEARANCE
-    feedback_end = feedback_start + FEEDBACK_PITCH * (len(stage.feedback) - 1)
+    feedback_end = feedback_start + (max(map(_span, stage.feedback)) if len(stage.feedback) > 1 else 0)
     add_wire(drawing, stage.sense, (sense_x, sense_y), (sense_x, feedback_end))
     add_wire(drawing, stage.output, pins[stage.output], (output_x, output_y), (output_x, feedback_end))
     center = round((sense_x + output_x) / (2 * GRID)) * GRID
     for index, part in enumerate(stage.feedback):
-        row = feedback_start + FEEDBACK_PITCH * index
         half = _span(part) / 2
-        a, b = (center - half, row), (center + half, row)
+        if len(stage.feedback) == 1:
+            a, b = (center - half, feedback_start), (center + half, feedback_start)
+            add_wire(drawing, stage.sense, (sense_x, feedback_start), a)
+            add_wire(drawing, stage.output, b, (output_x, feedback_start))
+        else:
+            x = center + (index - (len(stage.feedback) - 1) / 2) * 2
+            middle = (feedback_start + feedback_end) / 2
+            a, b = (x, middle + half), (x, middle - half)
+            add_wire(drawing, stage.sense, (sense_x, feedback_end), (x, feedback_end), a)
+            add_wire(drawing, stage.output, b, (x, feedback_start), (output_x, feedback_start))
         place_symbol(drawing, part, stage.sense, a, b)
-        add_wire(drawing, stage.sense, (sense_x, row), a)
-        add_wire(drawing, stage.output, b, (output_x, row))
 
     load_columns = [max(len(branch.parts) for branch in path) for path in stage.loads]
     if stage.loads:
@@ -257,7 +264,10 @@ def _draw_stage(drawing, stage, y, height, grounds, supply_pins, local_sources, 
                     add_wire(drawing, branch.end, b, (x, end), (load_x, end))
                     place_symbol(drawing, part, branch.start, a, b)
                 row = end
-            ground_at(drawing, (load_x, row), path[-1].end)
+            if path[-1].end in grounds:
+                ground_at(drawing, (load_x, row), path[-1].end)
+            else:
+                outputs[path[-1].end] = load_x, row
             bottom_y = min(bottom_y, row)
             load_x += columns * pitch
     # Multiple physical contacts may intentionally share ground. Draw each contact.
@@ -266,15 +276,10 @@ def _draw_stage(drawing, stage, y, height, grounds, supply_pins, local_sources, 
         start = left if on_left else right, y + offset
         if net in grounds:
             ground_lead(drawing, start, net, turns=1 if on_left else 3, length=.75)
-        elif net in local_sources:
-            source = local_sources[net]
-            ground = source.n if source.p == net else source.p
-            inline_grounded_voltage(drawing, source, net, ground, start, left=on_left)
         elif net in supply_pins:
             supply_pins[net].append((start, direction))
-    return (min(sense_x, left - 4 if local_left else left),
-            max(output_x + max(0, sum(load_columns) - 1) * pitch,
-                right + 4 if local_right else right),
+    return (sense_x,
+            output_x + max(0, sum(load_columns) - 1) * pitch,
             bottom_y)
 
 
@@ -310,8 +315,35 @@ def _draw_supply_rails(drawing, rails, pins, left, right, pitch, clearance):
     return True
 
 
+def _draw_terminal_packages(drawing, packages, outputs, upper, grounds, right):
+    """Keep output connectors below the stages, with one external lane per net."""
+    for package in packages:
+        contacts = list(package_pins(package, GRID))
+        connected = [(net, on_left, offset) for _, net, on_left, offset in contacts if net in outputs]
+        height = ceil(package_half_height(package, GRID) / GRID) * GRID
+        y = upper - height - 1.5 - len(connected) * .75
+        place_symbol(drawing, package, package.p, (0, y), (7, y))
+        for index, (net, on_left, offset) in enumerate(connected):
+            start = outputs.pop(net)
+            outer_x = right + 3.25 + index * .75
+            approach_x = -1.25 - index * .75 if on_left else 8.25 + index * .75
+            track_y = upper - .5 - index * .75
+            pin = (0 if on_left else 7, y + offset)
+            add_wire(drawing, net, start, (outer_x, start[1]), (outer_x, track_y),
+                     (approach_x, track_y), (approach_x, pin[1]), pin)
+        for _, net, on_left, offset in contacts:
+            pin = (0 if on_left else 7, y + offset)
+            if net in grounds:
+                ground_lead(drawing, pin, net, turns=1 if on_left else 3, length=.75)
+            elif not any(net == linked for linked, _, _ in connected):
+                end = (pin[0] + (-.75 if on_left else .75), pin[1])
+                add_wire(drawing, net, pin, end)
+                drawing.connectors.append((net, end, net, on_left, offset < 0))
+        upper = y - height - 1.75
+
+
 def package_stage_layout(circuit, labels):
-    """Lay out independent package feedback stages with continuous supply rails."""
+    """Stack package feedback stages, their output connectors and supply rails."""
     parts, grounds = circuit.components, circuit.grounds
     packages = [part for part in parts if isinstance(part, ChipPackage)]
     if not packages or len(parts) > 64 or any(map(quad_package, packages)):
@@ -320,14 +352,26 @@ def package_stage_layout(circuit, labels):
     for part in parts:
         for net in dict.fromkeys(part.terminal_nets):
             owners[net].append(part)
-    stages = []
+    stages, terminals = [], []
     used = set()
     for package in packages:
         stage = _stage(package, owners, grounds)
-        if stage is None or used.intersection(stage.members()):
+        if stage is None:
+            terminals.append(package)
+            continue
+        if used.intersection(stage.members()):
             return None
         stages.append(stage)
         used.update(stage.members())
+    if not stages:
+        return None
+    outputs = [path[-1].end for stage in stages for path in stage.loads if path[-1].end not in grounds]
+    if (len(outputs) != len(set(outputs))
+            or any(sum(package.terminal_nets.count(net) for package in terminals) != 1 for net in outputs)
+            or any(net not in grounds and net not in outputs and len(owners[net]) > 1
+                   for package in terminals for net in package.terminal_nets)):
+        return None
+    used.update(terminals)
     rails = _power_rails([part for part in parts if part not in used], grounds)
     if rails is None:
         return None
@@ -340,24 +384,19 @@ def package_stage_layout(circuit, labels):
     if set(rails) - {net for stage in stages for net in stage.package.terminal_nets}:
         return None
 
-    contacts = Counter(net for package in packages for net in package.terminal_nets)
-    ports = set(circuit.connector_pins).union(circuit.terminals or (), circuit.port or ())
-    local_sources = {
-        net: source for net, (source, shunts) in rails.items()
-        if source.kind == "V" and not shunts and contacts[net] == 1 and net not in ports
-    }
-    rails = {net: rail for net, rail in rails.items() if net not in local_sources}
     drawing = Layout(pin_grid=GRID)
     pins = {net: [] for net in rails}
     caption_chars = max((min(24, len(labels[part.name][0])) for part in parts), default=0)
     pitch = max(4.5, ceil((0.16 * caption_chars + 0.5) / (2 * GRID)) * 2 * GRID)
     upper = 0
     left = right = 0
+    output_pins = {}
     for stage in sorted(stages, key=lambda stage: stage.source.order):
         height = ceil(package_half_height(stage.package, GRID) / GRID) * GRID
-        y = upper - height - FEEDBACK_CLEARANCE - FEEDBACK_PITCH * (len(stage.feedback) - 1)
+        feedback_height = max(map(_span, stage.feedback)) if len(stage.feedback) > 1 else 0
+        y = upper - height - FEEDBACK_CLEARANCE - feedback_height
         stage_left, stage_right, bottom_y = _draw_stage(
-            drawing, stage, y, height, grounds, pins, local_sources, pitch,
+            drawing, stage, y, height, grounds, pins, pitch, output_pins,
         )
         upper = bottom_y - 1.75
         left = min(left, stage_left)
@@ -368,5 +407,6 @@ def package_stage_layout(circuit, labels):
     clearance = max(3.25, ceil((0.17 * supply_caption + 1.25) / GRID) * GRID)
     if not _draw_supply_rails(drawing, rails, pins, left, right, pitch, clearance):
         return None
+    _draw_terminal_packages(drawing, terminals, output_pins, upper, grounds, right)
     mark_crossings(drawing)
     return drawing

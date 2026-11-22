@@ -1,0 +1,108 @@
+# HYBRID-01: stereo LT1677 output-stage test
+# Uses only *electrical* models for testing. FPGA and Daisy are
+# represented by test power/audio sources, not their digital models.
+# No saved @ooc-layout metadata: allow OOC to place everything afresh.
+# Scarlett LINE INPUT TEST, not a low-impedance headphone driver.
+# Verify the physical TRS contact map with a continuity meter.
+
+include("LT1677");
+
+# 1kHz controls the AC audio sources below.
+f = 1k;
+
+# IMPORTANT: THIS IS A 5V DC SUPPLY, NOT A 1kHz 5V AC SIGNAL.
+# It represents a regulated +5V FPGA power header output.
+battery FPGA_5V {
+    V = 5;
+    wire = fpga_5v;
+}
+
+# Simulation-only analog outputs in place of the Daisy Seed3.
+VdaisyLeft(0.1 Vrms) between(daisy_audio_out1, 0);
+VdaisyRight(0.05 Vrms) between(daisy_audio_out2, 0);
+
+# Shared 2.5V reference and bypass capacitors.
+RbiasTop(10k) between(fpga_5v, vref_2v5);
+RbiasBottom(10k) between(vref_2v5, 0);
+Cref(10uF) between(vref_2v5, 0);
+CrefHF(100nF) between(vref_2v5, 0);
+
+# Reusable audio output stage.
+# Gain -1, low-voltage source / Scarlett high-Z line load.
+circuit AudioChannel(source, amplifier_out, line_out,
+                     positive_supply, bias, ground) {
+
+    # 3 x 560nF in parallel = 1.68uF, AC-coupling the source.
+    C1(560nF) between(source, coupled);
+    C2(560nF) between(source, coupled);
+    C3(560nF) between(source, coupled);
+
+    Rin(10k) between(coupled, minus);
+    Rfeedback(10k) between(amplifier_out, minus);
+
+    # Physical LT1677 pins 1,2,3,4,5,6,7,8.
+    # V+ = 5V, V- = GND, non-inverting input = 2.5V.
+    LT1677(trim1, minus, bias, ground,
+           nc5, amplifier_out, positive_supply, trim8);
+
+    Cdecouple(100nF) between(positive_supply, ground);
+
+    # DC-block the 2.5V-biased LT1677 output for the Scarlett.
+    # For a polarized part, positive terminal toward amplifier_out.
+    Coutput(10uF) between(amplifier_out, line_out);
+}
+
+# SCHEMATIC CONTAINERS WITH ACTUAL ELECTRICAL CONNECTIONS.
+# Their 10M input/monitor resistors are tiny loading approximations,
+# not real FPGA, Daisy, or jack internal schematics.
+# Every resistor has two explicit pin connections.
+chip DE10LitePower(plus5, ground) {
+    Rmonitor(10M) between(plus5, ground);
+}
+
+chip DaisySeed3Audio(left, right, ground) {
+    RleftSense(10M) between(left, ground);
+    RrightSense(10M) between(right, ground);
+}
+
+chip ScarlettLineInputs(left, right, ground) {
+    RlineL(10k) between(left, ground);
+    RlineR(10k) between(right, ground);
+}
+
+# These two 10M shunts make the jack a solvable approximation;
+# the actual metal contacts simply map tip/ring/sleeve nodes.
+# The AUX contacts are deliberately unused and have no behavior.
+chip HeadphoneJack5(sleeve, ring, aux3, aux4, tip) {
+    RjackLeft(10M) between(tip, sleeve);
+    RjackRight(10M) between(ring, sleeve);
+}
+
+main {
+    DE10LitePower(fpga_5v, 0);
+    DaisySeed3Audio(daisy_audio_out1, daisy_audio_out2, 0);
+
+    AudioChannel(daisy_audio_out1, amp_left, jack_tip,
+                 fpga_5v, vref_2v5, 0);
+    AudioChannel(daisy_audio_out2, amp_right, jack_ring,
+                 fpga_5v, vref_2v5, 0);
+
+    # Headphone jack pins: sleeve/ring/aux3/aux4/tip.
+    # Pin names are logical; verify physical contact pin numbers.
+    HeadphoneJack5(0, jack_ring, unused_aux3, unused_aux4, jack_tip);
+    ScarlettLineInputs(jack_tip, jack_ring, 0);
+
+    measure = V fpga_5v 0;
+    measure = V vref_2v5 0;
+    measure = V daisy_audio_out1 0;
+    measure = V daisy_audio_out2 0;
+    measure = V amp_left 0;
+    measure = V amp_right 0;
+    measure = V jack_tip 0;
+    measure = V jack_ring 0;
+}
+
+
+# @ooc-layout-begin padding=2
+# {"version":1,"mode":"auto","layouts":[[null,"auto",{"symbols":[["Vbattery1","V",["fpga_5v","0"],[4.5,-9.75],[4.5,-11.25],"+"],["VdaisyLeft","V",["daisy_audio_out1","0"],[14.5,-9.75],[14.5,-11.25],"+"],["VdaisyRight","V",["daisy_audio_out2","0"],[25.0,-9.75],[25.0,-11.25],"+"],["RbiasTop","R",["fpga_5v","vref_2v5"],[24.0,-17.75],[26.0,-17.75],"+"],["RbiasBottom","R",["vref_2v5","0"],[13.0,-20.75],[13.0,-22.75],"+"],["Cref","C",["vref_2v5","0"],[14.5,-21.25],[14.5,-22.25],"+"],["CrefHF","C",["vref_2v5","0"],[16.0,-21.25],[16.0,-22.25],"+"],["@method:0","H",["fpga_5v","0"],[35.75,-14.25],[42.25,-14.25],"+"],["@method:1","H",["daisy_audio_out1","daisy_audio_out2","0"],[35.75,-17.25],[42.25,-17.25],"+"],["C1_AudioChannel_1","C",["daisy_audio_out1","AudioChannel_1.coupled"],[13.0,-27.25],[13.0,-28.25],"+"],["C2_AudioChannel_1","C",["daisy_audio_out1","AudioChannel_1.coupled"],[14.5,-27.25],[14.5,-28.25],"+"],["C3_AudioChannel_1","C",["daisy_audio_out1","AudioChannel_1.coupled"],[16.0,-27.25],[16.0,-28.25],"+"],["Rin_AudioChannel_1","R",["AudioChannel_1.coupled","AudioChannel_1.minus"],[24.0,-31.25],[26.0,-31.25],"+"],["Rfeedback_AudioChannel_1","R",["amp_left","AudioChannel_1.minus"],[8.5,-31.25],[10.5,-31.25],"+"],["@method:3","H",["AudioChannel_1.trim1","AudioChannel_1.minus","vref_2v5","0","AudioChannel_1.nc5","amp_left","fpga_5v","AudioChannel_1.trim8"],[35.75,-21.75],[42.25,-21.75],"+"],["Cdecouple_AudioChannel_1","C",["fpga_5v","0"],[46.5,-8.75],[46.5,-9.75],"+"],["Coutput_AudioChannel_1","C",["amp_left","jack_tip"],[53.5,-25.5],[54.5,-25.5],"+"],["C1_AudioChannel_2","C",["daisy_audio_out2","AudioChannel_2.coupled"],[13.0,-38.5],[13.0,-39.5],"+"],["C2_AudioChannel_2","C",["daisy_audio_out2","AudioChannel_2.coupled"],[14.5,-38.5],[14.5,-39.5],"+"],["C3_AudioChannel_2","C",["daisy_audio_out2","AudioChannel_2.coupled"],[16.0,-38.5],[16.0,-39.5],"+"],["Rin_AudioChannel_2","R",["AudioChannel_2.coupled","AudioChannel_2.minus"],[24.0,-46.0],[26.0,-46.0],"+"],["Rfeedback_AudioChannel_2","R",["amp_right","AudioChannel_2.minus"],[11.25,-46.0],[13.25,-46.0],"+"],["@method:5","H",["AudioChannel_2.trim1","AudioChannel_2.minus","vref_2v5","0","AudioChannel_2.nc5","amp_right","fpga_5v","AudioChannel_2.trim8"],[35.75,-28.5],[42.25,-28.5],"+"],["Cdecouple_AudioChannel_2","C",["fpga_5v","0"],[48.0,-8.75],[48.0,-9.75],"+"],["Coutput_AudioChannel_2","C",["amp_right","jack_ring"],[50.0,-44.75],[51.0,-44.75],"+"],["@method:6","H",["0","jack_ring","unused_aux3","unused_aux4","jack_tip"],[35.75,-53.25],[42.25,-53.25],"+"],["@method:7","H",["jack_tip","jack_ring","0"],[35.75,-60.75],[42.25,-60.75],"+"]],"wires":{"fpga_5v":[[[4.5,-9.75],[8.75,-9.75]],[[8.75,-15.5],[8.75,-9.75]],[[8.75,-15.5],[26.0,-15.5]],[[26.0,-17.75],[26.0,-15.5]],[[26.0,-15.5],[35.75,-15.5]],[[35.75,-15.5],[35.75,-14.25]],[[35.75,-15.5],[45.0,-15.5]],[[42.25,-28.0],[45.0,-28.0]],[[42.25,-21.25],[45.0,-21.25]],[[45.0,-28.0],[45.0,-21.25]],[[45.0,-21.25],[45.0,-15.5]],[[45.0,-15.5],[48.75,-15.5]],[[46.5,-8.75],[48.0,-8.75]],[[48.0,-8.75],[48.75,-8.75]],[[48.75,-15.5],[48.75,-8.75]]],"daisy_audio_out1":[[[13.0,-27.25],[14.5,-27.25]],[[14.5,-27.25],[16.0,-27.25]],[[14.5,-9.75],[19.75,-9.75]],[[16.0,-27.25],[19.75,-27.25]],[[19.75,-27.25],[19.75,-16.75]],[[19.75,-16.75],[19.75,-9.75]],[[19.75,-16.75],[35.75,-16.75]]],"daisy_audio_out2":[[[13.0,-38.5],[14.5,-38.5]],[[14.5,-38.5],[16.0,-38.5]],[[16.0,-38.5],[28.75,-38.5]],[[25.0,-9.75],[28.75,-9.75]],[[28.75,-38.5],[28.75,-17.75]],[[28.75,-17.75],[28.75,-9.75]],[[28.75,-17.75],[35.75,-17.75]]],"vref_2v5":[[[13.0,-20.75],[14.5,-20.75]],[[14.5,-21.25],[14.5,-20.75]],[[14.5,-20.75],[16.0,-20.75]],[[16.0,-21.25],[16.0,-20.75]],[[16.0,-20.75],[20.75,-20.75]],[[20.75,-24.5],[20.75,-20.75]],[[20.75,-24.5],[30.0,-24.5]],[[20.75,-20.75],[20.75,-17.75]],[[20.75,-17.75],[24.0,-17.75]],[[30.0,-29.0],[30.0,-24.5]],[[30.0,-29.0],[35.75,-29.0]],[[30.0,-24.5],[30.0,-22.25]],[[30.0,-22.25],[35.75,-22.25]]],"AudioChannel_1.coupled":[[[13.0,-28.25],[14.5,-28.25]],[[14.5,-28.25],[16.0,-28.25]],[[16.0,-31.25],[16.0,-28.25]],[[16.0,-31.25],[24.0,-31.25]]],"amp_left":[[[9.5,-30.25],[9.5,-25.5]],[[9.5,-25.5],[44.0,-25.5]],[[42.25,-22.25],[44.0,-22.25]],[[44.0,-25.5],[44.0,-22.25]],[[44.0,-25.5],[53.5,-25.5]]],"AudioChannel_2.coupled":[[[13.0,-39.5],[14.5,-39.5]],[[14.5,-39.5],[16.0,-39.5]],[[16.0,-46.0],[16.0,-39.5]],[[16.0,-46.0],[24.0,-46.0]]],"amp_right":[[[12.25,-45.0],[12.25,-43.75]],[[12.25,-43.75],[49.25,-43.75]],[[42.25,-29.0],[49.25,-29.0]],[[49.25,-43.75],[49.25,-29.0]],[[49.25,-43.75],[50.5,-43.75]],[[50.5,-44.25],[50.5,-43.75]]],"0":[[[4.5,-11.5],[4.5,-11.25]],[[13.0,-22.75],[14.5,-22.75]],[[14.5,-22.75],[14.5,-22.25]],[[14.5,-22.75],[16.0,-22.75]],[[14.5,-11.5],[14.5,-11.25]],[[16.0,-22.75],[16.0,-22.25]],[[25.0,-11.5],[25.0,-11.25]],[[35.0,-52.25],[35.75,-52.25]],[[35.0,-30.0],[35.75,-30.0]],[[35.0,-23.25],[35.75,-23.25]],[[42.25,-60.25],[43.25,-60.25]],[[42.25,-16.75],[43.25,-16.75]],[[42.25,-14.25],[43.25,-14.25]],[[46.5,-9.75],[47.25,-9.75]],[[47.25,-9.75],[48.0,-9.75]]],"AudioChannel_1.minus":[[[9.5,-32.25],[29.0,-32.25]],[[26.0,-31.25],[29.0,-31.25]],[[29.0,-32.25],[29.0,-31.25]],[[29.0,-31.25],[29.0,-21.25]],[[29.0,-21.25],[35.75,-21.25]]],"jack_tip":[[[35.75,-60.25],[35.75,-56.0]],[[35.75,-56.0],[49.25,-56.0]],[[42.25,-52.25],[49.25,-52.25]],[[49.25,-56.0],[49.25,-52.25]],[[49.25,-56.0],[54.5,-56.0]],[[54.5,-56.0],[54.5,-25.5]]],"AudioChannel_2.minus":[[[12.25,-48.75],[12.25,-47.0]],[[12.25,-48.75],[26.0,-48.75]],[[26.0,-48.75],[26.0,-46.0]],[[26.0,-48.75],[29.75,-48.75]],[[29.75,-48.75],[29.75,-28.0]],[[29.75,-28.0],[35.75,-28.0]]],"jack_ring":[[[29.75,-61.25],[29.75,-57.0]],[[29.75,-61.25],[35.75,-61.25]],[[29.75,-57.0],[29.75,-53.25]],[[29.75,-57.0],[50.5,-57.0]],[[29.75,-53.25],[35.75,-53.25]],[[50.5,-57.0],[50.5,-45.25]]],"AudioChannel_1.trim1":[[[35.0,-20.25],[35.75,-20.25]]],"AudioChannel_1.nc5":[[[42.25,-23.25],[43.25,-23.25]]],"AudioChannel_1.trim8":[[[42.25,-20.25],[43.25,-20.25]]],"AudioChannel_2.trim1":[[[35.0,-27.0],[35.75,-27.0]]],"AudioChannel_2.nc5":[[[42.25,-30.0],[43.25,-30.0]]],"AudioChannel_2.trim8":[[[42.25,-27.0],[43.25,-27.0]]],"unused_aux3":[[[35.0,-54.25],[35.75,-54.25]]],"unused_aux4":[[[42.25,-53.25],[43.25,-53.25]]]},"junctions":{"fpga_5v":[[26.0,-15.5],[35.75,-15.5],[45.0,-21.25],[45.0,-15.5]],"daisy_audio_out1":[[19.75,-16.75]],"daisy_audio_out2":[[28.75,-17.75]],"vref_2v5":[[14.5,-20.75],[16.0,-20.75],[20.75,-20.75],[30.0,-24.5]],"amp_left":[[44.0,-25.5]],"amp_right":[[49.25,-43.75]],"0":[[14.5,-22.75]],"AudioChannel_1.minus":[[29.0,-31.25]],"jack_tip":[[49.25,-56.0]],"AudioChannel_2.minus":[[26.0,-48.75]],"jack_ring":[[29.75,-57.0]]},"labels":{},"grounds":[[4.5,-11.5],[14.5,-11.5],[25.0,-11.5],[43.25,-14.25],[43.25,-16.75],[35.0,-23.25],[35.0,-30.0],[35.0,-52.25],[43.25,-60.25],[14.5,-22.75],[47.25,-9.75]],"ground_names":[[[14.5,-22.75],"0"],[[47.25,-9.75],"0"]],"ground_rotations":[[[43.25,-14.25],3],[[43.25,-16.75],3],[[35.0,-23.25],1],[[35.0,-30.0],1],[[35.0,-52.25],1],[[43.25,-60.25],3]],"connectors":[["AudioChannel_1.trim1",[35.0,-20.25],"N5",true,false],["AudioChannel_1.nc5",[43.25,-23.25],"N6",false,true],["AudioChannel_1.trim8",[43.25,-20.25],"N7",false,false],["AudioChannel_2.trim1",[35.0,-27.0],"N8",true,false],["AudioChannel_2.nc5",[43.25,-30.0],"N9",false,true],["AudioChannel_2.trim8",[43.25,-27.0],"N10",false,false],["unused_aux3",[35.0,-54.25],"unused_aux3",true,true],["unused_aux4",[43.25,-53.25],"unused_aux4",false,false]],"boundary":{},"rotations":{"RbiasTop":2,"Rfeedback_AudioChannel_1":1,"Rfeedback_AudioChannel_2":1,"Coutput_AudioChannel_2":1},"crossings":[["fpga_5v",[26.0,-17.75],[26.0,-15.5],[-16.75]],["fpga_5v",[45.0,-28.0],[45.0,-21.25],[-25.5]],["daisy_audio_out1",[19.75,-27.25],[19.75,-16.75],[-20.75,-25.5]],["daisy_audio_out1",[19.75,-16.75],[19.75,-9.75],[-15.5]],["daisy_audio_out2",[28.75,-38.5],[28.75,-17.75],[-24.5,-25.5,-32.25,-31.25]],["daisy_audio_out2",[28.75,-17.75],[28.75,-9.75],[-15.5,-16.75]],["vref_2v5",[30.0,-29.0],[30.0,-24.5],[-25.5,-28.0]],["AudioChannel_2.coupled",[16.0,-46.0],[16.0,-39.5],[-43.75]],["AudioChannel_1.minus",[29.0,-31.25],[29.0,-21.25],[-24.5,-25.5]],["jack_tip",[35.75,-60.25],[35.75,-56.0],[-57.0]],["AudioChannel_2.minus",[29.75,-48.75],[29.75,-28.0],[-43.75]],["jack_ring",[50.5,-57.0],[50.5,-45.25],[-56.0]]],"label_offsets":[],"pin_grid":0.25}]],"logic":{"schematic":{},"simulation":{}}}
+# @ooc-layout-end
