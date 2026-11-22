@@ -4,14 +4,14 @@
 # keep an explicit Optimize wiring action from becoming an unbounded background process.
 
 import math
-from collections import Counter
+from collections import Counter, defaultdict
 from dataclasses import replace
 from statistics import median_low
 
 from circuitlab.layout.branch_alignment import stacked_alignment_candidates
 from circuitlab.layout.checks import clear_of_bodies, mark_crossings, preserves_nets
 from circuitlab.layout.editing import move_symbol
-from circuitlab.layout.geometry import rotate_point, symbol_bounds, wire_axis
+from circuitlab.layout.geometry import ChipPackage, rotate_point, symbol_bounds, wire_axis
 from circuitlab.layout.grid import align_layout
 from circuitlab.layout.lead_spacing import shorten_symbol_leads
 from circuitlab.layout.passive_alignment import align_passive_tees, rotate_detoured_passives, rotate_passive
@@ -310,12 +310,22 @@ def _align_stacks(circuit, drawing, *, budget=8, grid=0.25):
     return trial if trial is not None else (drawing, frozenset())
 
 
+def _package_columns(drawing):
+    """Keep already aligned packages together during automatic placement cleanup."""
+    columns = defaultdict(list)
+    for part, a, b, _ in drawing.symbols:
+        if isinstance(part, ChipPackage) and not drawing.rotations.get(part.name):
+            columns[a[0], b[0]].append(part.name)
+    return frozenset(name for column in columns.values() if len(column) > 1 for name in column)
+
+
 def refine_automatic_layout(circuit, drawing):
     """Try short, grid-safe placement changes on a freshly routed drawing."""
     size = len(drawing.symbols)
     grid = drawing.pin_grid
     if not grid:
         return drawing
+    package_columns = _package_columns(drawing)
     stack_parts = frozenset()
     if size <= 64:
         drawing, stack_parts = _align_stacks(circuit, drawing, budget=3, grid=grid)
@@ -335,7 +345,8 @@ def refine_automatic_layout(circuit, drawing):
         circuit, drawing, budget=8 if size <= 32 else 12, grid=grid, reserve_captions=True,
     )
     if 8 < size <= 32:
-        candidate = reposition(circuit, candidate, budget=8, grid=grid, fixed_parts=stack_parts)
+        candidate = reposition(circuit, candidate, budget=8, grid=grid,
+                               fixed_parts=stack_parts | package_columns)
         if not candidate.boundary and candidate.uses_packages:
             candidate = rotate_detoured_passives(
                 circuit, candidate, budget=12, grid=grid, fixed_parts=stack_parts,

@@ -1,68 +1,130 @@
-# Stereo LT1677 audio stage
-# One LT1677 per channel.
-# Gain approximately -1.
-# Outputs feed the headphone-driver stage.
+
+# Daisy Seed3 Stereo LT1677 Audio Output
+# Two identical inverting amplifier channels
+# Nominal gain = -1
+#
+# Daisy physical pin 18 = Audio Out 1 (Left)
+# Daisy physical pin 19 = Audio Out 2 (Right)
+# Daisy physical pin 20 = AGND
+#
+# TRS headphone jack:
+# Tip    = Left
+# Ring   = Right
+# Sleeve = Ground
+#
+# Test loads are 10k, NOT actual headphones.
 
 include("LT1677");
 
 f = 1k;
 
-# Power supplies, both referenced to ground.
+# Bipolar op-amp power supply
 Vpos(5V) between(vcc, 0);
 Vneg(-5V) between(vee, 0);
 
-# Test signals representing the Seed3 audio outputs.
-# Left:  Seed3 physical pin 18.
-# Right: Seed3 physical pin 19.
+# Simulated Daisy audio signals
 Vleft(0.1 Vrms) between(audio_left, 0);
 Vright(0.1 Vrms) between(audio_right, 0);
 
-circuit AudioChannel(input, output, positive, negative, ground) {
 
-    # Input DC blocking and input resistance.
-    Cinput(2.2uF) between(input, coupled);
+# =========================================
+# REUSABLE AUDIO CHANNEL
+# =========================================
+
+circuit AudioChannel(input, amp_out, jack_out,
+                     positive, negative, ground) {
+
+    # Three capacitors in parallel
+    # Total capacitance = 1.68uF
+
+    C1(560nF) between(input, coupled);
+    C2(560nF) between(input, coupled);
+    C3(560nF) between(input, coupled);
+
+    # Input resistance
     Rin(10k) between(coupled, inverting);
 
-    # Negative feedback and compensation.
-    Rfeedback(10k) between(output, inverting);
-    Cfeedback(47pF) between(output, inverting);
+    # Negative feedback, nominal gain -1
+    Rfeedback(10k) between(amp_out, inverting);
 
     # LT1677 physical pin order:
-    # 1 trim, 2 minus, 3 plus, 4 negative supply,
-    # 5 NC, 6 output, 7 positive supply, 8 trim.
+    # 1 = Trim
+    # 2 = Inverting input
+    # 3 = Non-inverting input
+    # 4 = Negative supply
+    # 5 = NC
+    # 6 = Output
+    # 7 = Positive supply
+    # 8 = Trim
+
     LT1677(
         trim1,
         inverting,
         ground,
         negative,
         nc5,
-        output,
+        amp_out,
         positive,
         trim8
     );
 
-    # Supply bypass capacitors.
+    # Output series resistance
+    Routput(100) between(amp_out, jack_out);
+
+    # Supply bypass capacitors
     Cpositive(100nF) between(positive, ground);
     Cnegative(100nF) between(negative, ground);
 }
 
+
+# =========================================
+# MAIN STEREO CIRCUIT
+# =========================================
+
 main {
 
+    # LEFT CHANNEL
     AudioChannel(
-        audio_left, preamp_left,
-        vcc, vee, 0
+        audio_left,
+        preamp_left,
+        headphone_tip,
+        vcc,
+        vee,
+        0
     );
 
+    # RIGHT CHANNEL
     AudioChannel(
-        audio_right, preamp_right,
-        vcc, vee, 0
+        audio_right,
+        preamp_right,
+        headphone_ring,
+        vcc,
+        vee,
+        0
     );
 
-    # Light test loads, representing a following stage.
-    # These resistors are not headphone models.
-    RloadLeft(10k) between(preamp_left, 0);
-    RloadRight(10k) between(preamp_right, 0);
+    # Light test loads
+    # Replace with actual output-stage model later
+    RloadLeft(10k) between(headphone_tip, 0);
+    RloadRight(10k) between(headphone_ring, 0);
 
+    # Daisy output measurements
+    measure = V audio_left 0;
+    measure = V audio_right 0;
+
+    # LT1677 output measurements
     measure = V preamp_left 0;
     measure = V preamp_right 0;
+
+    # Headphone jack signal measurements
+    measure = V headphone_tip 0;
+    measure = V headphone_ring 0;
+
+    # Stereo differential measurement
+    measure = V headphone_tip headphone_ring;
 }
+
+
+# @ooc-layout-begin padding=2
+# {"version":1,"mode":"auto","layouts":[[null,"auto",{"symbols":[["@method:1","H",["AudioChannel_1.trim1","AudioChannel_1.inverting","0","vee","AudioChannel_1.nc5","preamp_left","vcc","AudioChannel_1.trim8"],[-2.75,-3.5],[4.25,-3.5],"+"],["Vleft","V",["audio_left","0"],[-12.25,-3.0],[-12.25,-4.5],"+"],["C1_AudioChannel_1","C",["audio_left","AudioChannel_1.coupled"],[-10.5,-4.75],[-9.5,-4.75],"+"],["C2_AudioChannel_1","C",["audio_left","AudioChannel_1.coupled"],[-10.5,-3.0],[-9.5,-3.0],"+"],["C3_AudioChannel_1","C",["audio_left","AudioChannel_1.coupled"],[-10.5,-1.25],[-9.5,-1.25],"+"],["Rin_AudioChannel_1","R",["AudioChannel_1.coupled","AudioChannel_1.inverting"],[-6.5,-3.0],[-4.5,-3.0],"+"],["Rfeedback_AudioChannel_1","R",["preamp_left","AudioChannel_1.inverting"],[7.25,-1.75],[5.25,-1.75],"+"],["Routput_AudioChannel_1","R",["preamp_left","headphone_tip"],[6.25,-4.75],[6.25,-6.75],"+"],["RloadLeft","R",["headphone_tip","0"],[6.25,-6.75],[6.25,-8.75],"+"],["@method:3","H",["AudioChannel_2.trim1","AudioChannel_2.inverting","0","vee","AudioChannel_2.nc5","preamp_right","vcc","AudioChannel_2.trim8"],[-2.75,-14.0],[4.25,-14.0],"+"],["Vright","V",["audio_right","0"],[-12.25,-13.5],[-12.25,-15.0],"+"],["C1_AudioChannel_2","C",["audio_right","AudioChannel_2.coupled"],[-10.5,-15.25],[-9.5,-15.25],"+"],["C2_AudioChannel_2","C",["audio_right","AudioChannel_2.coupled"],[-10.5,-13.5],[-9.5,-13.5],"+"],["C3_AudioChannel_2","C",["audio_right","AudioChannel_2.coupled"],[-10.5,-11.75],[-9.5,-11.75],"+"],["Rin_AudioChannel_2","R",["AudioChannel_2.coupled","AudioChannel_2.inverting"],[-6.5,-13.5],[-4.5,-13.5],"+"],["Rfeedback_AudioChannel_2","R",["preamp_right","AudioChannel_2.inverting"],[7.25,-12.25],[5.25,-12.25],"+"],["Routput_AudioChannel_2","R",["preamp_right","headphone_ring"],[6.25,-15.25],[6.25,-17.25],"+"],["RloadRight","R",["headphone_ring","0"],[6.25,-17.25],[6.25,-19.25],"+"],["Vpos","V",["vcc","0"],[12.0,3.25],[12.0,1.75],"+"],["Cpositive_AudioChannel_1","C",["vcc","0"],[16.5,3.25],[16.5,2.25],"+"],["Cpositive_AudioChannel_2","C",["vcc","0"],[21.0,3.25],[21.0,2.25],"+"],["Vneg","V",["vee","0"],[-7.75,3.25],[-7.75,1.75],"+"],["Cnegative_AudioChannel_1","C",["vee","0"],[-12.25,3.25],[-12.25,2.25],"+"],["Cnegative_AudioChannel_2","C",["vee","0"],[-16.75,3.25],[-16.75,2.25],"+"]],"wires":{"audio_left":[[[-12.25,-3.0],[-10.5,-3.0]],[[-10.5,-4.75],[-10.5,-3.0]],[[-10.5,-3.0],[-10.5,-1.25]]],"AudioChannel_1.coupled":[[[-9.5,-4.75],[-9.5,-3.0]],[[-9.5,-3.0],[-9.5,-1.25]],[[-9.5,-3.0],[-6.5,-3.0]]],"AudioChannel_1.inverting":[[[-4.5,-3.0],[-3.0,-3.0]],[[-3.0,-3.0],[-3.0,-0.75]],[[-3.0,-3.0],[-2.75,-3.0]],[[-3.0,-0.75],[6.25,-0.75]]],"preamp_left":[[[4.25,-4.0],[6.25,-4.0]],[[6.25,-4.75],[6.25,-4.0]],[[6.25,-4.0],[6.25,-2.75]]],"audio_right":[[[-12.25,-13.5],[-10.5,-13.5]],[[-10.5,-15.25],[-10.5,-13.5]],[[-10.5,-13.5],[-10.5,-11.75]]],"AudioChannel_2.coupled":[[[-9.5,-15.25],[-9.5,-13.5]],[[-9.5,-13.5],[-9.5,-11.75]],[[-9.5,-13.5],[-6.5,-13.5]]],"AudioChannel_2.inverting":[[[-4.5,-13.5],[-3.0,-13.5]],[[-3.0,-13.5],[-3.0,-11.25]],[[-3.0,-13.5],[-2.75,-13.5]],[[-3.0,-11.25],[6.25,-11.25]]],"preamp_right":[[[4.25,-14.5],[6.25,-14.5]],[[6.25,-15.25],[6.25,-14.5]],[[6.25,-14.5],[6.25,-13.25]]],"vcc":[[[4.25,-13.5],[7.25,-13.5]],[[4.25,-3.0],[7.25,-3.0]],[[7.25,-13.5],[7.25,-3.0]],[[7.25,-3.0],[7.25,3.25]],[[7.25,3.25],[12.0,3.25]],[[12.0,3.25],[16.5,3.25]],[[16.5,3.25],[21.0,3.25]]],"vee":[[[-16.75,3.25],[-12.25,3.25]],[[-12.25,3.25],[-7.75,3.25]],[[-7.75,3.25],[-3.5,3.25]],[[-3.5,-15.5],[-3.5,-5.0]],[[-3.5,-15.5],[-2.75,-15.5]],[[-3.5,-5.0],[-3.5,3.25]],[[-3.5,-5.0],[-2.75,-5.0]]]},"junctions":{"audio_left":[[-10.5,-3.0]],"AudioChannel_1.coupled":[[-9.5,-3.0]],"AudioChannel_1.inverting":[[-3.0,-3.0]],"preamp_left":[[6.25,-4.0]],"audio_right":[[-10.5,-13.5]],"AudioChannel_2.coupled":[[-9.5,-13.5]],"AudioChannel_2.inverting":[[-3.0,-13.5]],"preamp_right":[[6.25,-14.5]],"vcc":[[7.25,-3.0]],"vee":[[-3.5,-5.0]]},"labels":{},"grounds":[[-12.25,-4.5],[6.25,-8.75],[-2.75,-4.0],[-12.25,-15.0],[6.25,-19.25],[-2.75,-14.5],[12.0,1.75],[16.5,2.25],[21.0,2.25],[-7.75,1.75],[-12.25,2.25],[-16.75,2.25]],"ground_names":[],"ground_rotations":[[[-2.75,-4.0],1],[[-2.75,-14.5],1]],"connectors":[],"boundary":{},"rotations":{"Rfeedback_AudioChannel_1":1,"Rfeedback_AudioChannel_2":1},"crossings":[["preamp_left",[6.25,-4.0],[6.25,-2.75],[-3.0]],["preamp_right",[6.25,-14.5],[6.25,-13.25],[-13.5]],["vee",[-3.5,-15.5],[-3.5,-5.0],[-13.5]],["vee",[-3.5,-5.0],[-3.5,3.25],[-3.0]]],"label_offsets":[],"pin_grid":0.25}]],"logic":{"schematic":{},"simulation":{}}}
+# @ooc-layout-end

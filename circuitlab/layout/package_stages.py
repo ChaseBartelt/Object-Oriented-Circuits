@@ -26,19 +26,33 @@ def _span(part):
 
 
 @dataclass(frozen=True)
+class Branch:
+    """Parallel two-terminal parts between consecutive stage junctions."""
+
+    parts: tuple[Component, ...]
+    start: str
+    end: str
+
+    @property
+    def span(self):
+        return max(map(_span, self.parts))
+
+
+@dataclass(frozen=True)
 class Stage:
     package: ChipPackage
     source: Component
     input_net: str
     sense: str
     output: str
-    path: tuple[tuple[Component, str], ...]
+    path: tuple[Branch, ...]
     feedback: tuple[Component, ...]
-    loads: tuple[Component, ...]
+    loads: tuple[tuple[Branch, ...], ...]
 
     def members(self):
-        return {self.package, self.source, *self.feedback, *self.loads,
-                *(part for part, _ in self.path)}
+        return {self.package, self.source, *self.feedback,
+                *(part for branch in self.path for part in branch.parts),
+                *(part for path in self.loads for branch in path for part in branch.parts)}
 
 
 def _grounded_return(part, net, grounds):
@@ -47,8 +61,18 @@ def _grounded_return(part, net, grounds):
     return part.n == net and part.p in grounds
 
 
+def _parallel_branch(parts, net):
+    """Accept one part or a parallel bank, without crossing a distinct branch."""
+    if not parts or any(part.kind not in PASSIVE or part.p == part.n for part in parts):
+        return None
+    opposite = {part.n if part.p == net else part.p for part in parts}
+    if len(opposite) != 1:
+        return None
+    return Branch(tuple(parts), net, opposite.pop())
+
+
 def _input_chain(sense, output, package, feedback, owners, grounds):
-    """Walk from the sensing pin to a grounded source without branching."""
+    """Walk input series sections and parallel banks back to a grounded source."""
     net = sense
     path = []
     seen = {package, *feedback}
@@ -56,18 +80,39 @@ def _input_chain(sense, output, package, feedback, owners, grounds):
     while net not in visited:
         visited.add(net)
         remaining = [part for part in owners[net] if part not in seen]
-        if len(remaining) != 1:
+        if len(remaining) == 1:
+            part = remaining[0]
+            if part.is_source and part.kind in {"V", "I"} and _grounded_return(part, net, grounds):
+                return part, net, tuple(reversed(path))
+        branch = _parallel_branch(remaining, net)
+        if branch is None:
             break
-        part = remaining[0]
-        if part.is_source and part.kind in {"V", "I"} and _grounded_return(part, net, grounds):
-            return part, net, tuple(reversed(path))
-        if part.kind not in PASSIVE:
-            break
-        incoming = part.n if part.p == net else part.p
-        path.append((part, incoming))
-        seen.add(part)
-        net = incoming
+        path.append(Branch(branch.parts, branch.end, net))
+        seen.update(branch.parts)
+        net = branch.end
     return None
+
+
+def _load_paths(output, package, feedback, owners, grounds):
+    """Keep grounded output chains together, including series output resistors."""
+    first = defaultdict(list)
+    for part in owners[output]:
+        if part not in (package, *feedback):
+            first[part.n if part.p == output else part.p].append(part)
+    paths, used = [], set()
+    for remaining in first.values():
+        net, path, visited = output, [], set()
+        while net not in grounds:
+            branch = _parallel_branch(remaining, net)
+            if branch is None or net in visited or used.intersection(branch.parts):
+                return None
+            path.append(branch)
+            visited.add(net)
+            used.update(branch.parts)
+            net = branch.end
+            remaining = [part for part in owners[net] if part not in branch.parts]
+        paths.append(tuple(path))
+    return tuple(paths)
 
 
 def _stage(package, owners, grounds):
@@ -90,8 +135,8 @@ def _stage(package, owners, grounds):
         if inputs is None:
             continue
         source, input_net, path = inputs
-        loads = tuple(part for part in owners[output] if part not in (package, *feedback))
-        if all(part.kind in PASSIVE and _grounded_return(part, output, grounds) for part in loads):
+        loads = _load_paths(output, package, feedback, owners, grounds)
+        if loads is not None:
             candidates.append(Stage(package, source, input_net, sense, output, path, feedback, loads))
     return candidates[0] if len(candidates) == 1 else None
 
@@ -126,17 +171,27 @@ def _grounded_branch(drawing, part, net, x, y):
 
 
 def _draw_input_path(drawing, stage, sense_pin, sense_x, pitch):
-    """Run the source and its series input parts along the sensing pin row."""
+    """Run series sections and parallel input banks along the sensing pin row."""
     _, sense_y = sense_pin
     source_x = sense_x - pitch * len(stage.path) - 1.75
     return_y = _grounded_branch(drawing, stage.source, stage.input_net, source_x, sense_y)
     previous_x = source_x
-    for index, (part, incoming) in enumerate(stage.path):
-        span = _span(part)
-        start = source_x + (pitch - span) / 2 + pitch * index
-        add_wire(drawing, incoming, (previous_x, sense_y), (start, sense_y))
-        previous_x = start + span
-        place_symbol(drawing, part, incoming, (start, sense_y), (previous_x, sense_y))
+    for index, branch in enumerate(stage.path):
+        start = source_x + (pitch - branch.span) / 2 + pitch * index
+        end = start + branch.span
+        add_wire(drawing, branch.start, (previous_x, sense_y), (start, sense_y))
+        center_offset = round((len(branch.parts) - 1) * FEEDBACK_PITCH / (2 * GRID)) * GRID
+        rows = [sense_y - center_offset + offset * FEEDBACK_PITCH
+                for offset in range(len(branch.parts))]
+        for part, row in zip(branch.parts, rows):
+            half = _span(part) / 2
+            center = (start + end) / 2
+            a, b = (center - half, row), (center + half, row)
+            add_wire(drawing, branch.start, (start, sense_y), (start, row), a)
+            add_wire(drawing, branch.end, b, (end, row), (end, sense_y))
+            place_symbol(drawing, part, branch.start, a, b)
+        previous_x = end
+        return_y = min(return_y, min(rows) - .5)
     add_wire(drawing, stage.sense, (previous_x, sense_y), sense_pin)
     drawing.junctions.setdefault(stage.sense, []).append((sense_x, sense_y))
     return return_y
@@ -183,14 +238,28 @@ def _draw_stage(drawing, stage, y, height, grounds, supply_pins, local_sources, 
         add_wire(drawing, stage.sense, (sense_x, row), a)
         add_wire(drawing, stage.output, b, (output_x, row))
 
+    load_columns = [max(len(branch.parts) for branch in path) for path in stage.loads]
     if stage.loads:
         add_wire(drawing, stage.output, (output_x, output_y), (output_x, load_y))
         drawing.junctions.setdefault(stage.output, []).append((output_x, output_y))
-        for index, part in enumerate(stage.loads):
-            load_x = output_x + index * pitch
-            if index:
-                add_wire(drawing, stage.output, (load_x - pitch, load_y), (load_x, load_y))
-            bottom_y = min(bottom_y, _grounded_branch(drawing, part, stage.output, load_x, load_y))
+        load_x = output_x
+        for path, columns in zip(stage.loads, load_columns):
+            if load_x != output_x:
+                add_wire(drawing, stage.output, (output_x, load_y), (load_x, load_y))
+            row = load_y
+            for branch in path:
+                end = row - branch.span
+                for offset, part in enumerate(branch.parts):
+                    x = load_x + offset * pitch
+                    half, center = _span(part) / 2, (row + end) / 2
+                    a, b = (x, center + half), (x, center - half)
+                    add_wire(drawing, branch.start, (load_x, row), (x, row), a)
+                    add_wire(drawing, branch.end, b, (x, end), (load_x, end))
+                    place_symbol(drawing, part, branch.start, a, b)
+                row = end
+            ground_at(drawing, (load_x, row), path[-1].end)
+            bottom_y = min(bottom_y, row)
+            load_x += columns * pitch
     # Multiple physical contacts may intentionally share ground. Draw each contact.
     for _, net, on_left, offset in package_contacts:
         direction = -1 if on_left else 1
@@ -204,7 +273,8 @@ def _draw_stage(drawing, stage, y, height, grounds, supply_pins, local_sources, 
         elif net in supply_pins:
             supply_pins[net].append((start, direction))
     return (min(sense_x, left - 4 if local_left else left),
-            max(output_x + max(0, len(stage.loads) - 1) * pitch, right + 4 if local_right else right),
+            max(output_x + max(0, sum(load_columns) - 1) * pitch,
+                right + 4 if local_right else right),
             bottom_y)
 
 

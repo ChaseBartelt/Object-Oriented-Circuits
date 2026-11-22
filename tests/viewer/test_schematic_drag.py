@@ -533,7 +533,31 @@ class SchematicDragTest(unittest.TestCase):
 
     def test_chip_drag_carries_feedback_and_side_passives_and_alt_moves_it_alone(self):
         path = Path(__file__).resolve().parents[2] / 'examples/advanced/synth/HeadphoneJack_DaisySeed3.ckt'
-        circuit = compile_circuit(path.read_text(encoding='utf-8-sig'), path=path, render_only=True)
+        # Keep this drag fixture independent of edits to the interactive demo.
+        source = '''
+        include("LT1677");
+        f = 1k;
+        Vpos(5V) between(vcc, 0);
+        Vneg(-5V) between(vee, 0);
+        Vleft(0.1 Vrms) between(audio_left, 0);
+        Vright(0.1 Vrms) between(audio_right, 0);
+        circuit AudioChannel(input, output, positive, negative, ground) {
+            Cinput(2.2uF) between(input, coupled);
+            Rin(10k) between(coupled, inverting);
+            Rfeedback(10k) between(output, inverting);
+            Cfeedback(47pF) between(output, inverting);
+            LT1677(trim1, inverting, ground, negative, nc5, output, positive, trim8);
+            Cpositive(100nF) between(positive, ground);
+            Cnegative(100nF) between(negative, ground);
+        }
+        main {
+            AudioChannel(audio_left, preamp_left, vcc, vee, 0);
+            AudioChannel(audio_right, preamp_right, vcc, vee, 0);
+            RloadLeft(10k) between(preamp_left, 0);
+            RloadRight(10k) between(preamp_right, 0);
+        }
+        '''
+        circuit = compile_circuit(source, path=path, render_only=True)
         view = self.view
         view.draw(circuit)
         original = view.layout
