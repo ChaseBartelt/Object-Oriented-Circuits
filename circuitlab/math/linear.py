@@ -140,7 +140,8 @@ class NodalBackend:
                 raise CircuitError("Theoretical impedance Z supports AC steady state only; "
                                    "use physical R/L/C components for DC or transient analysis.", code="UnsupportedComponent")
             if nonlinear:
-                raise CircuitError("Theoretical impedance Z cannot be combined with native diodes, BJTs or switches: "
+                devices = "diodes" if any(part.kind == "D" for part in parts) else "BJTs or switches"
+                raise CircuitError(f"Theoretical impedance Z cannot be combined with native {devices}: "
                                    "their native solver supports DC and time-domain analysis, not AC.", code="UnsupportedComponent")
         # Delegate supported DC bias calculations using the original circuit.
         # The time-domain backend handles its own device expansion and result

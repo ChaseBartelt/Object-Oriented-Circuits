@@ -341,30 +341,65 @@ def _block_rows(line, depth, arm_depth):
     return "\n".join(rows), depth, arm_depth
 
 
-_EMPTY_PART_ASSIGNMENT = re.compile(
-    rf"(?:^|[;{{}}])\s*[{''.join(UNITS)}][A-Za-z0-9_]*\s*=\s*$", re.I,
+_LOGICAL_NAME = r"[A-Za-z_]\w*(?:[$*]\{[^}\r\n]*\}\w*)*"
+_LOGICAL_LVALUE = rf"{_LOGICAL_NAME}(?:\.{_LOGICAL_NAME})*(?:\s*\[[^]\r\n]+\])*"
+_ASSIGNMENT_START = re.compile(
+    rf"{_LOGICAL_LVALUE}(?:\s*,\s*{_LOGICAL_LVALUE})*\s*(?:<<|>>|[+*/%&|^-])?=(?!=)"
 )
-_ASSIGNMENT_START = re.compile(r"[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*\s*=(?!=)")
 _LEGACY_END = re.compile(r"\(\s*end\s+", re.I)
+_STATEMENT_START = re.compile(
+    r"(?:case\b|default\s*:|(?:if|else|switch|clock|every|while|for|do)\b|"
+    r"(?:input|output|wire)(?:\s+[A-Za-z_]\w*)?\s*\{|"
+    r"(?:const|let|int|bool|float|property)\s+[A-Za-z_])", re.I,
+)
+_LOGICAL_TOKEN = re.compile(r'[$*]\{[^}]*(?:\}|$)|[()\[\]{};?:]')
+_TRAILING_OPERATOR = re.compile(r"(?:=|(?<!\+)\+|(?<!-)-|[*/%,&|^<>!~?])\s*$")
+
+
+def _continues_expression(code):
+    """Recognize unfinished expressions without treating label/range colons as operators."""
+    if _TRAILING_OPERATOR.search(code):
+        return True
+    if "?" not in code:
+        return False
+    # Slice colons and labels are not ternary arms. Each parenthesis/bracket
+    # level owns its question marks; delimiters end the preceding statement.
+    questions, ternary = [0], False
+    for token in _LOGICAL_TOKEN.finditer(code):
+        mark = token[0]
+        ternary = False
+        if mark in {"(", "["}:
+            questions.append(0)
+        elif mark in {")", "]"}:
+            if len(questions) > 1:
+                questions.pop()
+        elif mark in {";", "{", "}"}:
+            questions = [0]
+        elif mark == "?":
+            questions[-1] += 1
+        elif mark == ":" and questions[-1]:
+            questions[-1] -= 1
+            ternary = True
+    return any(questions) or (ternary and code.rstrip().endswith(":"))
 
 
 # Preserve the opening line when joining continued pin lists and expressions.
 def _logical_lines(source):
     """Join continued pin lists/expressions, retaining the opening line number."""
-    pending, opened, parentheses = [], 0, 0
+    pending, visible_pending, opened, parentheses, brackets = [], [], 0, 0, 0
     quoted, escaped = False, False
     for number, raw in enumerate(mask_comments(source).splitlines(), 1):
         line = raw.strip()
-        if pending and not parentheses and not quoted:
-            # A blank component value is a placeholder. Keep it separate from
-            # the next assignment or closing marker, while allowing a value
-            # to continue on its own line.
-            if (line.startswith("}") or _ASSIGNMENT_START.match(line)
-                    or (_LEGACY_END.match(line) and MARKER.match(line))):
-                previous = " ".join(pending)
-                if _EMPTY_PART_ASSIGNMENT.search(previous):
-                    yield opened, previous
-                    pending = []
+        if pending and not quoted:
+            # A fresh statement is never an operand of an unfinished expression.
+            # Flush malformed input on its own opening line rather than swallowing
+            # a following case label/brace and reporting a misleading state error.
+            boundary = line.startswith("}") or re.match(r"(?:case\b|default\s*:)", line, re.I)
+            if boundary or (not parentheses and not brackets and (
+                    _STATEMENT_START.match(line) or _ASSIGNMENT_START.match(line)
+                    or (_LEGACY_END.match(line) and MARKER.match(line)))):
+                yield opened, " ".join(pending)
+                pending, visible_pending, parentheses, brackets = [], [], 0, 0
         if not pending:
             opened = number
         pending.append(line)
@@ -381,34 +416,40 @@ def _logical_lines(source):
                     escaped = True
                 elif character == '"':
                     quoted = False
+                    visible[-1] = '"'
             elif character == '"':
                 quoted = True
-                visible.append(" ")
+                visible.append('"')
             else:
                 visible.append(character)
-        for match in BLOCK_TOKEN.finditer("".join(visible)):
+        code = "".join(visible)
+        visible_pending.append(code)
+        for match in _LOGICAL_TOKEN.finditer(code):
             if match[0] == "(":
                 parentheses += 1
             elif match[0] == ")":
                 parentheses = max(0, parentheses - 1)
+            elif match[0] == "[":
+                brackets += 1
+            elif match[0] == "]":
+                brackets = max(0, brackets - 1)
         # An ordinary statement terminator ends a malformed expression too.
         # Do not swallow its closing chip/main brace and lose the error line.
         # A for header is the one construct with legitimate inner semicolons.
         terminated = not quoted and line.endswith(";") and not re.match(r"for\s*\(", pending[0], re.I)
-        # Analog equations commonly place their RHS on following lines.
+        # Analog and digital equations may put their RHS on following lines.
         # Join an unfinished assignment/operator too, without consuming a
         # terminated malformed expression and losing its source diagnostic.
         joined = " ".join(pending).rstrip()
-        continued = bool(re.search(r"(?:=(?!=)|[+*/%,]|(?<!-)-)\s*$", joined))
+        continued = _continues_expression(" ".join(visible_pending))
         # A numeric percentage is a complete scalar in legacy quantities and
         # property defaults. Its suffix must not consume the next statement;
         # a trailing modulo after a name may still continue an expression.
         if re.search(rf"(?<![\w.]){NUMBER}\s*%$", joined):
             continued = False
-        if (not quoted and not parentheses and not continued) or terminated:
+        if (not quoted and not parentheses and not brackets and not continued) or terminated:
             yield opened, " ".join(pending)
-            pending = []
-            parentheses = 0
+            pending, visible_pending, parentheses, brackets = [], [], 0, 0
     if pending:
         yield opened, " ".join(pending)
 
