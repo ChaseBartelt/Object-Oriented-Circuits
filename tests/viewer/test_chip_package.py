@@ -8,8 +8,9 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtWidgets import QApplication, QGraphicsSimpleTextItem
 
 from circuitlab.language.compiler import compile_circuit
-from circuitlab.layout.checks import preserves_nets
-from circuitlab.layout.geometry import symbol_pins
+from circuitlab.layout.checks import clear_package_wires, preserves_nets
+from circuitlab.layout.geometry import package_contacts, quad_package, symbol_pins
+from circuitlab.layout.persistence import pack_layout, restore_layout
 from circuitlab.viewer.schematic import SchematicView
 
 
@@ -65,3 +66,44 @@ class ChipPackageTest(unittest.TestCase):
         self.addCleanup(view.close)
         view.draw(circuit)
         self.assert_title_inside_package(view, view.layout.symbols[0][0])
+
+    def test_33_pin_chip_has_a_square_body_and_four_numbered_sides(self):
+        pins = ", ".join(f"p{i}" for i in range(1, 34))
+        nets = ", ".join(f"n{i}" for i in range(1, 34))
+        loads = " ".join(f"Rload{i}(10k) between(n{i}, 0);" for i in (2, 13, 20, 28))
+        circuit = compile_circuit(
+            f"chip Large({pins}) {{ R1(10k) between(p1, p2); }}"
+            f"main {{ Large({nets}); {loads} }}", render_only=True,
+        )
+        for mode in ("auto", "labeled"):
+            with self.subTest(mode=mode):
+                view = SchematicView()
+                self.addCleanup(view.close)
+                view.layout_mode = mode
+                view.draw(circuit)
+                drawing = view.layout
+                part, a, b, _ = next(s for s in drawing.symbols if s[0].kind == "H")
+                self.assertTrue(quad_package(part, a, b))
+                _, body = view.packages[part.name]
+                self.assertAlmostEqual(body.width(), body.height())
+                self.assert_title_inside_package(view, part)
+                contacts = list(package_contacts(part, a, b, drawing.pin_grid))
+                self.assertEqual(len(contacts), 33)
+                by_number = {int(item.text()): item.sceneBoundingRect().center()
+                             for item in view.scene().items()
+                             if isinstance(item, QGraphicsSimpleTextItem) and item.text().isdigit()}
+                for index, ((label, net, side, _, _), expected_side) in enumerate(zip(
+                    contacts, ("left",) * 9 + ("bottom",) * 8 + ("right",) * 8 + ("top",) * 8,
+                ), 1):
+                    self.assertEqual((label, net, side), (f"p{index}", f"n{index}", expected_side))
+                    number = by_number[index]
+                    self.assertTrue({"left": number.x() < body.left(),
+                                     "bottom": number.y() > body.bottom(),
+                                     "right": number.x() > body.right(),
+                                     "top": number.y() < body.top()}[side])
+                flat = view.levels[None, mode]
+                self.assertTrue(preserves_nets(flat, drawing))
+                self.assertTrue(clear_package_wires(drawing))
+                restored = restore_layout(pack_layout(drawing), flat, drawing.boundary)
+                self.assertIsNotNone(restored)
+                self.assertEqual(list(restored.pins()), list(drawing.pins()))

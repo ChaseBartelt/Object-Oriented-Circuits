@@ -12,6 +12,23 @@ Hover a gate/chip name for its reference symbol or pinout, and a wire argument f
 
 In a `.ckt` editor, select lines and press **Ctrl+#** (**Ctrl+Shift+3** on a US keyboard) or **Ctrl+/** to toggle line comments. The shortcut removes both `#` and `//` from a fully commented selection. New line comments use `//`. You can also run **OOC: Toggle Line Comment** from the Command Palette.
 
+## Declaration groups and hardware folding
+
+Anonymous or named `input`, `output`, and `wire` blocks appear in the Outline.
+Only their keywords use orange, blue and teal respectively. Chip header parameters use orange for inputs and blue for outputs; group labels are white and members retain normal colors.
+Multiline quoted connection lists keep one string color on every line.
+`memory_pins`, `core_pins`, multiline calls, groups, `clear` blocks, ARM code,
+control blocks and include sections can be folded from their opening lines.
+Generated identifiers accept both `R*{i}` and `R${i}`, with matching
+highlighting and folding. Ordinary multiplication and wire counters keep
+their existing syntax.
+
+Operators have separate colors for comparisons, logical operations, bitwise
+operations, shifts, conditional selection, arithmetic and assignment. Paired
+comparisons such as `<` and `>` share a color. ARM blocks use dark red for
+instructions and directives, blue registers, green labels and targets,
+orange immediates and grey comments.
+
 ## Build the extension from source
 
 From the checkout root:

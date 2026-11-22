@@ -12,6 +12,8 @@ from scipy import linalg
 
 from circuitlab.model.graph import CircuitError, ground_references
 from circuitlab.model.potentiometer import expand_potentiometers
+from circuitlab.math.diodes import diode_current, diode_charge
+from circuitlab.model.diode import DiodeModel, THERMAL_VOLTAGE as DIODE_THERMAL_VOLTAGE
 from circuitlab.math.equations import solve_known
 from circuitlab.math.results import Network, fold_potentiometers
 from circuitlab.math.behavioral import equation_value, expand_math, fold_math
@@ -99,8 +101,8 @@ class TimeDomain:
         self.frequency = source_frequency(circuit)
         if len({part.name.casefold() for part in self.parts}) != len(self.parts):
             raise CircuitError("Give each component a unique name before simulating.")
-        if any(part.kind not in {"R", "K", "C", "L", "V", "I", "O", "Q", "S", "B", "G"} for part in self.parts):
-            raise CircuitError("Use R, C, L, voltage/current sources, ideal op amps, BJTs, or switches in time simulation.")
+        if any(part.kind not in {"R", "K", "C", "L", "V", "I", "O", "Q", "S", "B", "G", "D"} for part in self.parts):
+            raise CircuitError("Use R, C, L, voltage/current sources, ideal op amps, diodes, BJTs, or switches in time simulation.")
         if any(part.kind == "Q" and part.model for part in self.parts):
             raise CircuitError("Named BJT models require SPICE. Omit the model to use the built-in generic transistor.")
         if not any(set(part.terminal_nets) & circuit.grounds for part in self.parts):
@@ -132,7 +134,7 @@ class TimeDomain:
         # Voltage sources, ideal op-amp outputs, and inductors require branch-current
         # unknowns. rows maps their component indexes to full matrix/state positions.
         self.voltage_rows = [
-            i for i, part in enumerate(self.parts) if part.kind in {"V", "O", "L", "B"}
+            i for i, part in enumerate(self.parts) if part.kind in {"V", "O", "L", "B", "D"}
         ]
         rows = {i: len(self.unknown) + n for n, i in enumerate(self.voltage_rows)}
         size = len(self.unknown) + len(rows)
@@ -151,6 +153,8 @@ class TimeDomain:
         self.pulses = {}
         self.ac_voltage = {}
         self.ac_current = {}
+        self.diodes = []
+        self.previous_diode_charge = {}
         self.transistors = []
         self.switches = []
         self.opamps = []
@@ -235,7 +239,12 @@ class TimeDomain:
             elif i in rows:
                 row = rows[i]
                 self.matrix[:len(line), row] = line
-                if part.kind == "O":
+                if part.kind == "D":
+                    branch = np.zeros(size)
+                    branch[:len(line)] = line
+                    self.diodes.append((i, row, branch, part.diode or DiodeModel()))
+                    self.previous_diode_charge[i] = 0.0
+                elif part.kind == "O":
                     self.matrix[row, :len(line)] = sense[self.unknown]
                     if part.opamp:
                         model = part.opamp
@@ -416,6 +425,9 @@ class TimeDomain:
         capacitors = {self.parts[index].name: self.previous_capacitor_voltage[index] for index in self.capacitors}
         for index in updated.capacitors:
             updated.previous_capacitor_voltage[index] = capacitors.get(updated.parts[index].name, 0.0)
+        diode_history = {self.parts[i].name: self.previous_diode_charge[i] for i, *_ in self.diodes}
+        for i, *_ in updated.diodes:
+            updated.previous_diode_charge[i] = diode_history.get(updated.parts[i].name, 0.0)
         # Op-amp pole/slew history is output voltage and uses the same branch
         # history array. Preserve it by identity when parameters or step change.
         amplifier_voltage = {self.parts[i].name: self.previous_capacitor_voltage[i]
@@ -476,6 +488,17 @@ class TimeDomain:
         # Broadcast slope over the outputs columns, then multiply by inputs for
         # the junction chain rule. This avoids forming a diagonal slope matrix.
         derivative = matrix + (self.outputs * slope) @ self.inputs if jacobian else None
+        for i, row, branch, model in self.diodes:
+            voltage = branch @ state - model.resistance * state[row]
+            current, slope = diode_current(model, voltage)
+            if self.step is not None:
+                charge, capacitance = diode_charge(model, voltage)
+                current += (charge - self.previous_diode_charge[i]) / self.step
+                slope += capacitance / self.step
+            residual[row] = state[row] - current
+            if jacobian:
+                derivative[row] = -slope * branch
+                derivative[row, row] += 1 + slope * model.resistance
         for i, branch, control in self.switches:
             current, gradient = self.switch_current(i, branch, control, state)
             residual += current * branch
@@ -580,6 +603,14 @@ class TimeDomain:
             # the empty reduction's initial=1 leaves a full Newton step available.
             available = np.maximum(8, 26 - values)
             scale = 1 / np.max(np.maximum(change / available, 1), initial=1)
+            for i, row, branch, model in self.diodes:
+                voltage = branch @ state - model.resistance * state[row]
+                change = branch @ delta - model.resistance * delta[row]
+                thermal = DIODE_THERMAL_VOLTAGE * model.ideality
+                if change > 0:
+                    scale = min(scale, max(8 * thermal, 26 * thermal - voltage) / change)
+                elif change < 0:
+                    scale = min(scale, max(8 * thermal, 26 * thermal + voltage + model.breakdown) / -change)
             # Backtrack by halving the proposed correction. Accept non-increasing
             # residual within tiny roundoff slack, or a residual already below tolerance.
             # Failure to find an acceptable trial rejects this Newton attempt.
@@ -692,7 +723,7 @@ class TimeDomain:
         except CircuitError as error:
             if (
                 error.code != "NonlinearConvergence" or self.step is None
-                or remaining_halvings == 0 or not (self.transistors or self.switches or self.opamps or self.behavioral)
+                or remaining_halvings == 0 or not (self.transistors or self.switches or self.diodes or self.opamps or self.behavioral)
             ):
                 raise
         # Cache a freshly stamped h/2 simulator. C/h and L/h depend on step size,
@@ -708,6 +739,7 @@ class TimeDomain:
         half.target[:] = self.target
         half.state = self.state
         half.previous_capacitor_voltage = self.previous_capacitor_voltage
+        half.previous_diode_charge = self.previous_diode_charge.copy()
         half.behavior_state = self.behavior_state.clone(step=half.step, equations=(
             part.behavior for part in half.parts if part.kind == "B" and part.behavior is not None
         ))
@@ -719,6 +751,7 @@ class TimeDomain:
         self.time += self.step
         self.state = half.state
         self.previous_capacitor_voltage = half.previous_capacitor_voltage
+        self.previous_diode_charge = half.previous_diode_charge.copy()
         self.behavior_state = half.behavior_state.clone(step=self.step, equations=(
             part.behavior for part in self.parts if part.kind == "B" and part.behavior is not None
         ))
@@ -763,6 +796,9 @@ class TimeDomain:
         # interval. This array covers all branches for simple indexing; only
         # capacitor entries are read as capacitor history. Then advance time.
         self.previous_capacitor_voltage = self.incidence @ voltage
+        for i, row, branch, model in self.diodes:
+            junction = branch @ self.state - model.resistance * self.state[row]
+            self.previous_diode_charge[i] = diode_charge(model, junction)[0]
         if self.step is not None:
             self.time += self.step
         return voltage

@@ -5,10 +5,29 @@ import unittest
 
 from circuitlab.exporters.verilog import export_verilog
 from circuitlab.language.compiler import compile_circuit
+from circuitlab.language.comments import mask_comments
 from circuitlab.model.graph import CircuitError
 
 
 class CommentTest(unittest.TestCase):
+    def test_multiline_pin_list_quotes_preserve_literal_markers_and_outside_comments(self):
+        literal = 'pins[2:0]="a,\n// literal, /* literal */ # literal\ny";'
+        source = literal + ' // outside\ninclude("path#1.ckt"); // later\n'
+        masked = mask_comments(source)
+        self.assertTrue(masked.startswith(literal))
+        self.assertNotIn("outside", masked)
+        self.assertNotIn("later", masked)
+        self.assertIn('include("path#1.ckt")', masked)
+        self.assertEqual(masked.count("\n"), source.count("\n"))
+
+    def test_unterminated_pin_list_does_not_hide_later_comments_or_include_paths(self):
+        source = 'pins[1:0]="a,\n// outside\n}\ninclude("path#1.ckt"); // later\n'
+        masked = mask_comments(source)
+        self.assertNotIn("outside", masked)
+        self.assertNotIn("later", masked)
+        self.assertIn('include("path#1.ckt")', masked)
+        self.assertEqual(masked.count("\n"), source.count("\n"))
+
     def test_block_comments_do_not_change_mode_or_diagnostic_line(self):
         source = "/* f = 1kHz\n} */\nR1(1k /* nominal */) between(in, 0); // Vdc = 2\n"
         circuit = compile_circuit(source)

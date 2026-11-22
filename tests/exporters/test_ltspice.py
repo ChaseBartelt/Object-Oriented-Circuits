@@ -12,7 +12,7 @@ from circuitlab.exporters.ltspice import export_hierarchy, export_schematic
 from circuitlab.math.numbers import scalar
 from circuitlab.layout.persistence import read_placement, restore_layout
 from circuitlab.math.report import component_labels
-from circuitlab.layout.routing import schematic_layout
+from circuitlab.layout.routing import fast_layout, schematic_layout
 from circuitlab.layout.editing import move_symbol
 from circuitlab.exporters.spice import spice_circuit
 
@@ -152,6 +152,33 @@ class LtspiceSchematicTest(unittest.TestCase):
         wires = [tuple(map(int, row.split()[1:])) for row in text.splitlines() if row.startswith("WIRE ")]
         self.assertTrue(any(x != u and y != v for x, y, u, v in wires))
         self.assertEqual(read_connections(text)["R1"][0], ("in", "out"))
+
+    def test_four_sided_package_keeps_native_symbol_pins_on_their_nets(self):
+        pins = tuple(f"pin{i}" for i in range(1, 41))
+        nets = tuple(f"net{i}" for i in range(1, 41))
+        inside = "\n".join(f"R{i}(1k) between({pins[i]}, {pins[i + 1]});"
+                           for i in range(0, 40, 2))
+        loaded = (0, 10, 20, 30)
+        loads = "\n".join(f"Rload{i}(1k) between({nets[i]}, 0);" for i in loaded)
+        circuit = compile_circuit(
+            f"chip Wide({', '.join(pins)}) {{\n{inside}\n}}\n"
+            f"main {{\nWide({', '.join(nets)});\n{loads}\n}}",
+            render_only=True,
+        )
+        top = next(hood_levels(circuit, set()))[1]
+        layout = fast_layout(top, component_labels(top))
+
+        sheet, files, used_labels = export_hierarchy(circuit, layout)
+        symbol, = (name for name in files if name.endswith(".asy"))
+        contacts = [row.split()[1:] for row in files[symbol].splitlines() if row.startswith("PIN ")]
+        self.assertEqual([row[2] for row in contacts],
+                         ["LEFT"] * 10 + ["BOTTOM"] * 10 + ["RIGHT"] * 10 + ["TOP"] * 10)
+        self.assertFalse(used_labels)
+        offsets = {symbol.removesuffix(".asy"): [tuple(map(int, row[:2])) for row in contacts]}
+        actual = read_connections(sheet, offsets)
+        self.assertEqual(actual["X_Wide"][0], nets)
+        for i in loaded:
+            self.assertEqual(actual[f"Rload{i}"][0], (nets[i], "0"))
 
     def test_555_exports_as_a_native_hierarchy_with_eight_connected_pins(self):
         circuit = compile_circuit((FIXTURES / "refactor" / "timer555.ckt").read_text(encoding="utf-8-sig"))

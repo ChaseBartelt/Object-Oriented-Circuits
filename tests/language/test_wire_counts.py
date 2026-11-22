@@ -225,15 +225,53 @@ class WireCountTest(unittest.TestCase):
                 compile_circuit(source)
             self.assertEqual(caught.exception.line,line)
 
-    def test_count_declarations_are_main_only_and_not_inherited_by_called_methods(self):
+    def test_count_declarations_need_a_method_scope_and_are_not_inherited_by_calls(self):
         sources = (
             "i=count;\nR1(1k) between(input,0);",
-            "circuit Stage(a,b){i=count;R1(1k) between(a,b);}\nmain{Stage(input,0);}",
             "circuit Stage(a,b){R1(1k) between(a,w*i);}\nmain{i=count;Stage(input,0);}",
         )
         for source in sources:
             with self.subTest(source=source),self.assertRaises(CircuitError):
                 compile_circuit(source)
+
+    def test_each_repeated_and_nested_method_gets_fresh_local_counters(self):
+        circuit = compile_circuit('''
+        circuit Leaf(a,b) {
+            i=count;
+            Rfirst(1k) between(a,w*i);
+            Rlast(2k) between(w^i,b);
+        }
+        circuit Stage(a,b) {
+            i=count;
+            Rfront(3k) between(a,w*i);
+            Leaf(w^i,b);
+            Rafter(4k) between(w^i,b);
+        }
+        main {
+            i=count;
+            Rmain(5k) between(input,w*i);
+            Stage(w^i,0);
+            Stage(w^i,0);
+            Rtail(6k) between(w^i,0);
+        }''')
+        parts = circuit.components
+        self.assertEqual((parts[0].terminal_nets, parts[-1].terminal_nets),
+                         (("input", "w1"), ("w1", "0")))
+        private_nets = set()
+        for front, first, last, after in (parts[1:5], parts[5:9]):
+            own, nested = front.n, first.n
+            self.assertTrue(own.endswith(".w1"))
+            self.assertTrue(nested.endswith(".w1"))
+            self.assertEqual((front.p, first.p, last.p, after.p), ("w1", own, nested, own))
+            self.assertEqual((last.n, after.n), ("0", "0"))
+            private_nets.update((own, nested))
+        self.assertEqual(len(private_nets), 4)
+
+    def test_a_method_does_not_inherit_the_callers_counter_prefix_history(self):
+        source = '''circuit Stage(a,b) {R1(1k) between(a,w^);}
+        main {i=count; Rseed(1k) between(input,w*i); Stage(w^i,0);}'''
+        with self.assertRaisesRegex(CircuitError, "No current counter"):
+            compile_circuit(source)
 
     def test_included_counter_error_keeps_its_file_and_line(self):
         path = Path.cwd()/"main.ckt"

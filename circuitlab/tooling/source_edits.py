@@ -6,6 +6,8 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
+from circuitlab.model.diode import DIODE_NAME
+from circuitlab.language.diodes import parse_diode
 from circuitlab.language.comments import mask_comments
 from circuitlab.language.compiler import compile_circuit
 from circuitlab.math.numbers import scalar
@@ -20,17 +22,22 @@ class SourceEdit:
     description: str
 
 
-PLACED = re.compile(r'(?P<name>[RCLZVIPS]\w*)(?P<value_clause>\s*\((?P<value>[^()\r\n]*)\))?\s+between\s*\((?P<pins>[^()\r\n]+)\)', re.I)
+PLACED = re.compile(rf'(?P<name>{DIODE_NAME}|[RCLZVIPS]\w*)(?P<value_clause>\s*\((?P<value>[^()\r\n]*)\))?\s+between\s*\((?P<pins>[^()\r\n]+)\)', re.I)
 # Match a complete grouped entry without mistaking a component argument in
 # a method call for an independently editable part.
 GROUP_PART = re.compile(
     r'(?:^|(?<=[;{}])|\(\s*(?:series|parallel)\s*\))[ \t]*'
-    r'(?P<name>[RCLZS]\w*)[ \t]*\((?P<value>[^()\r\n]*)\)'
+    rf'(?P<name>{DIODE_NAME}|[RCLZS]\w*)[ \t]*\((?P<value>[^()\r\n]*)\)'
     r'(?=[ \t]*(?:[;}]|$|\(\s*end\s+(?:series|parallel)\s*\)))',
     re.I,
 )
+DIODE_ENTRY = re.compile(
+    rf'(?:^|(?<=[;{{}}]))[ \t]*(?P<name>{DIODE_NAME})'
+    r'(?P<value_clause>\s*\((?P<value>[^()\r\n]*)\))?'
+    r'(?=[ \t]*(?:[;}]|$))', re.I,
+)
 LEGACY = re.compile(r'(?P<name>[RCLZVIS]\w*)[ \t]+(?P<a>\S+)[ \t]+(?P<b>\S+)[ \t]+(?P<value>[^;#\r\n]+)', re.I)
-ASSIGN = re.compile(r'(?P<name>[RCLZS]\w*)\s*=\s*(?P<value>[^;#\r\n]*)', re.I)
+ASSIGN = re.compile(rf'(?P<name>{DIODE_NAME}|[RCLZS]\w*)\s*=\s*(?P<value>[^;#\r\n]*)', re.I)
 CALL = re.compile(r'(?P<name>[A-Za-z_]\w*)\s*\((?P<pins>[^()\r\n]*)\)')
 
 
@@ -48,7 +55,7 @@ def source_target(circuit, name, root, source, read_source):
     code = mask_comments(text).splitlines()[line-1]
     key = name.casefold()
     matches = []
-    for pattern in (PLACED, GROUP_PART, ASSIGN, LEGACY, CALL):
+    for pattern in (PLACED, DIODE_ENTRY, GROUP_PART, ASSIGN, LEGACY, CALL):
         for match in pattern.finditer(code):
             raw = match['name'].casefold()
             if key == raw or key.startswith(raw + '_'):
@@ -71,10 +78,12 @@ def _value_span(match):
 # The returned plan remains reversible and has not written a file yet.
 def edit_value(circuit, name, value, root, source, read_source):
     part = next(p for p in circuit.components if p.name == name)
-    if part.kind not in {'R', 'C', 'L', 'Z', 'P'}:
-        raise ValueError('Value editing is available for resistors, capacitors, inductors, impedances and potentiometers.')
+    if part.kind not in {'R', 'C', 'L', 'Z', 'P', 'D'}:
+        raise ValueError('Value editing is available for resistors, capacitors, inductors, impedances, potentiometers and diodes.')
     if value.strip():
-        if part.kind == 'P':
+        if part.kind == 'D':
+            parse_diode('D.' + (part.diode.kind if part.diode else 'rect'), value)
+        elif part.kind == 'P':
             parse_potentiometer(value)
         else:
             scalar(value, UNITS[part.kind])

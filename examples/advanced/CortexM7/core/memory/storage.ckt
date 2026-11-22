@@ -1,0 +1,171 @@
+
+ // Cortex-M7 flash instruction fetching and SRAM storage.
+
+// Fetches 16-bit or 32-bit Thumb instructions from the firmware ROM.
+chip M7FirmwareFlash(pc, data_address, enabled, ir, wide, fetch_ok, data, valid) {
+    input addresses {
+        pc[32], data_address[32];
+        enabled;
+    }
+    output fetch {
+        ir[32], data[32];
+        wide, fetch_ok, valid;
+    }
+    wire rom {
+        fetch_word[32], next_word[32];
+        mapped, next_mapped;
+    }
+
+    // Align addresses to 32-bit ROM word boundaries.
+    const WORD_ADDRESS[32] = 4294967292;
+    const ZERO32[32] = 0;
+    fetch_address[32] = pc & WORD_ADDRESS;
+    next_word_address[32] = fetch_address + 4;
+    aligned_data_address[32] = data_address & WORD_ADDRESS;
+
+    // Separate ROM reads support instruction fetch and data access.
+    M7FirmwareRom(fetch_address, fetch_word, mapped);
+    M7FirmwareRom(next_word_address, next_word, next_mapped);
+    M7FirmwareRom(aligned_data_address, data, valid);
+
+    // Select Thumb halfwords, including instructions crossing word boundaries.
+    first[16] = pc[1] ? fetch_word[31:16] : fetch_word[15:0];
+    second[16] = pc[1] ? next_word[15:0] : fetch_word[31:16];
+
+    // Thumb prefixes 11101, 11110, and 11111 indicate 32-bit instructions.
+    wide = enabled && mapped && first[15:11] >= 29;
+    fetch_ok = enabled && !pc[0] && mapped && (!wide || !pc[1] || next_mapped);
+    ir = fetch_ok ? ((wide ? (ZERO32 + second) << 16 : 0) | first) : 0;
+}
+
+// Stores 64 words as sixteen independently addressable 128-bit lines.
+chip M7FirmwareRAMBank(clk, reset, write_enable, index, keep_bits, new_bits, data, first_words) {
+    input control {
+        clk, reset, write_enable;
+        index[6];
+        keep_bits[32], new_bits[32];
+    }
+    output memory {
+        data[32], first_words[352];
+    }
+
+    const ZERO128[128] = 0;
+    const ALL128[128] = 340282366920938463463374607431768211455;
+    const ALL32[32] = 4294967295;
+    const ZERO7[7] = 0;
+
+    // Four 32-bit words share each line's address decoder.
+    lines[16][128] = 0;
+    line_index[4] = index[5:2];
+    lane_shift[7] = (ZERO7 + index[1:0]) << 5;
+    selected_line[128] = lines[line_index];
+    first_line[128] = lines[0];
+    second_line[128] = lines[1];
+    third_line[128] = lines[2];
+
+    // Preserve unaffected bits when modifying one word.
+    changed_bits[128] = (ZERO128 + (ALL32 ^ keep_bits)) << lane_shift;
+    updated_line[128] = (selected_line & (ALL128 ^ changed_bits)) | ((ZERO128 + new_bits) << lane_shift);
+    data = selected_line >> lane_shift;
+
+    // Export the first eleven words for firmware and viewer inspection.
+    first_words[127:0] = first_line;
+    first_words[255:128] = second_line;
+    first_words[351:256] = third_line[95:0];
+
+    // Reset stored RAM or commit the selected line on a clock edge.
+    clock(clk, 10kHz) {
+        if (reset) {
+            clear { lines };
+        } else if (write_enable) {
+            lines[line_index] = updated_line;
+        }
+    }
+}
+
+// Combines four 256-byte banks into one 1 KB SRAM page.
+chip M7FirmwareRAMPage(clk, reset, write_enable, address, size_code, write_data, data, first_words) {
+    input bus {
+        clk, reset, write_enable;
+        address[10], write_data[32];
+        size_code[2];
+    }
+    output memory {
+        data[32], first_words[352];
+    }
+
+    const ALL_BITS[32] = 4294967295;
+    const ZERO5[5] = 0;
+
+    // Select the bank, word, and byte lane for each access.
+    bank[2] = address[9:8];
+    index[6] = address[7:2];
+    lane_shift[5] = (ZERO5 + address[1:0]) << 3;
+    lane_mask[32] = size_code == 0 ? 255 : (size_code == 1 ? 65535 : 4294967295);
+    keep_bits[32] = ALL_BITS ^ (lane_mask << lane_shift);
+    new_bits[32] = (write_data & lane_mask) << lane_shift;
+
+    wire selection { bank_data0[32]; }
+    bank_data0 = 0;
+
+    // Generate four independent RAM banks with separate write enables.
+    for (int i = 0; i < 4; i++) {
+        wire {
+            bank*{i}_data[32], bank*{i}_first[352], bank_data*{i + 1}[32];
+            bank*{i}_write;
+        }
+        bank*{i}_write = write_enable && bank == i;
+        M7FirmwareRAMBank(clk, reset, bank*{i}_write, index, keep_bits, new_bits,
+                          bank*{i}_data, bank*{i}_first);
+        bank_data*{i + 1} = bank_data*{i} | (bank == i ? bank*{i}_data : 0);
+    }
+
+    // Combine selected read data; expose the first bank's probe words.
+    first_words = bank0_first;
+    data = bank_data4;
+}
+
+// Maps four 1 KB SRAM pages into 0x20000000–0x20000FFF.
+chip M7FirmwareRAM(clk, reset, write_enable, address, size_code, write_data,
+                   data, mapped, first_words) {
+    input bus {
+        clk, reset, write_enable;
+        address[32], write_data[32];
+        size_code[2];
+    }
+    output memory {
+        data[32], first_words[352];
+        mapped;
+    }
+
+    const RAM_BASE[32] = 536870912;
+    const RAM_END[32] = 536875008;
+
+    // Decode the SRAM address and split it into page and byte offset.
+    page[2] = address[11:10];
+    offset[10] = address[9:0];
+    mapped = address >= RAM_BASE && address < RAM_END;
+
+    wire selection {
+        store_enable;
+        page_data0[32];
+    }
+    store_enable = write_enable && mapped;
+    page_data0 = 0;
+
+    // Generate four 1 KB pages with independent storage and write control.
+    for (int i = 0; i < 4; i++) {
+        wire {
+            page*{i}_data[32], page*{i}_first[352], page_data*{i + 1}[32];
+            page*{i}_write;
+        }
+        page*{i}_write = store_enable && page == i;
+        M7FirmwareRAMPage(clk, reset, page*{i}_write, offset, size_code, write_data,
+                          page*{i}_data, page*{i}_first);
+        page_data*{i + 1} = page_data*{i} | (page == i ? page*{i}_data : 0);
+    }
+
+    // Return the selected page data and expose page zero for debugging.
+    first_words = page0_first;
+    data = page_data4;
+}

@@ -1,0 +1,428 @@
+// GPIO control for the Seed's I/O banks. With no external strap, a configured
+// pull-up supplies the pad's input level. The AHB gate controls register access.
+chip STM32H750GPIO(clk, reset, address, size_code, write_data, write_enable, gates,
+                   data, mapped, board_led, codec_reset_n) {
+    input {
+        clk, reset, write_enable;
+        address[32], write_data[32], size_code[2], gates[11];
+    }
+    output {
+        data[32], mapped, board_led, codec_reset_n;
+    }
+
+    const GPIO_BLOCK[18] = 90120; // 0x58020000 >> 14
+    const MODER[4] = 0;
+    const OTYPER[4] = 1;
+    const OSPEEDR[4] = 2;
+    const PUPDR[4] = 3;
+    const IDR[4] = 4;
+    const ODR[4] = 5;
+    const BSRR[4] = 6;
+    const LCKR[4] = 7;
+    const AFRL[4] = 8;
+    const AFRH[4] = 9;
+    const LOW16[32] = 65535;
+    const ALL_BITS[32] = 4294967295;
+    const ZERO_SHIFT[5] = 0;
+
+    modes[11][32] = 4294967295;
+    types[11][16] = 0;
+    speeds[11][32] = 0;
+    pulls[11][32] = 0;
+    output_levels[11][16] = 0;
+    locks[11][17] = 0;
+    low_functions[11][32] = 0;
+    high_functions[11][32] = 0;
+
+    port[4] = address[13:10];
+    index[4] = address[5:2];
+    lane_shift[5] = (ZERO_SHIFT + address[1:0]) << 3;
+    lane_mask[32] = size_code == 0 ? 255 : (size_code == 1 ? LOW16 : ALL_BITS);
+    keep_bits[32] = ALL_BITS ^ (lane_mask << lane_shift);
+    new_bits[32] = (write_data & lane_mask) << lane_shift;
+    wire {
+        enabled;
+    }
+    selected_gate[11] = gates >> port;
+    enabled = port < 11 && selected_gate[0];
+    mapped = (address[31:14] == GPIO_BLOCK && address[9:6] == 0 && port < 11 && index <= AFRH &&
+              (size_code == 0 || (size_code == 1 && !address[0]) ||
+               (size_code == 2 && address[1:0] == 0)));
+    selected_modes[32] = modes[port];
+    selected_pulls[32] = pulls[port];
+    selected_levels[16] = output_levels[port];
+    selected_types[16] = types[port];
+    mode_b[32] = modes[1];
+    mode_c[32] = modes[2];
+    type_b[16] = types[1];
+    type_c[16] = types[2];
+    levels_b[16] = output_levels[1];
+    levels_c[16] = output_levels[2];
+    board_led = mode_c[15:14] == 1 && !type_c[7] && levels_c[7];
+    codec_reset_n = mode_b[23:22] == 1 && !type_b[11] && levels_b[11];
+    wire {
+        input_levels[16];
+    }
+    for (int pin = 0; pin < 16; pin++) {
+        input_levels[pin] = (selected_modes[2 * pin + 1:2 * pin] == 1 ?
+                            selected_levels[pin] && !selected_types[pin] :
+                            selected_modes[2 * pin + 1:2 * pin] != 3 &&
+                            selected_pulls[2 * pin + 1:2 * pin] == 1);
+    }
+
+    if (mapped && enabled) {
+        switch (index) {
+            case MODER: data = selected_modes; break;
+            case OTYPER: data = selected_types; break;
+            case OSPEEDR: data = speeds[port]; break;
+            case PUPDR: data = selected_pulls; break;
+            case IDR: data = input_levels; break;
+            case ODR: data = selected_levels; break;
+            case LCKR: data = locks[port]; break;
+            case AFRL: data = low_functions[port]; break;
+            case AFRH: data = high_functions[port]; break;
+            default: data = 0; break; // BSRR is write-only.
+        }
+    } else { data = 0; }
+
+    clock(clk, 10kHz) {
+        if (reset) {
+            for (int bank = 0; bank < 11; bank++) {
+                modes[bank] = ALL_BITS;
+                clear {
+                    types[bank], speeds[bank], pulls[bank], output_levels[bank], locks[bank],
+                    low_functions[bank], high_functions[bank]
+                };
+            }
+        } else if (mapped && enabled && write_enable) {
+            switch (index) {
+                case MODER: modes[port] = (selected_modes & keep_bits) | new_bits; break;
+                case OTYPER: types[port] = (selected_types & keep_bits[15:0]) | new_bits[15:0]; break;
+                case OSPEEDR: speeds[port] = (speeds[port] & keep_bits) | new_bits; break;
+                case PUPDR: pulls[port] = (selected_pulls & keep_bits) | new_bits; break;
+                case ODR: output_levels[port] = (selected_levels & keep_bits[15:0]) | new_bits[15:0]; break;
+                // In a simultaneous set and reset, the set bit wins.
+                case BSRR: output_levels[port] = (selected_levels & (65535 ^ new_bits[31:16])) | new_bits[15:0]; break;
+                case LCKR: locks[port] = (locks[port] & keep_bits[16:0]) | new_bits[16:0]; break;
+                case AFRL: low_functions[port] = (low_functions[port] & keep_bits) | new_bits; break;
+                case AFRH: high_functions[port] = (high_functions[port] & keep_bits) | new_bits; break;
+                default: break;
+            }
+        }
+    }
+}
+
+// STM32H750 Rev V registers used by the stock CMSIS startup and HAL clock setup.
+// Addresses and reset values follow ST RM0433. Ready flags model clock and
+// power sequencing, with settling measured in simulator steps.
+chip STM32H750StartupRegisters(clk, reset, address, size_code, write_data, write_enable,
+                               data, mapped, board_led, sysclk_pll, qspi_clock, fmc_clock,
+                               tim2_clock, rng_clock, qspi_reset, fmc_reset, dma1_clock, sai1_clock, codec_reset_n,
+                               serial_clocks, serial_resets) {
+    input {
+        clk, reset, write_enable;
+        address[32], write_data[32], size_code[2];
+    }
+    output {
+        data[32], mapped, board_led, sysclk_pll;
+        qspi_clock, fmc_clock, tim2_clock, rng_clock, qspi_reset, fmc_reset;
+        dma1_clock, sai1_clock, codec_reset_n;
+        serial_clocks[3], serial_resets[3];
+    }
+
+    const RCC_CR[32] = 1476543488; // 0x58024400
+    const RCC_CFGR[32] = 1476543504; // 0x58024410
+    const RCC_D1CFGR[32] = 1476543512; // 0x58024418
+    const RCC_D2CFGR[32] = 1476543516; // 0x5802441C
+    const RCC_D3CFGR[32] = 1476543520; // 0x58024420
+    const RCC_PLLCKSELR[32] = 1476543528; // 0x58024428
+    const RCC_PLLCFGR[32] = 1476543532; // 0x5802442C
+    const RCC_PLL1DIVR[32] = 1476543536; // 0x58024430
+    const RCC_PLL1FRACR[32] = 1476543540; // 0x58024434
+    const RCC_PLL2DIVR[32] = 1476543544; // 0x58024438
+    const RCC_PLL2FRACR[32] = 1476543548; // 0x5802443C
+    const RCC_PLL3DIVR[32] = 1476543552; // 0x58024440
+    const RCC_PLL3FRACR[32] = 1476543556; // 0x58024444
+    const RCC_CIER[32] = 1476543584; // 0x58024460
+    const RCC_D1CCIPR[32] = 1476543564; // 0x5802444C
+    const RCC_D2CCIP1R[32] = 1476543568; // 0x58024450
+    const RCC_D2CCIP2R[32] = 1476543572; // 0x58024454
+    const RCC_D3CCIPR[32] = 1476543576; // 0x58024458
+    const RCC_BDCR[32] = 1476543600; // 0x58024470
+    const RCC_CSR[32] = 1476543604; // 0x58024474
+    const RCC_AHB3RSTR[32] = 1476543612; // 0x5802447C
+    const RCC_AHB1RSTR[32] = 1476543616; // 0x58024480
+    const RCC_AHB2RSTR[32] = 1476543620; // 0x58024484
+    const RCC_APB1LRSTR[32] = 1476543632; // 0x58024490
+    const RCC_APB2RSTR[32] = 1476543640; // 0x58024498
+    const RCC_AHB1ENR[32] = 1476543704; // 0x580244D8
+    const RCC_AHB2ENR[32] = 1476543708; // 0x580244DC
+    const RCC_APB1LENR[32] = 1476543720; // 0x580244E8
+    const RCC_APB1HENR[32] = 1476543724; // 0x580244EC
+    const RCC_APB2ENR[32] = 1476543728; // 0x580244F0
+    const RCC_AHB3ENR[32] = 1476543700; // 0x580244D4
+    const RCC_AHB4ENR[32] = 1476543712; // 0x580244E0
+    const RCC_APB4ENR[32] = 1476543732; // 0x580244F4
+    const FLASH_ACR[32] = 1375739904; // 0x52002000
+    const FMC_BCR1[32] = 1375748096; // 0x52004000
+    const PWR_CR1[32] = 1476544512; // 0x58024800
+    const PWR_CR3[32] = 1476544524; // 0x5802480C
+    const PWR_CSR1[32] = 1476544516; // 0x58024804
+    const PWR_D3CR[32] = 1476544536; // 0x58024818
+    const SYSCFG_EXTICR1[32] = 1476396040; // 0x58000408
+    const SYSCFG_EXTICR4[32] = 1476396052; // 0x58000414
+    const SYSCFG_PWRCR[32] = 1476396076; // 0x5800042C
+    const EXTI_RTSR1[32] = 1476395008; // 0x58000000
+    const EXTI_FTSR1[32] = 1476395012; // 0x58000004
+    const EXTI_IMR1[32] = 1476395136; // 0x58000080
+    const EXTI_EMR1[32] = 1476395140; // 0x58000084
+    const DBGMCU_IDCODE[32] = 1543507968; // 0x5C001000
+    const ZERO32[32] = 0;
+
+    // RCC register words share reset and masked-write logic; named aliases
+    // below keep clock-control values easy to inspect in the viewer.
+    rcc_registers[64][32] = 0;
+    rcc_cr[32] = 1;
+    rcc_cfgr[32] = rcc_registers[4];
+    rcc_d1cfgr[32] = rcc_registers[6];
+    rcc_d2cfgr[32] = rcc_registers[7];
+    rcc_d3cfgr[32] = rcc_registers[8];
+    rcc_pllckselr[32] = 33686016;
+    rcc_pllcfgr[32] = 33488896;
+    rcc_pll1divr[32] = 16843392;
+    rcc_pll1fracr[32] = rcc_registers[13];
+    rcc_pll2divr[32] = 16843392;
+    rcc_pll2fracr[32] = rcc_registers[15];
+    rcc_pll3divr[32] = 16843392;
+    rcc_pll3fracr[32] = rcc_registers[17];
+    rcc_cier[32] = rcc_registers[24];
+    rcc_d1ccipr[32] = rcc_registers[19];
+    rcc_d2ccip1r[32] = rcc_registers[20];
+    rcc_d2ccip2r[32] = rcc_registers[21];
+    rcc_d3ccipr[32] = rcc_registers[22];
+    rcc_bdcr[32] = rcc_registers[28];
+    rcc_csr[32] = rcc_registers[29];
+    rcc_ahb3rstr[32] = rcc_registers[31];
+    rcc_ahb1rstr[32] = rcc_registers[32];
+    rcc_ahb2rstr[32] = rcc_registers[33];
+    rcc_apb1lrstr[32] = rcc_registers[36];
+    rcc_apb2rstr[32] = rcc_registers[38];
+    rcc_ahb1enr[32] = rcc_registers[54];
+    rcc_ahb2enr[32] = rcc_registers[55];
+    rcc_apb1lenr[32] = rcc_registers[58];
+    rcc_apb1henr[32] = rcc_registers[59];
+    rcc_apb2enr[32] = rcc_registers[60];
+    rcc_ahb3enr[32] = rcc_registers[53];
+    rcc_ahb4enr[32] = rcc_registers[56];
+    rcc_apb4enr[32] = rcc_registers[61];
+    flash_acr[32] = 55;
+    fmc_bcr1[32] = 12507;
+    pwr_cr1[32] = 0;
+    pwr_cr3[32] = 70;
+    pwr_usb_control[2] = 0;
+    pwr_vos[2] = 1;
+    active_vos[2] = 1;
+    pwr_supply_ready = 0;
+    syscfg_overdrive = 0;
+    syscfg_exticr[4][16] = 0;
+    exti_rising[16] = 0;
+    exti_falling[16] = 0;
+    exti_interrupt_mask[16] = 0;
+    exti_event_mask[16] = 0;
+    sysclk_source[3] = 0;
+
+    rcc_index[6] = address[7:2];
+    wire {
+        rcc_selected;
+    }
+    rcc_selected = (
+        address == RCC_CFGR || address == RCC_D1CFGR || address == RCC_D2CFGR ||
+        address == RCC_D3CFGR || address == RCC_PLL1FRACR || address == RCC_PLL2FRACR ||
+        address == RCC_PLL3FRACR || address == RCC_CIER || address == RCC_D1CCIPR ||
+        address == RCC_D2CCIP1R || address == RCC_D2CCIP2R || address == RCC_D3CCIPR ||
+        address == RCC_BDCR || address == RCC_CSR || address == RCC_AHB3RSTR ||
+        address == RCC_AHB1RSTR || address == RCC_AHB2RSTR || address == RCC_APB1LRSTR ||
+        address == RCC_APB2RSTR || address == RCC_AHB1ENR || address == RCC_AHB2ENR ||
+        address == RCC_APB1LENR || address == RCC_APB1HENR || address == RCC_APB2ENR ||
+        address == RCC_AHB3ENR || address == RCC_AHB4ENR || address == RCC_APB4ENR);
+    wire {
+        rcc_write_mask[32];
+    }
+    switch (address) {
+        case RCC_CFGR: rcc_write_mask = 4294770631; break;
+        case RCC_D1CFGR: rcc_write_mask = 3967; break;
+        case RCC_D2CFGR: rcc_write_mask = 1904; break;
+        case RCC_D3CFGR: rcc_write_mask = 112; break;
+        case RCC_PLL1FRACR: rcc_write_mask = 65528; break;
+        case RCC_PLL2FRACR: rcc_write_mask = 65528; break;
+        case RCC_PLL3FRACR: rcc_write_mask = 65528; break;
+        case RCC_CIER: rcc_write_mask = 1023; break;
+        case RCC_AHB3ENR: rcc_write_mask = 86065; break;
+        case RCC_AHB4ENR: rcc_write_mask = 321390591; break;
+        case RCC_APB4ENR: rcc_write_mask = 2219690; break;
+        default: rcc_write_mask = 4294967295; break;
+    }
+
+    wire {
+        word_access, syscfg_clock_enabled, gpio_mapped, registers_mapped;
+        exticr_access;
+        gpio_data[32], registers_data[32];
+        hsi_ready, hse_ready, hsi48_ready, csi_ready, pll_input_ready, pll1_ready, pll2_ready, pll3_ready;
+        sysclk_ready, vos_ready;
+        rcc_cr_read[32], rcc_cfgr_read[32], pwr_csr1_read[32], pwr_d3cr_read[32], pwr_cr3_read[32];
+    }
+    word_access = size_code == 2 && address[1:0] == 0;
+    exticr_access = word_access && address >= SYSCFG_EXTICR1 && address <= SYSCFG_EXTICR4;
+    exticr_index[2] = address[3:2] - 2;
+    fmc_clock = rcc_ahb3enr[12];
+    qspi_clock = rcc_ahb3enr[14];
+    fmc_reset = rcc_ahb3rstr[12];
+    qspi_reset = rcc_ahb3rstr[14];
+    tim2_clock = rcc_apb1lenr[0];
+    rng_clock = rcc_ahb2enr[6];
+    dma1_clock = rcc_ahb1enr[0];
+    sai1_clock = rcc_apb2enr[22];
+    // SPI1, I2C1 and I2C2 retain their independent bus clock and reset controls.
+    serial_clocks[0] = rcc_apb2enr[12];
+    serial_clocks[1] = rcc_apb1lenr[21];
+    serial_clocks[2] = rcc_apb1lenr[22];
+    serial_resets[0] = rcc_apb2rstr[12];
+    serial_resets[1] = rcc_apb1lrstr[21];
+    serial_resets[2] = rcc_apb1lrstr[22];
+    syscfg_clock_enabled = rcc_apb4enr[1];
+    gpio_gates[11] = rcc_ahb4enr[10:0];
+    STM32H750GPIO(clk, reset, address, size_code, write_data, write_enable, gpio_gates,
+                  gpio_data, gpio_mapped, board_led, codec_reset_n);
+    hsi_ready = rcc_cr[0] || rcc_cr[1];
+    csi_ready = rcc_cr[7] || rcc_cr[9];
+    hsi48_ready = rcc_cr[12];
+    hse_ready = rcc_cr[16];
+    pll_input_ready = ((rcc_pllckselr[1:0] == 0 && hsi_ready) ||
+                       (rcc_pllckselr[1:0] == 1 && csi_ready) ||
+                       (rcc_pllckselr[1:0] == 2 && hse_ready));
+    pll1_ready = rcc_cr[24] && pll_input_ready && rcc_pllckselr[9:4] != 0;
+    pll2_ready = rcc_cr[26] && pll_input_ready && rcc_pllckselr[17:12] != 0;
+    pll3_ready = rcc_cr[28] && pll_input_ready && rcc_pllckselr[25:20] != 0;
+    sysclk_ready = ((rcc_cfgr[2:0] == 0 && hsi_ready) || (rcc_cfgr[2:0] == 1 && csi_ready) ||
+                    (rcc_cfgr[2:0] == 2 && hse_ready) ||
+                    (rcc_cfgr[2:0] == 3 && pll1_ready && rcc_pllcfgr[16]));
+    sysclk_pll = sysclk_source == 3;
+    vos_ready = active_vos == pwr_vos;
+
+    rcc_cr_read = (rcc_cr | (hsi_ready ? 36 : 0) | (csi_ready ? 256 : 0) |
+                 (hsi48_ready ? 8192 : 0) | (hse_ready ? 131072 : 0) | (pll1_ready ? 33554432 : 0) |
+                 (pll2_ready ? 134217728 : 0) | (pll3_ready ? 536870912 : 0));
+    rcc_cfgr_read = rcc_cfgr | ((ZERO32 + sysclk_source) << 3);
+    pwr_csr1_read = ((ZERO32 + active_vos) << 14) | (pwr_supply_ready && vos_ready ? 8192 : 0);
+    pwr_cr3_read = pwr_cr3 | ((ZERO32 + pwr_usb_control) << 24) | (pwr_usb_control[0] ? 67108864 : 0);
+    pwr_d3cr_read = ((ZERO32 + pwr_vos) << 14) | (vos_ready ? 8192 : 0);
+    mapped = registers_mapped || gpio_mapped;
+    data = gpio_mapped ? gpio_data : registers_data;
+
+    // Reads and writes require a word access. The FMC register is accessible
+    // only while the AHB3 clock is enabled, as in ST's startup sequence.
+    if (exticr_access) {
+        // HAL_GPIO_DeInit reads the pin's interrupt route even in AF mode.
+        registers_mapped = 1;
+        registers_data = syscfg_clock_enabled ? syscfg_exticr[exticr_index] : 0;
+    } else if (word_access && rcc_selected) {
+        registers_mapped = 1;
+        registers_data = address == RCC_CFGR ? rcc_cfgr_read : rcc_registers[rcc_index];
+    } else if (word_access) {
+        switch (address) {
+            case RCC_CR: registers_mapped = 1; registers_data = rcc_cr_read; break;
+            case RCC_PLLCKSELR: registers_mapped = 1; registers_data = rcc_pllckselr; break;
+            case RCC_PLLCFGR: registers_mapped = 1; registers_data = rcc_pllcfgr; break;
+            case RCC_PLL1DIVR: registers_mapped = 1; registers_data = rcc_pll1divr; break;
+            case RCC_PLL2DIVR: registers_mapped = 1; registers_data = rcc_pll2divr; break;
+            case RCC_PLL3DIVR: registers_mapped = 1; registers_data = rcc_pll3divr; break;
+            case FLASH_ACR: registers_mapped = 1; registers_data = flash_acr; break;
+            case FMC_BCR1: registers_mapped = fmc_clock; registers_data = fmc_clock ? fmc_bcr1 : 0; break;
+            case PWR_CR1: registers_mapped = 1; registers_data = pwr_cr1; break;
+            case PWR_CR3: registers_mapped = 1; registers_data = pwr_cr3_read; break;
+            case PWR_CSR1: registers_mapped = 1; registers_data = pwr_csr1_read; break;
+            case PWR_D3CR: registers_mapped = 1; registers_data = pwr_d3cr_read; break;
+            case SYSCFG_PWRCR: registers_mapped = 1; registers_data = syscfg_clock_enabled && syscfg_overdrive; break;
+            case EXTI_RTSR1: registers_mapped = 1; registers_data = exti_rising; break;
+            case EXTI_FTSR1: registers_mapped = 1; registers_data = exti_falling; break;
+            case EXTI_IMR1: registers_mapped = 1; registers_data = exti_interrupt_mask; break;
+            case EXTI_EMR1: registers_mapped = 1; registers_data = exti_event_mask; break;
+            case DBGMCU_IDCODE: registers_mapped = 1; registers_data = 537093200; break;
+            default: registers_mapped = 0; registers_data = 0; break;
+        }
+    } else {
+        registers_mapped = 0;
+        registers_data = 0;
+    }
+
+    clock(clk, 10kHz) {
+        if (reset) {
+            clear { rcc_registers };
+            rcc_cr = 1;
+            rcc_pllckselr = 33686016;
+            rcc_pllcfgr = 33488896;
+            rcc_pll1divr = 16843392;
+            rcc_pll2divr = 16843392;
+            rcc_pll3divr = 16843392;
+            flash_acr = 55;
+            fmc_bcr1 = 12507;
+            pwr_cr1 = 0;
+            pwr_cr3 = 70;
+            pwr_usb_control = 0;
+            pwr_vos = 1;
+            active_vos = 1;
+            clear {
+                pwr_supply_ready, syscfg_overdrive, syscfg_exticr, exti_rising, exti_falling,
+                exti_interrupt_mask, exti_event_mask, sysclk_source
+            };
+        } else {
+            if (sysclk_ready) { sysclk_source = rcc_cfgr[2:0]; }
+            if (pwr_supply_ready) { active_vos = pwr_vos; }
+            if (exticr_access && write_enable) {
+                if (syscfg_clock_enabled) { syscfg_exticr[exticr_index] = write_data[15:0]; }
+            } else if (word_access && write_enable) {
+                if (rcc_selected) { rcc_registers[rcc_index] = write_data & rcc_write_mask; }
+                switch (address) {
+                    case RCC_CR: rcc_cr = write_data & 353178267; break;
+                    case RCC_PLLCKSELR: rcc_pllckselr = write_data & 66319347; break;
+                    case RCC_PLLCFGR: rcc_pllcfgr = write_data & 33492991; break;
+                    case RCC_PLL1DIVR: rcc_pll1divr = write_data & 2139095039; break;
+                    case RCC_PLL2DIVR: rcc_pll2divr = write_data & 2139095039; break;
+                    case RCC_PLL3DIVR: rcc_pll3divr = write_data & 2139095039; break;
+                    case FLASH_ACR: flash_acr = write_data & 63; break;
+                    case FMC_BCR1:
+                        if (fmc_clock) {
+                            fmc_bcr1 = (write_data & 2202008447) | 128;
+                        }
+                        break;
+                    case PWR_D3CR:
+                        if (write_data[15:14] != 0) { pwr_vos = write_data[15:14]; }
+                        break;
+                    case SYSCFG_PWRCR:
+                        if (syscfg_clock_enabled) { syscfg_overdrive = write_data[0]; }
+                        break;
+                    // Only the GPIO-triggered EXTI lines are modeled here.
+                    case EXTI_RTSR1: exti_rising = write_data[15:0]; break;
+                    case EXTI_FTSR1: exti_falling = write_data[15:0]; break;
+                    case EXTI_IMR1: exti_interrupt_mask = write_data[15:0]; break;
+                    case EXTI_EMR1: exti_event_mask = write_data[15:0]; break;
+                    case PWR_CR1: pwr_cr1 = write_data; break;
+                    case PWR_CR3:
+                        pwr_usb_control = write_data[25:24];
+                        // The first write after power-on chooses LDO or bypass.
+                        // Lock the supply selection and clear SCUEN on readback.
+                        if (pwr_cr3[2]) {
+                            if (write_data[1] != write_data[0]) {
+                                pwr_cr3 = (write_data & 771) | 64;
+                                pwr_supply_ready = 1;
+                            } else {
+                                pwr_cr3 = pwr_cr3 & 4294967291;
+                            }
+                        }
+                        break;
+                    default: break;
+                }
+            }
+        }
+    }
+}

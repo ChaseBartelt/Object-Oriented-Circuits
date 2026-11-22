@@ -1,0 +1,32 @@
+// BEGIN FIRMWARE PLATFORM
+// Minimal Cortex-M7 platform with RAM and no active external peripherals.
+
+chip M7FirmwarePlatform(clk, reset, read_enable, write_enable, address, size_code, write_data,
+                        reset_base, data, mapped, first_words, platform_status,
+                        audio_board, irq_numbers, device_irqs, audio_trace, serial_trace, peripheral_read) {
+    input bus {
+        clk, reset, read_enable, write_enable, peripheral_read;
+        address[32], write_data[32], size_code[2];
+    }
+    output platform {
+        reset_base[32], data[32], first_words[352];
+        mapped, platform_status[2], audio_board, irq_numbers[10], device_irqs[240];
+        audio_trace[162], serial_trace[384];
+    }
+
+    // No serial devices, audio hardware, or peripheral status registers.
+    serial_trace = 0;
+    reset_base = 0;
+    platform_status = 0;
+    audio_board = 0;
+    irq_numbers = 32;
+    device_irqs = 0;
+    audio_trace = 0;
+
+    // Route memory accesses directly to the simulated RAM.
+    M7FirmwareRAM(clk, reset, write_enable, address, size_code, write_data,
+                  data, mapped, first_words);
+}
+// END FIRMWARE PLATFORM
+
+// Core-clock SysTick with aligned word accesses and latched exception requests.

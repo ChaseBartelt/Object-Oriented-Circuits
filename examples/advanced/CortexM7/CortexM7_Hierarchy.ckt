@@ -1,0 +1,5 @@
+// Runnable Cortex-M7 hierarchy entry.
+// Opens the working CPU, registers, ROM, RAM, and system-control blocks.
+// In Logic simulation, click a block to inspect its internals while stepping.
+// The boot program writes 13 to RAM0.
+include("CortexM7_Firmware.ckt");

@@ -34,6 +34,8 @@ from circuitlab.language.properties import (PROPERTIES_BRACE, PROPERTY_DECLARATI
 from circuitlab.math.numbers import real, scalar
 from circuitlab.math.numbers import set_known as set_known
 from circuitlab.math.quantities import QUANTITIES
+from circuitlab.language.diodes import parse_diode
+from circuitlab.model.diode import DIODE_NAME
 from circuitlab.language.syntax import (
     AC_VOLTAGE,
     ASSIGNMENT,
@@ -654,6 +656,9 @@ class Compiler:
         # context before a generic scalar assignment can consume their names.
         if ground := re.fullmatch(r"ground\s*=\s*(.*)", text, re.I):
             self.set_ground(binding.wire(parse_wires(ground[1], 1)[0]))
+            return
+        if group and not self.battery and re.fullmatch(DIODE_NAME, text, re.I):
+            self.group_entry(ASSIGNMENT.fullmatch(text + " = "), binding)
             return
         wire = re.fullmatch(r"wire\s*=\s*(.*)", text, re.I)
         bare = (
@@ -1301,6 +1306,13 @@ class Compiler:
     # row order; one-letter anonymous entries get generated labels at expansion.
     # Keep a missing value as None so drawing is possible without simulating it.
     def group_entry(self, assignment, binding):
+        if assignment and assignment[1][0].upper() == "D":
+            name, raw = assignment.groups()
+            model = parse_diode(name, raw)
+            name = self.component_name(name, binding)
+            self.group.entry_order[len(self.group.entries)] = self.order
+            self.group.entries.append(("D", name, model))
+            return
         # Grouped S1=open/closed is a manual contact, stored as numerical kind K.
         # It differs from the four-terminal switch1(...) controlled device.
         if assignment and assignment[1][0].upper() == "S":
@@ -1478,6 +1490,17 @@ class Compiler:
     # Special devices such as switches need their own state parsing before ordinary unit parsing.
     def add_node_component(self, name, raw, p, n, binding):
         kind = name[0].upper()
+        if kind == "D":
+            if self.mode == "transient":
+                raise CircuitError("Use DC/AC mode and the oscilloscope for diode time simulation.")
+            model = parse_diode(name, raw)
+            name = self.component_name(name, binding)
+            p, n = binding.wire(p), binding.wire(n)
+            self.circuit.components.append(Component(name, "D", p, n, 0, label=name,
+                                                    order=self.order, diode=model))
+            self.circuit.named_wires.update((p, n))
+            self.method_parts |= bool(binding.scope)
+            return
         # Two-terminal S syntax is normalized to manual kind K, including its
         # selected finite contact resistance, state, and off-resistance metadata.
         if kind == "S":
@@ -1650,7 +1673,7 @@ class Compiler:
             or c.mode == "mixed"
             or c.probes
             or c.named_wires
-            or any(kind == "P" for g in c.groups for kind, _, _ in g.entries)
+            or any(kind in {"P", "D"} for g in c.groups for kind, _, _ in g.entries)
         )
         # Rendering also needs an explicit graph even when numerical analysis
         # could use reduction. Building geometry does not itself solve the graph.
@@ -2006,11 +2029,12 @@ class Compiler:
                             kind,
                             p,
                             n,
-                            value,
+                            0 if kind == "D" else value,
                             0,
                             name,
                             equation,
                             order=group.entry_order[j],
+                            diode=value if kind == "D" else None,
                             closed=kind == "K" and value == SWITCH_ON_RESISTANCE,
                             off_resistance=SWITCH_OFF_RESISTANCE if kind == "K" else 0,
                         )

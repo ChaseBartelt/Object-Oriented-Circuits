@@ -15,6 +15,7 @@ from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
 from circuitlab.math.digital import DigitalSimulation
+from circuitlab.viewer.behavior_diagram import BehaviorDiagram
 from circuitlab.viewer.logic_scene import HIGH, LOW, LogicSceneView, _layers
 
 
@@ -88,7 +89,6 @@ class LogicSceneTest(unittest.TestCase):
         source = (ROOT / 'examples/advanced/octant/octant_cpu.ckt').read_text(encoding='utf-8')
         self.configure(source)
         self.assertTrue(self.view.expanded)
-        self.assertFalse(self.view.notice)
         self.assertTrue(any('BUS_ADDR' in signals for signals in self.view.edge_signals.values()))
         self.assertTrue(any('BUS_RDATA' in signals for signals in self.view.edge_signals.values()))
 
@@ -98,7 +98,6 @@ class LogicSceneTest(unittest.TestCase):
             self.view.centerOn(item)
             self.click(item)
             self.assertEqual(self.sim.instances[self.view.scope].name, name)
-            self.assertFalse(self.view.notice)
 
         def back():
             self.view.centerOn(self.view.chip_item)
@@ -153,6 +152,43 @@ class LogicSceneTest(unittest.TestCase):
         self.assertEqual(self.view.node_items['pending'].value, 0)
         self.assertEqual(self.sim.values['LAST_ACK'], 0x24)
         self.assertEqual(self.sim.cycles, 15)
+
+    def test_generated_memory_windows_open_individually_with_live_words(self):
+        from tests.exporters.test_stm32h750_memory_bank import WINDOWS, bank_simulation
+
+        self.sim = bank_simulation(WINDOWS, {}, True)
+        self.sim.set_input('READY', 1)
+        self.sim.set_input('SIZE', 2)
+        for index, (base, _) in enumerate(WINDOWS):
+            self.sim.set_input('ADDRESS', base)
+            self.sim.set_input('WDATA', 0x12340000 + index)
+            self.sim.set_input('WRITE', 1)
+            self.sim.step()
+        self.sim.set_input('WRITE', 0)
+        self.view.configure(self.sim)
+        self.app.processEvents()
+
+        bank = next(item for item in self.view.node_items.values() if item.module)
+        self.view.centerOn(bank)
+        self.click(bank)
+        windows = [item.module.instance for item in self.view.node_items.values()
+                   if item.module and self.sim.instances[item.module.instance].name
+                   == 'M7FirmwareMemoryWindow']
+        self.assertEqual(len(windows), len(WINDOWS))
+        for index, instance in enumerate(windows):
+            item = next(item for item in self.view.node_items.values()
+                        if item.module and item.module.instance == instance)
+            ports = {port.label: port.live for port in item.module.ports}
+            self.assertEqual(self.sim.values[ports['base']], WINDOWS[index][0])
+            self.view.centerOn(item)
+            self.click(item)
+            self.assertEqual(self.view.scope, instance)
+            ram = next(item for item in self.view.node_items.values() if item.module)
+            words = next(port.live for port in ram.module.ports if port.label == 'first_words')
+            self.assertEqual(self.sim.values[words] & 0xFFFFFFFF,
+                             0x12340000 + index)
+            self.view.centerOn(self.view.chip_item)
+            self.click(self.view.chip_item)
 
     def test_values_update_colors_without_rebuilding_or_changing_view(self):
         self.configure()
@@ -231,16 +267,49 @@ class LogicSceneTest(unittest.TestCase):
         self.view.zoom(.8)
         self.assertLess(self.view.transform().m11(), 7)
 
-    def test_large_graph_has_explicit_limit_without_silent_truncation(self):
-        signals = {'a': 1, 'y': 1, **{f'n{i}': 1 for i in range(130)}}
-        sim = SimpleNamespace(inputs=('a',), outputs=('y',), values={}, signals=signals,
-                              clocks=(), dependencies={}, name='Large')
+    def test_large_dependency_graph_remains_interactive_in_both_views(self):
+        names = [f'n{i}' for i in range(451)]
+        dependencies = {
+            name: [names[(index - offset) % len(names)] for offset in range(1, 6)]
+            for index, name in enumerate(names)
+        }
+        dependencies[names[0]].extend(names[1:3])
+        signals = dict.fromkeys(names, 1)
+        values = dict.fromkeys(names, 0)
+        sim = SimpleNamespace(inputs=(), outputs=(names[-1],), values=values,
+                              signals=signals, clocks=(), dependencies=dependencies, name='Large')
         self.view.configure(sim)
         self.view.toggle_hood()
-        self.assertFalse(self.view.expanded)
-        self.assertIn('132 signals', self.view.notice)
-        self.assertIn('view limit', self.view.notice)
-        self.assertEqual(set(self.view.node_items), {'a', 'y'})
+        expected = {(source, target) for target, sources in dependencies.items() for source in sources}
+        self.assertEqual(len(expected), 2257)
+        self.assertTrue(self.view.expanded)
+        self.assertEqual(set(self.view.node_items), set(names))
+        self.assertEqual(set(self.view.edge_items), expected)
+        self.view.fit()
+        self.view.zoom(1.15)
+        self.assertGreater(self.view.transform().m11(), 0)
+        self.view.resetTransform()
+        output = self.view.node_items[names[-1]]
+        self.view.ensureVisible(output)
+        self.click(output)
+        self.assertEqual(self.probes, [names[-1]])
+
+        values[names[-1]] = 1
+        self.view.set_values(values)
+        self.assertEqual(output.value, 1)
+        inline = BehaviorDiagram(sim)
+        self.assertEqual(set(inline.rects), set(names))
+        self.assertEqual(set(inline.paths), expected)
+        self.assertTrue(inline.geometry.move_block(names[-1], 20, 40))
+        placement = inline.placement()
+        self.assertTrue(inline.geometry.reset())
+        inline.restore_placement(placement)
+        self.assertEqual(inline.placement(), placement)
+
+    def test_layering_accepts_a_deep_chain_without_recursion(self):
+        names = [str(i) for i in range(1600)]
+        edges = tuple(zip(names, names[1:]))
+        self.assertEqual(_layers(names, edges)[names[-1]], (len(names) - 1, 0))
 
     def test_clearing_source_removes_all_stale_items_and_values(self):
         self.configure()

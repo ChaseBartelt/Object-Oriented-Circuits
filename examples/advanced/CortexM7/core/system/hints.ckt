@@ -1,0 +1,82 @@
+
+ // Cortex-M7 low-power hints: WFE, WFI, SEV, and preload instructions.
+// Execution may sleep while SysTick and the interrupt controller continue running.
+chip M7ThumbHints(clk, reset, ir, wide, execute, interrupt_ready, interrupt_taken,
+                  pending_lines, exception_return, returns_to_thread, sev_on_pend, sleep_on_exit,
+                  recognized, sleeping, event_latch) {
+    input execution {
+        clk, reset, wide, execute;
+        ir[32];
+    }
+    input interrupts {
+        interrupt_ready, interrupt_taken, exception_return, returns_to_thread;
+        sev_on_pend, sleep_on_exit, pending_lines[243];
+    }
+    output state {
+        recognized, sleeping, event_latch;
+    }
+
+    // WFE = wait for event; WFI = wait for interrupt.
+    const ALL_PENDING[243] = 14134776518227074636666380005943348126619871175004951664972849610340958207;
+    const WAIT_EVENT[2] = 1;
+    const WAIT_INTERRUPT[2] = 2;
+
+    // Persistent sleep state, event latch, and previous interrupt snapshot.
+    wait_mode[2] = 0;
+    event_state = 0;
+    active_pending[243] = 0;
+
+    wire hints {
+        hint_narrow, hint_wide, memory_hint, memory_register;
+        wait_event, wait_interrupt, send_event;
+        arriving_event, consume_event;
+    }
+
+    // Recognize 16-bit and 32-bit Thumb hint encodings.
+    hint_narrow = !wide && ir[15:8] == 191 && ir[3:0] == 0;
+    hint_wide = wide && ir[15:0] == 62383 && ir[31:24] == 128;
+
+    // PLD, PLI, and reserved memory hints act as NOPs without cache accesses.
+    memory_register = ir[27:22] == 0 && (ir[5] || (ir[19:16] != 13 && ir[19:16] != 15));
+    memory_hint = (wide && (ir[15:0] & 65104) == 63504 && ir[31:28] == 15 &&
+                   (ir[3:0] == 15 || ir[7] || ir[27:24] == 12 || memory_register));
+
+    recognized = hint_narrow || hint_wide || memory_hint;
+    command[8] = hint_wide ? ir[23:16] : (hint_narrow ? ir[7:4] : 0);
+
+    // Decode WFE (2), WFI (3), and SEV (4).
+    wait_event = execute && recognized && command == 2;
+    wait_interrupt = execute && recognized && command == 3;
+    send_event = execute && recognized && command == 4;
+
+    // Exceptions and newly pending interrupts can generate events.
+    arriving_event = (interrupt_taken || exception_return ||
+                      (sev_on_pend && (pending_lines & (active_pending ^ ALL_PENDING)) != 0));
+
+    consume_event = wait_event || (wait_mode == WAIT_EVENT && arriving_event);
+    sleeping = wait_mode != 0;
+    event_latch = event_state;
+
+    // Preserve low-power state across clock cycles until reset or wakeup.
+    clock(clk, 10kHz) {
+        if (reset) {
+            clear { wait_mode, event_state, active_pending };
+        } else {
+            active_pending = pending_lines;
+
+            // WFE consumes the event; SEV or an arriving event sets the latch.
+            if (consume_event) { event_state = 0; }
+            else if (arriving_event || send_event) { event_state = 1; }
+
+            // Interrupts and events wake the core.
+            if (interrupt_taken || (wait_mode == WAIT_EVENT && arriving_event) ||
+                (wait_mode == WAIT_INTERRUPT && interrupt_ready)) {
+                wait_mode = 0;
+            } else if (wait_event && !event_state && !arriving_event) {
+                wait_mode = WAIT_EVENT;
+            } else if ((wait_interrupt || (returns_to_thread && sleep_on_exit)) && !interrupt_ready) {
+                wait_mode = WAIT_INTERRUPT;
+            }
+        }
+    }
+}

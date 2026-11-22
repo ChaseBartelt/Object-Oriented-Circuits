@@ -13,13 +13,13 @@ from pathlib import Path
 
 from circuitlab.language.comments import mask_comments
 from circuitlab.language.compiler import compile_circuit
-from circuitlab.language.digital_structure import assemble_digital
-from circuitlab.language.linked import CHIP_LIBRARY, imported_definitions, read_includes
+from circuitlab.language.digital_structure import digital_library_interfaces
+from circuitlab.language.linked import CHIP_LIBRARY, imported_definitions, includes_files, read_includes
 from circuitlab.language.syntax import INCLUDE, MAIN, SECTION, has_chip, source_rows
 from circuitlab.math.analysis import Diagnostic, analyze, diagnostics
 from circuitlab.model.graph import Circuit, CircuitError, MethodInstance
 from circuitlab.exporters.spice import export_spice
-from circuitlab.exporters.verilog import compile_chips, export_verilog
+from circuitlab.exporters.verilog import DigitalDesign, compile_digital_design, export_verilog
 from circuitlab.tooling.pins import apply_pin_overrides, read_pins
 
 
@@ -32,10 +32,6 @@ def issue_for(error):
             error.path,
         )
     return Diagnostic("error", error.line or 1, error.message, error.path)
-
-
-def includes_files(source):
-    return any(INCLUDE.fullmatch(text) for text, _, _ in source_rows(source))
 
 
 @dataclass
@@ -52,6 +48,8 @@ class CircuitSession:
     pin_overrides: dict = field(default_factory=dict)
     read_source: object = None
     preview_only: bool = False
+    interface_preview: bool = False
+    digital_design: DigitalDesign | None = field(default=None, init=False, repr=False)
 
     @property
     def pins(self):
@@ -76,6 +74,8 @@ class CircuitSession:
         self.drawing = None
         self.issues = []
         self.preview_only = False
+        self.interface_preview = False
+        self.digital_design = None
 
     def read_linked_source(self, path):
         if self.read_source is not None:
@@ -88,6 +88,16 @@ class CircuitSession:
             render_only=render_only, path=self.path,
             read_source=self.read_linked_source,
         )
+
+    def is_digital(self):
+        """Recognize a digital entry, including an entry made only of includes."""
+        if has_chip(self.source):
+            return True
+        rows = list(source_rows(self.source))
+        if rows and all(INCLUDE.fullmatch(text) for text, _, _ in rows):
+            files, _ = read_includes(self.source, self.path, self.read_linked_source)
+            return any(has_chip(text) for text in files.values())
+        return False
 
     def library_preview(self):
         """Instantiate a library chip for inspection without an editor widget."""
@@ -118,24 +128,35 @@ class CircuitSession:
     def render(self, mode="auto"):
         """Produce the electrical or digital package view without solving it."""
         source = self.source
-        if has_chip(source) and not includes_files(source):
-            chips = compile_chips(source)
-            assembled_instances = []
-            assembly = assemble_digital(source, instances=assembled_instances)
+        self.interface_preview = False
+        if self.is_digital():
+            interfaces = digital_library_interfaces(source)
+            if interfaces is not None:
+                # A reusable structural definition can expose its package without
+                # inventing a running circuit or resolving another board's model.
+                self.interface_preview = True
+                self.digital_design = None
+                modules, instances, named_wires = interfaces, (), ()
+            else:
+                design = self.digital_design = compile_digital_design(
+                    source, path=self.path, read_source=self.read_linked_source,
+                )
+                modules, instances, named_wires = design.modules, design.instances, design.named_wires
             self.drawing = Circuit(
                 "dc",
-                instances=assembled_instances if assembly else [
+                instances=list(instances) if named_wires else [
                     MethodInstance(
                         "chip", name, None,
-                        tuple((pin, pin if len(chips) == 1 else f"@{name}.{pin}") for pin, _ in pins),
-                        body,
+                        tuple((pin, pin if len(modules) == 1 else f"@{name}.{pin}") for pin, _ in pins),
+                        () if self.interface_preview else body,
+                        path=self.path, model_available=not self.interface_preview,
                     )
-                    for name, pins, body, _ in chips
+                    for name, pins, body, _ in modules
                 ],
             )
-            if assembly:
-                self.drawing.named_wires.update(assembly[1])
+            self.drawing.named_wires.update(named_wires)
         else:
+            self.digital_design = None
             preview = self.library_preview()
             self.drawing = self.build_circuit(mode, render_only=True, source=source + (preview or ""))
         return self.drawing
@@ -152,12 +173,12 @@ class CircuitSession:
         self.drawing = None
         self.issues = []
         self.preview_only = False
+        self.interface_preview = False
+        self.digital_design = None
         if not mask_comments(self.source).strip():
             return
         try:
-            self.preview_only = bool(self.library_preview()) or (
-                has_chip(self.source) and not includes_files(self.source)
-            )
+            self.preview_only = self.is_digital() or bool(self.library_preview())
         except CircuitError as error:
             self.issues = [issue_for(error)]
             return
@@ -181,4 +202,4 @@ class CircuitSession:
         )
 
     def verilog(self):
-        return export_verilog(self.source)
+        return export_verilog(self.source, path=self.path, read_source=self.read_linked_source)

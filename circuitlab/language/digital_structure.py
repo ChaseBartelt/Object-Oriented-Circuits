@@ -13,11 +13,15 @@ from dataclasses import dataclass
 
 from circuitlab.language.control_flow import ExpansionBudget, expand_control_flow, expand_digital_loops
 from circuitlab.language.digital_arrays import lower_digital_arrays
+from circuitlab.language.digital_argument_lists import expand_argument_lists
+from circuitlab.language.digital_constants import normalize_integer_constants
+from circuitlab.language.digital_clear import expand_clear_blocks
 from circuitlab.language.digital_switch import expand_switches, normalize_switch_labels
-from circuitlab.language.digital_declarations import normalize_wire_declarations
+from circuitlab.language.digital_declarations import normalize_port_blocks, normalize_wire_declarations
 from circuitlab.language.pin_banks import expand_pin_banks
 from circuitlab.language.math_blocks import digital_math_rows
-from circuitlab.language.syntax import CHIP, DIGITAL_MAIN, source_rows
+from circuitlab.language.syntax import CHIP, DIGITAL_MAIN, INCLUDE, source_rows
+from circuitlab.language.thumb_rom import lower_thumb_roms
 from circuitlab.model.graph import CircuitError, DigitalInstance
 
 
@@ -167,18 +171,21 @@ def _normalize_banks(body, signals):
     return helpers + output
 
 
-def _definitions(source):
+def _definitions(source, *, require_main=True):
     from circuitlab.exporters.verilog import _name, _pin_list
     rows = list(source_rows(source, legacy_markers=False))
     # Leave old chip-only programs entirely on their existing compiler path.
-    # Only an assembly main opts into this elaborator. Without one, return
-    # None so the exporter retains its existing independent chip-only route.
-    if not any(DIGITAL_MAIN.fullmatch(text) for text, _, _ in rows):
+    # Only an assembly main opts into this elaborator by default. Interface
+    # previews can parse declarations without resolving their dependencies.
+    if require_main and not any(DIGITAL_MAIN.fullmatch(text) for text, _, _ in rows):
         return None
     chips, main = {}, None
     index = 0
     while index < len(rows):
         text, line, _ = rows[index]
+        if not require_main and INCLUDE.fullmatch(text):
+            index += 1
+            continue
         chip, assembly = CHIP.fullmatch(text), DIGITAL_MAIN.fullmatch(text)
         # In this digital assembly path, top-level content is chip definitions plus
         # one main. Electrical components are handled by the separate electrical
@@ -212,13 +219,16 @@ def _definitions(source):
             pins = _pin_list(chip[2], line)
             # Loop/switch lowering uses text/line pairs. Restore origin fields by the
             # retained source line when converting those generated rows back to triples.
-            body = digital_math_rows(body)
+            body = normalize_integer_constants(lower_thumb_roms(digital_math_rows(body)))
             origins = {number: origin for _, number, origin in body}
             # First unroll chip-local static for loops and lower digital switches.
             # Signal-dependent if/clock behavior remains for the behavioral compiler;
             # it is not executed using main's static variable environment.
             body = [(text, number, origins[number]) for text, number in expand_switches(expand_digital_loops(
                 normalize_switch_labels([(text, number) for text, number, _ in body])))]
+            body = normalize_port_blocks(body)
+            body = expand_argument_lists(body, pins)
+            body = expand_clear_blocks(body)
             body = lower_digital_arrays(body, pins)
             # Normalize explicit bank declarations and inferred sized wires before
             # building local signal tables. Bank expression helpers add declarations,
@@ -234,6 +244,47 @@ def _definitions(source):
                 raise CircuitError(f'Chip "{name}" must declare every header pin as input or output, with no extra ports.', line)
             chips[name] = _Chip(name, pins, body, line, signals, kinds)
     return chips, main
+
+
+def digital_library_interfaces(source):
+    """Describe structural chip ports without inventing a runnable assembly.
+
+    Return the exporter's module metadata shape, with empty HDL, only for a
+    chip-only document containing structural calls. Dependencies are left for
+    an including main document to resolve; the preview describes interfaces.
+    """
+    rows = list(source_rows(source, legacy_markers=False))
+    if any(DIGITAL_MAIN.fullmatch(text) for text, _, _ in rows):
+        return None
+    containers, in_chip, structural = [], False, False
+    for text, _, _ in rows:
+        if not containers:
+            in_chip = CHIP.fullmatch(text) is not None
+        elif (in_chip and CALL.fullmatch(text)
+              and all(container == "for" for container in containers[1:])):
+            structural = True
+        if text.endswith("{"):
+            containers.append("for" if re.match(r"for\s*\(", text) else "block")
+        elif text == "}" and containers:
+            containers.pop()
+    if not structural:
+        return None
+    chips, _ = _definitions(source, require_main=False)
+    # A zero-iteration generation loop does not leave a structural child.
+    # Runtime if/clock calls remain excluded after ordinary loop expansion.
+    structural = False
+    for chip in chips.values():
+        depth = 0
+        for text, _, _ in chip.body:
+            structural |= depth == 0 and CALL.fullmatch(text) is not None
+            depth += int(text.endswith("{")) - int(text == "}")
+    if not structural:
+        return None
+    return tuple(
+        (chip.name, tuple((pin, chip.directions[pin]) for pin in chip.pins),
+         tuple(text for text, _, _ in chip.body), "")
+        for chip in chips.values()
+    )
 
 
 # Flatten chip calls only after validating their external bindings. Retain instance metadata
@@ -260,7 +311,8 @@ Source text and saved layouts are never rewritten by elaboration.
     # Execute main's generation-time variables/loops/branches first. Its
     # remaining statements must only declare ports/wires or instantiate chips;
     # runtime assignments and clocked behavior belong inside a chip.
-    main = _normalize_declarations(expand_control_flow(main, budget=budget, allow_wire_counts=True))
+    main = _normalize_declarations(expand_argument_lists(normalize_port_blocks(
+        expand_control_flow(main, budget=budget, allow_wire_counts=True))))
     widths, kinds, pins, output = {}, {}, [], []
     # Collect all main declarations before connecting calls, preserving I/O
     # declaration order in pins. Main wires are internal nets, so they stay

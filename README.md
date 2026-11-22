@@ -23,6 +23,44 @@ Headless commands and the optional desktop editor:
 
 On macOS/Linux use python3 and .venv/bin/python. Solve is for electrical designs; digital designs use Check, Logic simulation or Verilog export. Test designs are in examples/advanced. Keep your own circuits outside the application source tree.
 
+## Diodes
+
+Use `D1` for a standard diode or a typed name such as `D.rect1`,
+`D.Tun1`, `D.Schot1`, `D.Zener1` or `D.LED1`. These are ordinary
+components in `main`, `circuit`, `chip`, series/parallel groups and included
+files. The wires in `between(anode, cathode)` are ordinary node names;
+**the first wire is the anode and the second is the cathode** (the symbol's bar).
+
+```ooc
+V1(12V) between(supply, 0);
+main {
+    R1(1k) between(supply, regulated);
+    D.Zener1(5.1V) between(0, regulated);
+    R2(1k) between(supply, light);
+    D.LED1(2V) between(light, 0);
+}
+```
+
+Omit parentheses to use generic room-temperature defaults: `D.rect1 between(signal, 0);`.
+Parentheses are needed only when specifying values or parameters. Empty `()` remains accepted for compatibility. A bare voltage sets
+Zener/avalanche breakdown, or the other diodes' forward drop **at 1 mA in the PN branch** (photo/tunnel currents are added separately).
+It is not a fixed voltage drop. Optional named parameters are `is` (A), `n`,
+`rs` (ohms), `bv` (V), `ibv` (A), `cj`/`cjo` (F), `vj` (V), `m`,
+`light` (photocurrent, A), and tunnel `ip` (A), `vp` (V):
+`D.Schot1(is=100nA, n=1.05, rs=0.2ohm) between(signal, 0);`.
+
+Also supported: `D.PIN1`, `D.Varactor1`/`D.Varicap1`, `D.Photo1`,
+`D.Avalanche1`/`D.TVS1`. The native solver supports DC and oscilloscope
+waveforms, with junction capacitance and tunnel negative resistance.
+Small-signal AC/port analysis uses SPICE export, as with the existing BJTs.
+These models do not include temperature variation, reverse-recovery charge,
+PIN carrier-storage/RF behavior, optical LED power, or avalanche noise.
+Use measured/model parameters for a particular real device. The current and
+capacitance parameters follow the [SPICE diode convention](https://ngspice.sourceforge.io/docs/ngspice-manual.pdf);
+the tunnel current uses a generic peak-current/peak-voltage term
+([model reference](https://web.mit.edu/cbegroup/www/InternalUse/Thesis/SueYoungMEngThesis.pdf)).
+See [diodes.ckt](examples/diodes.ckt) for a runnable example.
+
 ## Daily workflow
 
 Use `//` for a line comment and `/* ... */` for a block comment. Existing `#` comments and saved schematic metadata are still supported. Use `floor(a / b)` for floor division in mathematical behavior.
@@ -31,7 +69,7 @@ Manual switches use `S1(open) between(a, b);` or `S1(closed) between(a, b);`. In
 
 Inside a battery block, `Vneg = 5;` declares a −5 V supply on its first wire relative to its return. `Vneg = -5;` gives the same result. Use either `V` or `Vneg` once per battery block.
 
-Electrical `main` can generate numbered wire names with independent counters:
+Electrical `main` and reusable methods can generate numbered wire names with independent counters:
 
 ```ooc
 main {
@@ -45,7 +83,7 @@ main {
 }
 ```
 
-`wi = count;` starts at zero. `wi*` advances the counter and emits the next wire name. `wi^` reuses its current wire name, including `wi0` before the first advance. Connections expand left to right, and only executed branches and loop iterations advance counters. Counters are local to `main` and can be read with `${wi}` but cannot be assigned directly or updated with `wi++`. The suffix forms apply to connection fields. Arithmetic expressions keep their ordinary multiplication and XOR operators.
+`wi = count;` starts at zero. `wi*` advances the counter and emits the next wire name. `wi^` reuses its current wire name, including `wi0` before the first advance. Connections expand left to right, and only executed branches and loop iterations advance counters. Counters are local to their `main` or method invocation and start fresh for each call. They can be read with `${wi}` but cannot be assigned directly or updated with `wi++`. The suffix forms apply to connection fields. Arithmetic expressions keep their ordinary multiplication and XOR operators.
 
 Use the explicit forms if the wire prefix differs from the counter name: `w*i` advances `i`, and `w^i` or `w$i` reads it. When `w` itself is not a declared counter, `w^` reuses the last counter associated with prefix `w`. See [the complete wire-count example](examples/wire_counts.ckt).
 
@@ -244,7 +282,7 @@ The proposed category map is recorded in `circuitlab/model/properties.py` alongs
 | Capacitor | capacitance, voltage, leakage |
 
 - **Electrical circuits:** compile/solve, inspect results or scope waveforms, and export SPICE/LTspice. Chip models are approximations; some catalog devices remain pinout only.
-- **Digital circuits:** use Logic simulation to toggle inputs, step/run clocked behavior and inspect signals. This simulates ideal logic, not a connected board's measurements.
+- **Digital circuits:** use Logic simulation to toggle inputs, step or run clocked behavior, and inspect signals across the design.
 - **Schematics:** move/rotate parts and wires, open chip internals, and save layout. Layout metadata is embedded in .ckt comments; legacy sidecars still load for migration. Right-click supported components to edit values through the source bridge.
 - **Chip library:** include("74HC00"); resolves a bundled definition. Chip sources are in circuitlab/libraries/chips/; shared drawing defaults are in circuitlab/libraries/layouts/.
 - **Updates:** installed users use **OOC: Check for Updates**. Developers rebuild the VSIX after extension changes; compatible runtime updates can apply live, while registration/loader changes require reload.
@@ -266,6 +304,28 @@ The viewer's **FPGA...** window supports the DE10-Lite HYBRID01 profile: 50 MHz 
 Open a saved digital design, **Build from OOC**, inspect **Performance**, select the cable, then **Program FPGA**. A verified build is required. Programming uses volatile SRAM (.sof), not power-on flash. Fmax is a fitted estimate, not the running clock. Electrical transistor/op-amp circuits cannot compile directly to FPGA logic.
 
 Digital chip behavior supports bounded `for` loops, bit/slice assignments (`LEDR[7:0] = elapsed[7:0];`), ternary expressions (`fsm = SW1 ? EARLY : WAITING;`), and `switch` with `case`, `break`, and `default`, including inside clock blocks. Loops expand at compile time; they do not consume one clock cycle per iteration. Indexed pin banks such as `LEDR[i]` can refer to separately declared `LEDR0`…`LEDR9` pins. Switches support stacked labels and fallthrough; put `break` directly at the end of a case, since conditional breaks are rejected.
+
+Chip-local loops also expand `${expression}` inside identifiers. Given a declared `Counter(clk, enable, value)` chip with a four-bit output, this creates two independent counters:
+
+```ckt
+chip CounterPair(clk, enable0, enable1, first, second) {
+    clk, enable0, enable1 = input;
+    first[4], second[4] = output;
+    for (int i = 0; i < 2; i++) {
+        count${i}[4] = wire;
+        Counter(clk, enable${i}, count${i});
+    }
+    first = count0;
+    second = count1;
+}
+```
+
+Interpolation uses the current compile-time loop scope, including decimal `const` bounds. Arithmetic such as `${i + 1}` and nested-index expressions such as `${i * 2 + j}` are supported. Open the parent block in Logic simulation to inspect every generated child and its independent state. Diagnostics retain the original template line. Signal-dependent `if` and `clock` blocks still execute at simulation time.
+
+`*{...}` is an equivalent spelling of `${...}`. For example,
+`for (int i = 0; i < 13; i++) { R*{i}[32]; }` generates the same declarations.
+The braces distinguish interpolation from multiplication and wire counters;
+`*{i}` reads the loop index and does not advance a `count` variable.
 
 Headers and declarations accept numbered pin ranges: `chip HYBRID01(SW[9:0], LEDR[9:0]) { SW[9:0] = input; LEDR[9:0] = output; LEDR[9:0] = SW[9:0]; }`. A range expands in written order (`SW9, SW8, ... SW0`) into individual scalar pins, retaining the board pin assignments. Ranges are inclusive and descending, with indices from 0 to 4095. The existing `data[10] = input;` syntax still declares one ten-bit vector named `data`.
 
@@ -293,6 +353,83 @@ Indices start at zero. An out-of-range literal index is a compile error. An out-
 Unsigned vectors support whole-bus `&`, `|`, `^`, `+`, `-`, `<<` and `>>`. Shifts zero-fill and keep the left operand's width: an eight-bit `value << 1` discards its old top bit, even when assigned to a wider output. A shift by the width or more produces zero. Addition binds more tightly than shifts, which bind more tightly than comparisons. Clocked state updates support `+=`, `-=`, `&=`, `|=`, `^=`, `<<=` and `>>=`, including constant bit/slice targets; each reads the previous clock-edge state. `!` remains logical NOT (a one-bit result); use `value ^ 255` to invert every bit of an eight-bit vector.
 
 Declare a display bank with `HEX0[7:0] = output;` and drive it using `HEX0[7:0] = sevenseg(value);`. The helper decodes the low four bits as hexadecimal 0–F. `sevenseg(value, point)` lights the decimal point when `point` is nonzero; it is off by default. Bits 0–6 are segments a–g, bit 7 is the point, and zero lights a segment. Raw masks also work (`255` blanks a digit). Include each used bank in the chip header. The logic simulator shows all six digit positions above its schematic; click a segment to probe its signal. [Seven-segment and shift example](examples/advanced/fpga/07_seven_segment_display.ckt) shows these features together on the DE10-Lite without a clock.
+
+Digital chips and `main` blocks also accept grouped signal declarations, with
+optional section names:
+
+```ooc
+input controls {
+    CLK, RESET;
+    IRQ_LINES[240];
+}
+output state {
+    PC[32], MSP[32], LR[32], LAST_PC[32];
+    IR[16], LAST_IR[16], NZCV[4], FAULT_CODE[3];
+    BOOTED, FAULT;
+}
+wire interrupts {
+    irq0_ack, irq0_return;
+    external_pending_lines[240];
+}
+```
+
+Each entry ends with a semicolon. Widths and numbered pin ranges keep their
+existing meaning. Static `for` loops can generate members inside a group.
+Groups contain declarations; put equations and clocked behavior outside
+them. Existing `name = input;`, `name[32] = output;` and `name = wire;`
+declarations can be mixed with groups. Section names organize the editor
+outline, and signals retain their original names. Input keywords are
+orange, output keywords blue and wire keywords teal in both editors. Chip
+header parameters use orange for inputs and blue for outputs; group members
+retain their normal identifier colors.
+
+Long chip calls can reuse named argument lists declared inside their chip or
+`main` scope:
+
+```ooc
+pins[3:0] = "a, b, c, d";
+FourPins(pins[3:0]);       // a, b, c, d
+ThreePins(pins[2:0]);      // b, c, d
+Mixed(a, pins[1:0]);      // a, c, d
+```
+
+The highest declared index names the first entry. Lists can span multiple
+lines, and their declared range must match the number of comma-separated
+signal names. Calls can select the whole list, a descending subrange, or one
+index. These compile-time lists expand into ordinary connections, retaining
+the same pin checks, simulation state and schematic wiring.
+
+Chip-local `int` declarations name unsigned decimal constants:
+
+```ooc
+int FP_CLASS_MASK = 65456;
+vstmdb = (first & FP_CLASS_MASK) == 60704;
+```
+
+Their widths are inferred from the literal, preserving the arithmetic of
+the equivalent inline number. Digit separators are accepted. These chip
+constants are immutable; `int` variables in `main` and loop headers retain
+their existing compile-time behavior.
+
+Clocked reset code can clear several registers or entire state arrays:
+
+```ooc
+clock(clk, 10kHz) {
+    if (reset) {
+        clear {
+            priority_registers,
+            usagefault_enable_state, memmanage_enable_state,
+            busfault_enable_state, divzero_trap_state
+        };
+    }
+}
+```
+
+`clear` expands to ordered zero assignments at the clock edge. Whole arrays
+clear every word; selected array words, bits and slices work too. Commas or
+semicolons can separate targets. In VS Code, groups, control blocks, ARM
+code, multiline argument lists and multiline calls can be folded from their
+opening line.
 
 ## Where to change the implementation
 

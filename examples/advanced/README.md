@@ -4,6 +4,8 @@ Open any `.ckt` file in VS Code and use **OOC: Run Circuit / Open Schematic** (t
 
 [OCTANT](octant/README.md) combines an eight-channel electrical scanner with an FPGA alert controller and six-digit telemetry display. The [OOC processor](octant/octant_cpu.ckt) runs firmware that reads, logs, and acknowledges the scanner's alerts. You can single-step its registers in Logic simulation.
 
+The [Cortex-M7 examples](CortexM7/README.md) cover a Thumb walkthrough, linked C startup, and memory protection. The [FreeRTOS demos](CortexM7/firmware/freertos/README.md) use the upstream kernel for integer and floating-point task switching and interrupt-driven queue wakeups. Step through the CPU, system registers, flash, and RAM in Logic simulation.
+
 ## Five FPGA designs
 
 Each file is an independent `HYBRID01` design for the DE10-Lite's 50 MHz clock. Open **Logic simulation**, select **DE10-Lite switches**, and press **Run**. This profile inserts the board's switch synchronizers automatically. Most timed designs remain still until enabled with the switches below.

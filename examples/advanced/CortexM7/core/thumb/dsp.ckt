@@ -1,0 +1,368 @@
+// Cortex-M7 DSP instruction decoding, packed arithmetic, multiply-accumulate, and saturation.
+chip M7DSPDecode(ir, dsp_op, rd, rn, rm, ra, aux) {
+    input instruction {
+        ir[32];
+    }
+    output decoded {
+        dsp_op[4], rd[4], rn[4], rm[4], ra[4], aux[13];
+    }
+
+    first[16] = ir[15:0];
+    group[3] = ir[6:4];
+    variant[4] = ir[23:20];
+    wire shift_fields {
+        shift[5];
+    }
+    shift[4:2] = ir[30:28];
+    shift[1:0] = ir[23:22];
+    wire instruction_families {
+        multiply, long_multiply, parallel_alu, choose_bytes, doubled, saturate, pack, extend;
+        source_ok, other_ok, dest_ok, accum_ok, packed_form, packed_mode, long_registers, long_form;
+    }
+    // Reject reserved SP/PC encodings before selecting a DSP instruction family.
+    source_ok = ir[3:0] != 13 && ir[3:0] != 15;
+    other_ok = ir[19:16] != 13 && ir[19:16] != 15;
+    dest_ok = ir[27:24] != 13 && ir[27:24] != 15;
+    accum_ok = ir[31:28] != 13 && (group != 6 || ir[31:28] != 15);
+    packed_form = group != 3 && group != 7;
+    packed_mode = variant <= 6 && variant != 3;
+
+    // Long multiply forms use distinct destination registers for the 64-bit result.
+    long_registers = (source_ok && other_ok && dest_ok && ir[31:28] != 13 && ir[31:28] != 15 &&
+                      ir[27:24] != ir[31:28]);
+    long_form = ((!group[0] && variant == 0) ||
+                (group == 6 && variant == 6) || (group == 4 && variant >= 8 && variant <= 13) ||
+                (group == 5 && (variant == 12 || variant == 13)));
+    long_multiply = (first & 65408) == 64384 && long_registers && long_form;
+
+    multiply = ((first & 65408) == 64256 && group != 0 && source_ok && other_ok && dest_ok && accum_ok &&
+                (group == 1 ? variant <= 3 : (group == 7 ? variant == 0 : variant <= 1)));
+    parallel_alu = ((first & 65408) == 64128 && ir[31:28] == 15 && source_ok && other_ok && dest_ok &&
+              packed_form && packed_mode);
+    choose_bytes = ((first & 65520) == 64160 && ir[31:28] == 15 && source_ok && other_ok && dest_ok &&
+                    variant == 8);
+    doubled = ((first & 65520) == 64128 && ir[31:28] == 15 && source_ok && other_ok && dest_ok &&
+               (variant & 13) == 9);
+    saturate = ((first & 65360) == 62208 && !ir[31] && !ir[21] && source_ok && dest_ok &&
+                (!ir[5] || shift != 0 || !ir[20]));
+    pack = ((first & 65520) == 60096 && !ir[31] && !ir[20] && source_ok && other_ok && dest_ok);
+    extend = ((first & 65408) == 64000 && ir[31:28] == 15 && ir[23:22] == 2 &&
+              group <= 5 && ir[3:0] != 13 && other_ok && dest_ok);
+
+    // Preserve the opcode mapping expected by M7DSPExecute.
+    dsp_op = (long_multiply ? (variant <= 6 ? 12 : (variant <= 11 ? 13 : 14)) :
+              (multiply ? (group == 1 ? 1 : (group == 2 || group == 4 ? 2 :
+              (group == 3 ? 3 : (group == 5 || group == 6 ? 4 : 5)))) :
+              (parallel_alu ? 6 : (choose_bytes ? 7 : (doubled ? 8 :
+              (saturate ? 9 : (pack ? 10 : (extend ? 11 : 0))))))));
+    rd = long_multiply ? ir[31:28] : ir[27:24];
+    rn = doubled ? ir[19:16] : ir[3:0];
+    rm = doubled ? ir[3:0] : ir[19:16];
+    ra = long_multiply ? ir[27:24] : (multiply ? ir[31:28] : 15);
+
+    // Options are local to each family. Encode exchange/subtract together for multiply,
+    // lane shape and operation for SIMD, and width/shift for saturation.
+    const ZERO13[13] = 0;
+    aux = (long_multiply ? (variant <= 6 ?
+           ((group == 2 || group == 6 ? 1 : 0) | (group == 4 || group == 6 ? 2 : 0) |
+            (variant == 6 ? 4 : 0)) : (variant <= 11 ? ir[21:20] : (group == 5 ? 2 : 0) | ir[20])) :
+           (multiply ? ((group == 2 || group == 4 || group == 5 || group == 6) ?
+            ((group == 4 || group == 6 ? 2 : 0) | ir[20]) : variant) :
+           (parallel_alu ? ((ZERO13 + variant) << 3) | group :
+           (doubled ? ir[21] : (saturate ? (ir[20:16] | (ir[7] ? 32 : 0) |
+            (ir[5] ? 64 : 0) | ((ZERO13 + shift) << 7) | (ir[5] && shift == 0 ? 4096 : 0)) :
+           (pack ? (shift | (ir[21] ? 32 : 0)) : (extend ? ((ZERO13 + group) << 2) | ir[21:20] : 0)))))));
+}
+
+// Shifts and additions are also accepted by the interactive logic simulator.
+// Share this full-width product across the DSP multiply families.
+// Generate a full-width product from 4-bit partial products, with signed correction.
+chip M7DSPProduct(a, b, signed_operands, product) {
+    input operands {
+        a[32], b[32], signed_operands;
+    }
+    output product_result {
+        product[64];
+    }
+
+    const ZERO64[64] = 0;
+    multiplicand[64] = ZERO64 + b;
+    for (int i = 0; i < 8; i++) {
+        product_chunk*{i}_word[64] =
+            ((a[i * 4] ? (multiplicand << *{i * 4}) : 0) +
+             (a[i * 4 + 1] ? (multiplicand << *{i * 4 + 1}) : 0) +
+             (a[i * 4 + 2] ? (multiplicand << *{i * 4 + 2}) : 0) +
+             (a[i * 4 + 3] ? (multiplicand << *{i * 4 + 3}) : 0));
+    }
+    // Correct the high word of the unsigned product for each signed input.
+    product = (product_chunk0_word + product_chunk1_word + product_chunk2_word + product_chunk3_word +
+               product_chunk4_word + product_chunk5_word + product_chunk6_word + product_chunk7_word -
+               (signed_operands && a[31] ? (multiplicand << 32) : 0) -
+               (signed_operands && b[31] ? ((ZERO64 + a) << 32) : 0));
+}
+
+// One byte or halfword lane of the parallel arithmetic instructions.
+// One byte or halfword SIMD lane, including GE flags, halving, and saturation.
+chip M7DSPLane(a, b, halfword, unsigned_lane, subtract, saturating, halving, result, ge) {
+    input lane_operands {
+        a[16], b[16], halfword, unsigned_lane, subtract, saturating, halving;
+    }
+    output lane_result {
+        result[16], ge;
+    }
+
+    lhs[17] = (halfword ? ((unsigned_lane || !a[15] ? 0 : 65536) | a) :
+               ((unsigned_lane || !a[7] ? 0 : 130816) | a[7:0]));
+    rhs[17] = (halfword ? ((unsigned_lane || !b[15] ? 0 : 65536) | b) :
+               ((unsigned_lane || !b[7] ? 0 : 130816) | b[7:0]));
+    raw[17] = subtract ? lhs - rhs : lhs + rhs;
+    wire arithmetic_flags {
+        overflow, sign, carry;
+    }
+    sign = raw[16];
+    carry = halfword ? raw[16] : raw[8];
+    overflow = halfword ? raw[16] != raw[15] : raw[8] != raw[7];
+    ge = unsigned_lane && !subtract ? carry : !sign;
+    positive_limit[16] = unsigned_lane ? (halfword ? 65535 : 255) : (halfword ? 32767 : 127);
+    negative_limit[16] = unsigned_lane ? 0 : (halfword ? 32768 : 128);
+    result = (halving ? raw[16:1] : (saturating && (unsigned_lane ? carry : overflow) ?
+              (sign && (!unsigned_lane || subtract) ? negative_limit : positive_limit) : raw[15:0]));
+}
+
+// Unsigned absolute difference between one pair of bytes.
+chip M7DSPByteDistance(a, b, distance) {
+    input byte_operands {
+        a[8], b[8];
+    }
+    output distance_result {
+        distance[8];
+    }
+    distance = a >= b ? a - b : b - a;
+}
+
+// Clamp a 32-bit operand to the selected signed or unsigned width.
+chip M7DSPClip(value, bits, unsigned_limit, result, clipped) {
+    input saturation_inputs {
+        value[32], bits[6], unsigned_limit;
+    }
+    output saturation_outputs {
+        result[32], clipped;
+    }
+
+    const ONE32[32] = 1;
+    const ZERO32[32] = 0;
+    threshold[32] = ONE32 << (unsigned_limit ? bits : bits - 1);
+    maximum[32] = threshold - 1;
+    minimum[32] = unsigned_limit ? 0 : ZERO32 - threshold;
+    wire limit_checks {
+        too_high, too_low;
+    }
+    too_high = !value[31] && value > maximum;
+    too_low = value[31] && (unsigned_limit || value < minimum);
+    clipped = too_high || too_low;
+    result = too_low ? minimum : (too_high ? maximum : value);
+}
+
+// Execute the decoded DSP operation and produce the destination registers and flags.
+chip M7DSPExecute(dsp_op, a, b, accumulate, accumulate_high, aux, ge,
+                  result, result_high, sat_hit, ge_write, next_ge) {
+    input operands {
+        dsp_op[4], a[32], b[32], accumulate[32], accumulate_high[32], aux[13], ge[4];
+    }
+    output execution_results {
+        result[32], result_high[32], sat_hit, ge_write, next_ge[4];
+    }
+
+    const ZERO32[32] = 0;
+    const ZERO34[34] = 0;
+    const ZERO64[64] = 0;
+    const ROUND_PRODUCT[64] = 2147483648;
+    const SIGN_HIGH_WORD[64] = 18446744069414584320;
+    const SIGN_EXTEND16[32] = 4294901760;
+    const SIGN_EXTEND8[32] = 4294967040;
+    const ALL32[32] = 4294967295;
+
+    // Select operand halfwords and their signed or full-word multiplication forms.
+    a_half[16] = (dsp_op == 1 || dsp_op == 13) && aux[1] ? a[31:16] : a[15:0];
+    b_half[16] = aux[0] ? b[31:16] : b[15:0];
+    b_second[16] = aux[0] ? b[15:0] : b[31:16];
+    multiply_a[32] = dsp_op == 3 || dsp_op == 4 || dsp_op == 12 ? a : (a_half | (a_half[15] ? SIGN_EXTEND16 : 0));
+    multiply_b[32] = dsp_op == 4 || dsp_op == 12 ? b : (b_half | (b_half[15] ? SIGN_EXTEND16 : 0));
+    wire products {
+        product[64], second_product[32];
+        signed_product;
+    }
+    signed_product = dsp_op != 12 || !aux[0];
+    M7DSPProduct(multiply_a, multiply_b, signed_product, product);
+
+    // The second halfword product fits in 32 bits. Correct the unsigned
+    // partial products for the sign bits of both operands.
+    second_b[32] = ZERO32 + b_second;
+    for (int i = 0; i < 4; i++) {
+        second_chunk*{i}_word[32] =
+            ((a[16 + i * 4] ? (second_b << *{i * 4}) : 0) +
+             (a[17 + i * 4] ? (second_b << *{i * 4 + 1}) : 0) +
+             (a[18 + i * 4] ? (second_b << *{i * 4 + 2}) : 0) +
+             (a[19 + i * 4] ? (second_b << *{i * 4 + 3}) : 0));
+    }
+    second_product = (second_chunk0_word + second_chunk1_word + second_chunk2_word + second_chunk3_word -
+                    (a[31] ? (second_b << 16) : 0) - (b_second[15] ? ((ZERO32 + a[31:16]) << 16) : 0));
+
+    mul_word[32] = dsp_op == 3 ? product[47:16] : product[31:0];
+    accum_wide[34] = (accumulate[31] ? 12884901888 : 0) | accumulate;
+    first_wide[34] = (mul_word[31] ? 12884901888 : 0) | mul_word;
+    second_wide[34] = (second_product[31] ? 12884901888 : 0) | second_product;
+    mac[34] = (accum_wide + first_wide +
+              (dsp_op == 2 ? (aux[1] ? ZERO34 - second_wide : second_wide) : 0));
+    accum_high[64] = (ZERO64 + accumulate) << 32;
+    high_mac[64] = ((aux[1] ? accum_high - product : accum_high + product) +
+                   (aux[0] ? ROUND_PRODUCT : 0));
+
+    // Long opcodes share the products with the single-destination MACs.
+    // UMAAL adds two separate unsigned words, while UMLAL adds the register pair.
+    accumulator_pair[64] = ((ZERO64 + accumulate_high) << 32) | accumulate;
+    accumulator_parts[64] = ZERO64 + accumulate_high + accumulate;
+    long_addend[64] = (dsp_op != 12 ? accumulator_pair :
+                       (aux[2] ? accumulator_parts : (aux[1] ? accumulator_pair : 0)));
+    long_second[64] = (second_product[31] ? SIGN_HIGH_WORD : 0) | second_product;
+    long_result[64] = (product + long_addend +
+                      (dsp_op == 14 ? (aux[1] ? ZERO64 - long_second : long_second) : 0));
+    result_high = long_result[63:32];
+
+    // Calculate four unsigned byte distances for the sum-of-absolute-differences instruction.
+    for (int i = 0; i < 4; i++) {
+        wire byte_distances {
+            distance*{i}[8];
+        }
+        byte_a*{i}[8] = a[i * 8 + 7:i * 8];
+        byte_b*{i}[8] = b[i * 8 + 7:i * 8];
+        M7DSPByteDistance(byte_a*{i}, byte_b*{i}, distance*{i});
+    }
+    sad[32] = accumulate + distance0 + distance1 + distance2 + distance3;
+
+    wire packed_modes {
+        packed_half, packed_exchange, sub_lane_low, sub_lane_upper, packed_unsigned, packed_sat, packed_halving;
+    }
+    // Select byte/halfword lane shape, exchange, signedness, and rounding behavior.
+    packed_half = aux[0] || aux[1];
+    packed_exchange = aux[1];
+    sub_lane_low = aux[2] ^ packed_exchange;
+    sub_lane_upper = aux[2];
+    packed_unsigned = aux[5];
+    packed_sat = aux[3];
+    packed_halving = aux[4];
+    const BYTE_LANE = 0;
+    wire packed_outputs {
+        packed_result[32], selected[32];
+    }
+    // Two adjacent bytes share one halfword lane in the packed-halfword forms.
+    // Elaborate independent packed lanes; each updates its result and GE bit.
+    for (int i = 0; i < 2; i++) {
+        lhs*{i * 2}[16] = packed_half ? a[i * 16 + 15:i * 16] : a[i * 16 + 7:i * 16];
+        rhs*{i * 2}[16] = (packed_half ?
+            (packed_exchange ? b[(1 - i) * 16 + 15:(1 - i) * 16] : b[i * 16 + 15:i * 16]) :
+            b[i * 16 + 7:i * 16]);
+        lhs*{i * 2 + 1}[16] = a[i * 16 + 15:i * 16 + 8];
+        rhs*{i * 2 + 1}[16] = b[i * 16 + 15:i * 16 + 8];
+        wire packed_lanes {
+            lane*{i * 2}[16], lane*{i * 2 + 1}[16], ge*{i * 2}, ge*{i * 2 + 1};
+            subtract*{i};
+        }
+        subtract*{i} = i == 0 ? sub_lane_low : sub_lane_upper;
+        M7DSPLane(lhs*{i * 2}, rhs*{i * 2}, packed_half, packed_unsigned, subtract*{i},
+                   packed_sat, packed_halving, lane*{i * 2}, ge*{i * 2});
+        M7DSPLane(lhs*{i * 2 + 1}, rhs*{i * 2 + 1}, BYTE_LANE, packed_unsigned, sub_lane_upper,
+                   packed_sat, packed_halving, lane*{i * 2 + 1}, ge*{i * 2 + 1});
+        packed_result[i * 16 + 7:i * 16] = lane*{i * 2}[7:0];
+        packed_result[i * 16 + 15:i * 16 + 8] = packed_half ? lane*{i * 2}[15:8] : lane*{i * 2 + 1}[7:0];
+        next_ge[i * 2] = ge*{i * 2};
+        next_ge[i * 2 + 1] = packed_half ? ge*{i * 2} : ge*{i * 2 + 1};
+    }
+    ge_write = dsp_op == 6 && !packed_halving && !packed_sat;
+    for (int i = 0; i < 4; i++) {
+        selected[i * 8 + 7 : i * 8] = ge[i] ? a[i * 8 + 7 : i * 8] : b[i * 8 + 7 : i * 8];
+    }
+
+    // Doubling arithmetic saturates first at the doubled operand, then at the sum.
+    doubled[33] = ((b[31] ? 4294967296 : 0) | b) << 1;
+    wire doubled_flags {
+        doubled_hits;
+    }
+    doubled_hits = doubled[32] != doubled[31];
+    doubled_b[32] = doubled_hits ? (doubled[32] ? 2147483648 : 2147483647) : doubled[31:0];
+    doubled_lhs[33] = (a[31] ? 4294967296 : 0) | a;
+    doubled_rhs[33] = (doubled_b[31] ? 4294967296 : 0) | doubled_b;
+    doubled_sum[33] = aux[0] ? doubled_lhs - doubled_rhs : doubled_lhs + doubled_rhs;
+    wire doubled_sum_flags {
+        doubled_sum_hits;
+    }
+    doubled_sum_hits = doubled_sum[32] != doubled_sum[31];
+    doubled_result[32] = (doubled_sum_hits ? (doubled_sum[32] ? 2147483648 : 2147483647) :
+                          doubled_sum[31:0]);
+
+    // Saturating shifts and clips share the same range-limiting helpers.
+    const ZERO_WIDTH[6] = 0;
+    sat_width[6] = ZERO_WIDTH + aux[4:0] + (aux[5] ? 0 : 1);
+    shift_amount[6] = dsp_op == 9 ? aux[11:7] : (aux[5] && aux[4:0] == 0 ? 32 : aux[4:0]);
+    shifter_operand[32] = dsp_op == 9 ? a : b;
+    wire clip_flags {
+        arithmetic_shift, clip_hit, clip_low_hit, clip_high_hit, clip_unsigned;
+    }
+    clip_unsigned = aux[5];
+    arithmetic_shift = dsp_op == 9 ? aux[6] : aux[5];
+    shifted[32] = (arithmetic_shift ? ((shifter_operand >> shift_amount) |
+                   (shifter_operand[31] ? (ALL32 ^ (ALL32 >> shift_amount)) : 0)) :
+                   (shifter_operand << shift_amount));
+    wire clip_results {
+        clip_result[32], clip_low[32], clip_high[32], saturate_result[32];
+    }
+    clip_low_in[32] = ((a[15] ? SIGN_EXTEND16 : 0) | a[15:0]);
+    clip_high_in[32] = ((a[31] ? SIGN_EXTEND16 : 0) | a[31:16]);
+    M7DSPClip(shifted, sat_width, clip_unsigned, clip_result, clip_hit);
+    M7DSPClip(clip_low_in, sat_width, clip_unsigned, clip_low, clip_low_hit);
+    M7DSPClip(clip_high_in, sat_width, clip_unsigned, clip_high, clip_high_hit);
+    saturate_result = aux[12] ? (((ZERO32 + clip_high[15:0]) << 16) | clip_low[15:0]) : clip_result;
+
+    wire pack_output {
+        pack_result[32];
+    }
+    pack_result[15:0] = aux[5] ? shifted[15:0] : a[15:0];
+    pack_result[31:16] = aux[5] ? a[31:16] : shifted[31:16];
+
+    wire rotation {
+        rotate_amount[5];
+    }
+    // Rotate and sign/zero-extend the selected source before optional accumulation.
+    rotate_amount[4:3] = aux[1:0];
+    rotate_amount[2:0] = 0;
+    rotated[32] = (b >> rotate_amount) | (b << (32 - rotate_amount));
+    extension[32] = (aux[4:3] == 0 ? ((rotated[15] && !aux[2] ? SIGN_EXTEND16 : 0) | rotated[15:0]) :
+                     ((rotated[7] && !aux[2] ? SIGN_EXTEND8 : 0) | rotated[7:0]));
+    extend_low[16] = a[15:0] + extension[15:0];
+    extend_high[16] = a[31:16] + ((rotated[23] && !aux[2] ? 65280 : 0) | rotated[23:16]);
+    extension_result[32] = (aux[4:3] == 1 ? (((ZERO32 + extend_high) << 16) | extend_low) :
+                            a + extension);
+
+    // Dispatch the selected DSP result and report cumulative saturation.
+    sat_hit = ((dsp_op >= 1 && dsp_op <= 3 && mac[33:31] != 0 && mac[33:31] != 7) ||
+               (dsp_op == 8 && (doubled_hits || doubled_sum_hits)) ||
+               (dsp_op == 9 && (aux[12] ? (clip_low_hit || clip_high_hit) : clip_hit)));
+    if (dsp_op >= 1 && dsp_op <= 3) {
+        result = mac[31:0];
+    } else if (dsp_op >= 12 && dsp_op <= 14) {
+        result = long_result[31:0];
+    } else {
+        switch (dsp_op) {
+            case 4: result = high_mac[63:32]; break;
+            case 5: result = sad; break;
+            case 6: result = packed_result; break;
+            case 7: result = selected; break;
+            case 8: result = doubled_result; break;
+            case 9: result = saturate_result; break;
+            case 10: result = pack_result; break;
+            case 11: result = extension_result; break;
+            default: result = 0;
+        }
+    }
+}
+

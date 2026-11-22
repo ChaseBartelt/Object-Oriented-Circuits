@@ -1,0 +1,92 @@
+// Byte lanes let an unaligned transfer select at most one byte from each
+// bank, even when it spans two words or two packed lines in the same page.
+chip STM32H750ByteLane(clk, reset, write_enable, address, length, byte_count, lane_number, write_data,
+                       lane_data, first_bytes) {
+    input {
+        clk, reset, write_enable;
+        address[11], length[11], byte_count[3], lane_number[2], write_data[32];
+    }
+    output {
+        lane_data[8], first_bytes[88];
+    }
+    const ZERO5[5] = 0;
+    const ZERO7[7] = 0;
+    const ZERO11[11] = 0;
+    const ZERO128[128] = 0;
+    const BYTE_BITS[128] = 255;
+    const ALL_BITS[128] = 340282366920938463463374607431768211455;
+
+    lines[16][128] = 0;
+    wire {
+        following_word, in_page;
+    }
+    following_word = lane_number < address[1:0];
+    relative_lane[2] = lane_number - address[1:0];
+    lane_address[11] = ((ZERO11 + address[10:2] + following_word) << 2) | lane_number;
+    in_page = lane_address < length;
+    byte_index[8] = lane_address[9:2];
+    row[4] = byte_index[7:4];
+    column_shift[7] = (ZERO7 + byte_index[3:0]) << 3;
+    write_shift[5] = (ZERO5 + relative_lane) << 3;
+    new_byte[8] = write_data >> write_shift;
+    selected_line[128] = lines[row];
+    shifted_line[128] = selected_line >> column_shift;
+    first_line[128] = lines[0];
+    first_bytes = first_line[87:0];
+    lane_data = in_page ? shifted_line[7:0] : 0;
+    byte_mask[128] = BYTE_BITS << column_shift;
+    updated_line[128] = ((selected_line & (ALL_BITS ^ byte_mask)) |
+                         ((ZERO128 + new_byte) << column_shift));
+
+    clock(clk, 10kHz) {
+        if (reset) {
+            clear { lines };
+        } else if (write_enable && in_page && relative_lane < byte_count) {
+            lines[row] = updated_line;
+        }
+    }
+}
+
+// Offset can be -3 through 1023, encoded modulo 2048. Missing bytes return
+// zero so the memory map can OR the results for a transfer spanning pages.
+chip STM32H750ByteRAM(clk, reset, write_enable, address, length, size_code, write_data, data, first_words) {
+    input {
+        clk, reset, write_enable;
+        address[11], length[11], size_code[2], write_data[32];
+    }
+    output {
+        data[32], first_words[352];
+    }
+    const ZERO5[5] = 0;
+
+    byte_count[3] = size_code == 0 ? 1 : size_code == 1 ? 2 : size_code == 2 ? 4 : 0;
+    wire {
+        lane_word[32];
+    }
+    for (int lane = 0; lane < 4; lane++) {
+        wire {
+            lane*{lane}[2];
+        }
+        lane*{lane} = lane;
+        wire {
+            byte*{lane}[8], first*{lane}[88];
+        }
+        STM32H750ByteLane(clk, reset, write_enable, address, length, byte_count,
+                          lane*{lane}, write_data, byte*{lane}, first*{lane});
+        lane_word[8 * lane + 7:8 * lane] = byte*{lane};
+        for (int word = 0; word < 11; word++) {
+            first_words[32 * word + 8 * lane + 7:32 * word + 8 * lane] = first*{lane}[8 * word + 7:8 * word];
+        }
+    }
+    wire {
+        repeated_word[64];
+    }
+    repeated_word[31:0] = lane_word;
+    repeated_word[63:32] = lane_word;
+    read_shift[5] = (ZERO5 + address[1:0]) << 3;
+    rotated[64] = repeated_word >> read_shift;
+    mask[32] = size_code == 0 ? 255 : size_code == 1 ? 65535 : size_code == 2 ? 4294967295 : 0;
+    data = rotated[31:0] & mask;
+
+}
+

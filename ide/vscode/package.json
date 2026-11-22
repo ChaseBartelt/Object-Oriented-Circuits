@@ -2,7 +2,7 @@
   "name": "ooc-language",
   "displayName": "Object-Oriented Circuits",
   "description": "Edit, navigate, and check Object-Oriented Circuits (.ckt) files.",
-  "version": "0.8.11",
+  "version": "0.8.15",
   "publisher": "echoingfarts",
   "license": "MIT",
   "engines": { "vscode": "^1.90.0" },
@@ -21,7 +21,121 @@
   },
   "contributes": {
     "configurationDefaults": {
-      "[ooc]": { "editor.tabSize": 4, "editor.insertSpaces": true }
+      "[ooc]": { "editor.tabSize": 4, "editor.insertSpaces": true },
+      "editor.tokenColorCustomizations": {
+        "textMateRules": [
+          { "scope": "entity.name.section.port-group.ooc", "settings": { "foreground": "#d4d4d4" } },
+          { "scope": "string.quoted.double.ooc", "settings": { "foreground": "#aed6ff" } },
+          {
+            "scope": [
+              "meta.declaration.input.ooc storage.modifier.pin-direction.ooc"
+            ],
+            "settings": {
+              "foreground": "#f6a652"
+            }
+          },
+          {
+            "scope": [
+              "meta.declaration.output.ooc storage.modifier.pin-direction.ooc"
+            ],
+            "settings": {
+              "foreground": "#659cd7"
+            }
+          },
+          {
+            "scope": [
+              "meta.declaration.wire.ooc storage.modifier.pin-direction.ooc"
+            ],
+            "settings": {
+              "foreground": "#4ec9b0"
+            }
+          },
+          {
+            "scope": [
+              "keyword.operator.instruction.arm.ooc",
+              "keyword.control.directive.arm.ooc"
+            ],
+            "settings": {
+              "foreground": "#b45a5a"
+            }
+          },
+          {
+            "scope": "variable.language.register.arm.ooc",
+            "settings": {
+              "foreground": "#9cdcfe"
+            }
+          },
+          {
+            "scope": [
+              "meta.embedded.block.arm.ooc entity.name.label.ooc",
+              "entity.name.label.reference.arm.ooc"
+            ],
+            "settings": {
+              "foreground": "#b5cea8"
+            }
+          },
+          {
+            "scope": "constant.numeric.arm.ooc",
+            "settings": {
+              "foreground": "#ce9178"
+            }
+          },
+          {
+            "scope": "meta.embedded.block.arm.ooc comment",
+            "settings": {
+              "foreground": "#808080"
+            }
+          },
+          {
+            "scope": "keyword.control.clear.ooc",
+            "settings": {
+              "foreground": "#659cd7"
+            }
+          },
+          {
+            "scope": "keyword.operator.comparison.ooc",
+            "settings": {
+              "foreground": "#82aaff"
+            }
+          },
+          {
+            "scope": "keyword.operator.logical.ooc",
+            "settings": {
+              "foreground": "#c792ea"
+            }
+          },
+          {
+            "scope": "keyword.operator.bitwise.ooc",
+            "settings": {
+              "foreground": "#4ec9b0"
+            }
+          },
+          {
+            "scope": "keyword.operator.shift.ooc",
+            "settings": {
+              "foreground": "#ffb86c"
+            }
+          },
+          {
+            "scope": "keyword.operator.ternary.ooc",
+            "settings": {
+              "foreground": "#dcdcaa"
+            }
+          },
+          {
+            "scope": "keyword.operator.arithmetic.ooc",
+            "settings": {
+              "foreground": "#e6b98b"
+            }
+          },
+          {
+            "scope": "keyword.operator.assignment.ooc",
+            "settings": {
+              "foreground": "#9aa0a6"
+            }
+          }
+        ]
+      }
     },
     "languages": [
       {

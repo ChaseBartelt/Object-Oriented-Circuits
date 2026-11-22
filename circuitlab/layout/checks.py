@@ -4,7 +4,7 @@
 # must never become accidental electrical connections.
 
 from collections import Counter, defaultdict
-from itertools import chain, combinations
+from itertools import chain
 
 from circuitlab.layout.geometry import (
     PACKAGE_WIRE_CLEARANCE,
@@ -97,6 +97,26 @@ def clear_of_bodies(edges, layout):
     return True
 
 
+def _distinct_visible_nets(visible):
+    """Sweep across the drawing, testing only overlapping wire bounds."""
+    bounds = []
+    for net, segments in enumerate(visible):
+        for edge in segments:
+            (x1, y1), (x2, y2) = edge
+            bounds.append((min(x1, x2), max(x1, x2), min(y1, y2), max(y1, y2),
+                           net, wire_axis(edge) is None, edge))
+    active = []
+    for left, right, low, high, net, diagonal, edge in sorted(bounds):
+        active = [span for span in active if span[0] >= left - 1e-8]
+        for _, other_low, other_high, other, other_diagonal, other_edge in active:
+            if other == net or other_high < low - 1e-8 or high < other_low - 1e-8:
+                continue
+            if not (diagonal or other_diagonal) or segments_intersect(edge, other_edge):
+                return False
+        active.append((right, low, high, net, diagonal, edge))
+    return True
+
+
 # Compare physical wire islands and terminal attachments against the compiled net sets.
 # Both missing connections and unintended cross-net contacts invalidate the drawing.
 def preserves_nets(circuit, drawing):
@@ -145,12 +165,7 @@ def preserves_nets(circuit, drawing):
             segments.extend(drawing.visible_segments(net))
         visible.append(segments)
 
-    return all(
-        not segments_intersect(first, second)
-        for one_net, other_net in combinations(visible, 2)
-        for first in one_net
-        for second in other_net
-    )
+    return _distinct_visible_nets(visible)
 
 
 # A crossing inside one net is a junction; a crossing between different nets is a visual

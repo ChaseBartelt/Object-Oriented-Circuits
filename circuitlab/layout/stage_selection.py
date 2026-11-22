@@ -2,7 +2,7 @@
 
 from collections import defaultdict
 
-from circuitlab.layout.geometry import ChipPackage, along, package_half_height, rotate_point, routed_pins
+from circuitlab.layout.geometry import ChipPackage, along, package_body_corners, rotate_point, routed_pins
 from circuitlab.layout.wire_edit import clean_point, physical_wire_islands
 
 
@@ -51,7 +51,7 @@ def local_stage_selection(circuit, drawing, names):
         for net, pos in routed_pins(symbol, rotation, grid):
             if net not in power:
                 contacts[net].append(pos)
-        height = package_half_height(part, grid) if part.kind == "H" else .9
+        height = a[1] - package_body_corners(part, a, b, grid)[0][1] if part.kind == "H" else .9
         side_leads = []
         left, right = sorted((a[0], b[0]))
         for name, (center, pins) in passives.items():

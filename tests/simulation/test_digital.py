@@ -16,6 +16,45 @@ TEN_SWITCHES = (ROOT / "tests/fixtures/digital/de10_switch_led.ckt").read_text()
 
 
 class DigitalSimulationTest(unittest.TestCase):
+    def test_steps_design_with_more_than_four_thousand_signals(self):
+        storage = "\n".join(f"bank{index}[256][1] = 0;" for index in range(16))
+        sim = DigitalSimulation(f"""chip LargeState(clk, led) {{
+            clk = input;
+            led = output;
+            held = 0;
+            {storage}
+            led = held;
+            clock(clk, 1kHz) {{ held = !held; }}
+        }}""")
+        self.assertGreater(len(sim.signals), 4096)
+        self.assertEqual(sim.values["led"], 0)
+        self.assertEqual(sim.step()["led"], 1)
+
+    def test_steps_design_beyond_previous_generated_size_limits(self):
+        copies = [f"copy{index}" for index in range(3)]
+        pins = ", ".join(copies)
+        declarations = ", ".join(f"{pin}[4096]" for pin in copies)
+        active_assignments = "\n".join(f"{pin}[4095:0] = pattern[4095:0];" for pin in copies)
+        inactive_assignments = "\n".join(f"{pin}[4095:0] = 0;" for pin in copies)
+        # These indexed conditional outputs expand past the former limits on
+        # generated text length, token count, and runtime signals.
+        sim = DigitalSimulation(f"""chip WideCapture(clk, pattern, {pins}) {{
+            clk, pattern[4096] = input;
+            {declarations} = output;
+            enabled = 0;
+            if (enabled) {{
+                {active_assignments}
+            }} else {{
+                {inactive_assignments}
+            }}
+            clock(clk, 1kHz) {{ enabled = !enabled; }}
+        }}""")
+        pattern = (1 << 4095) | 1
+        sim.set_input("pattern", pattern)
+        states = (sim.values, sim.step(), sim.step())
+        self.assertEqual([[state[pin] for pin in copies] for state in states],
+                         [[0] * len(copies), [pattern] * len(copies), [0] * len(copies)])
+
     def test_combinational_truth_tables_and_initial_settle(self):
         sim = DigitalSimulation('''chip Logic(a, b, nand_y, xor_y, inverted) {
             a, b = input; nand_y, xor_y, inverted = output;
@@ -49,6 +88,40 @@ class DigitalSimulationTest(unittest.TestCase):
         sim.step()
         self.assertEqual(sim.values["q"], 0)
         self.assertEqual(sim.frequency, 1000.0)
+
+    def test_clock_and_register_changes_settle_reconvergent_paths(self):
+        sim = DigitalSimulation('''chip Reconvergent(clk, enable, result, captured, phase) {
+            clk, enable = input;
+            result[4], captured[3], phase = output;
+            count[3] = 1;
+            held[3] = 0;
+            sum[3], clock_path[3], enable_path[3] = wire;
+            sum = clock_path + enable_path;
+            clock_path = clk ? count : 0;
+            enable_path = enable ? count : 0;
+            phase = clk;
+            captured = held;
+            result = (count + sum);
+            clock(clk, 1kHz) {
+                count += 1;
+                held = sum;
+            }
+        }''')
+        def outputs():
+            return tuple(sim.values[name] for name in sim.outputs)
+
+        self.assertEqual(outputs(), (1, 0, 0))
+        sim.set_input("enable", 1)
+        self.assertEqual(outputs(), (2, 0, 0))
+        sim.step()
+        self.assertEqual(outputs(), (4, 2, 0))
+        sim.step()
+        self.assertEqual(outputs(), (6, 4, 0))
+        sim.set_input("enable", 0)
+        sim.step()
+        self.assertEqual(outputs(), (4, 3, 0))
+        sim.reset()
+        self.assertEqual(outputs(), (1, 0, 0))
 
     def test_all_ten_board_switches_have_two_sample_latency(self):
         sim = DigitalSimulation(TEN_SWITCHES, "de10-lite")

@@ -1,0 +1,410 @@
+// Register-level STM32H750 SPI1 and I2C1/2 for polling and interrupt firmware.
+// SPI1 has a digital loopback peer. Each I2C bus has an independent 256-byte
+// register device at 7-bit address 0x50: first transmitted byte selects the
+// register, subsequent bytes write it, and reads advance its pointer.
+// These are explicit test peers, not physical pin, DMA, or codec models.
+chip STM32H750SPI(clk, reset, read_enable, write_enable, address, size_code, write_data,
+                 enabled, peripheral_reset, data, mapped, irq, trace) {
+    input {
+        clk, reset, read_enable, write_enable, enabled, peripheral_reset;
+        address[32], write_data[32], size_code[2];
+    }
+    output {
+        data[32], mapped, irq, trace[128];
+    }
+    const ZERO128[128] = 0;
+    const ZERO32[32] = 0;
+    const ZERO5[5] = 0;
+    const ZERO8[8] = 0;
+
+    cr1[32] = 0;
+    cr2[32] = 0;
+    cfg1[32] = 7;
+    cfg2[32] = 0;
+    ier[32] = 0;
+    crcpoly[32] = 7;
+    udrdr[32] = 0;
+    i2scfgr[32] = 0;
+    fifo[128] = 0;
+    used[5] = 0;
+    tx_fifo[128] = 0;
+    tx_used[5] = 0;
+    loaded[16] = 0;
+    remaining[16] = 0;
+    running = 0;
+    eot = 0;
+    txtf = 0;
+    overrun = 0;
+    suspended = 0;
+    total[32] = 0;
+    last_tx[32] = 0;
+    last_rx[32] = 0;
+    receive_divider[5] = 0;
+
+    offset[8] = address[7:0];
+    bus_bytes[3] = size_code == 0 ? 1 : size_code == 1 ? 2 : 4;
+    frame_bytes[3] = cfg1[4:0] < 8 ? 1 : cfg1[4:0] < 16 ? 2 : 4;
+    requested_frames[3] = frame_bytes == 1 ? bus_bytes : frame_bytes == 2 ? bus_bytes >> 1 : bus_bytes >> 2;
+    unloaded[16] = cr2[15:0] - loaded;
+    sent_frames[3] = unloaded < requested_frames ? unloaded : requested_frames;
+    sent_bytes[5] = frame_bytes == 1 ? sent_frames : frame_bytes == 2 ? (ZERO5 + sent_frames) << 1 : (ZERO5 + sent_frames) << 2;
+    pop_bytes[5] = used < bus_bytes ? used : bus_bytes;
+    append_shift[8] = (ZERO8 + used) << 3;
+    tx_append_shift[8] = (ZERO8 + tx_used) << 3;
+    frame_shift[6] = (ZERO8 + frame_bytes) << 3;
+    pop_shift[6] = (ZERO8 + pop_bytes) << 3;
+    frame_mask[32] = 4294967295 >> (31 - cfg1[4:0]);
+    packed_mask[32] = (frame_bytes == 1 ? frame_mask | (frame_mask << 8) |
+                      (frame_mask << 16) | (frame_mask << 24) :
+                      frame_bytes == 2 ? frame_mask | (frame_mask << 16) : frame_mask);
+    transfer_mask[32] = (sent_bytes >= 4 ? 4294967295 : sent_bytes == 2 ? 65535 :
+                        sent_bytes == 1 ? 255 : 0);
+    transmitted[32] = write_data & packed_mask & transfer_mask;
+    loopback_frame[32] = tx_fifo[31:0] & frame_mask;
+    threshold_frames[8] = ZERO8 + cfg1[8:5] + 1;
+    threshold[8] = frame_bytes == 1 ? threshold_frames : frame_bytes == 2 ? threshold_frames << 1 : threshold_frames << 2;
+    wire {
+        rx_ready, tx_ready, selected, register_write, receive_read, transmit_write;
+    }
+    rx_ready = used != 0 && (used >= threshold || eot);
+    tx_ready = cr1[0] && unloaded != 0 && tx_used + threshold <= 16;
+    status[32] = ((rx_ready ? 1 : 0) | (tx_ready ? 2 : 0) |
+                  (rx_ready && tx_ready ? 4 : 0) | (eot ? 8 : 0) |
+                  (txtf ? 16 : 0) | (overrun ? 64 : 0) | (suspended ? 2048 : 0) |
+                  (!running ? 4096 : 0) | ((ZERO32 + used[1:0]) << 13) |
+                  (used >= 4 ? 32768 : 0) | ((ZERO32 + remaining) << 16));
+    selected = (address[31:8] == 4194608 && address[1:0] == 0 && size_code < 3 &&
+                ((size_code == 2 && (offset <= 24 || offset == 64 || offset == 68 ||
+                  offset == 72 || offset == 76 || offset == 80)) || offset == 32 || offset == 48));
+    mapped = selected;
+    register_write = selected && write_enable && enabled;
+    receive_read = selected && read_enable && !write_enable && enabled && offset == 48;
+    transmit_write = (register_write && offset == 32 && tx_ready && requested_frames != 0 &&
+                      tx_used + sent_bytes <= 16);
+    irq = enabled && cr1[0] && (ier & status & 2047) != 0;
+    trace[31:0] = last_tx;
+    trace[63:32] = last_rx;
+    trace[95:64] = total;
+    trace[127:96] = status;
+
+    if (selected && enabled) {
+        switch (offset) {
+            case 0: data = cr1; break;
+            case 4: data = cr2; break;
+            case 8: data = cfg1; break;
+            case 12: data = cfg2; break;
+            case 16: data = ier; break;
+            case 20: data = status; break;
+            case 48: data = fifo[31:0] & (size_code == 0 ? 255 : size_code == 1 ? 65535 : 4294967295); break;
+            case 64: data = crcpoly; break;
+            case 76: data = udrdr; break;
+            case 80: data = i2scfgr; break;
+            default: data = 0; break;
+        }
+    } else { data = 0; }
+
+    clock(clk, 10kHz) {
+        if (reset || peripheral_reset) {
+            cr1 = 0; cr2 = 0; cfg1 = 7; cfg2 = 0; ier = 0; crcpoly = 7;
+            clear {
+                udrdr, i2scfgr, fifo, used, remaining, tx_fifo, tx_used, loaded, running, eot, txtf, overrun,
+                suspended, total, last_tx, last_rx, receive_divider
+            };
+        } else if (enabled) {
+            if (receive_read && used != 0) {
+                fifo = fifo >> pop_shift;
+                used = used - pop_bytes;
+                last_rx = data;
+            }
+            if (transmit_write) {
+                last_tx = transmitted;
+                tx_fifo = tx_fifo | ((ZERO128 + transmitted) << tx_append_shift);
+                tx_used = tx_used + sent_bytes;
+                loaded = loaded + sent_frames;
+                if (unloaded == sent_frames) { txtf = 1; }
+            }
+            // HAL fills TXDR before CSTART. Only an active transfer clocks those
+            // queued frames into the peer, and TSIZE counts actual wire frames.
+            if (running && cfg2[18:17] != 2 && tx_used >= frame_bytes &&
+                !transmit_write && !receive_read) {
+                tx_fifo = tx_fifo >> frame_shift;
+                tx_used = tx_used - frame_bytes;
+                total = total + 1;
+                remaining = remaining - 1;
+                if (cfg2[18:17] == 0) {
+                    if (used + frame_bytes <= 16) {
+                        fifo = fifo | ((ZERO128 + loopback_frame) << append_shift);
+                        used = used + frame_bytes;
+                    } else { overrun = 1; }
+                }
+                if (remaining == 1) {
+                    running = 0; eot = 1; txtf = 1; cr1 = cr1 & 4294966783;
+                }
+            }
+            // A receive-only master supplies clocks for an all-ones loopback peer.
+            // Throttle production so ordinary CPU RXDR accesses can drain the FIFO.
+            if (running && cfg2[18:17] == 2 && !receive_read) {
+                receive_divider = receive_divider + 1;
+                if (receive_divider == 31 && remaining != 0) {
+                    if (used + frame_bytes <= 16) {
+                        fifo = fifo | ((ZERO128 + frame_mask) << append_shift);
+                        used = used + frame_bytes;
+                    } else { overrun = 1; }
+                    total = total + 1; remaining = remaining - 1;
+                    if (remaining == 1) {
+                        running = 0; eot = 1; txtf = 1; cr1 = cr1 & 4294966783;
+                    }
+                }
+            }
+            if (register_write) {
+                switch (offset) {
+                    case 0:
+                        cr1 = write_data & 4294966271;
+                        if (!write_data[0]) {
+                            clear { running, remaining, used, fifo, tx_fifo, tx_used, loaded };
+                        } else if (write_data[10]) {
+                            running = 0; suspended = 1; cr1 = write_data & 4294965759;
+                        } else if (write_data[9] && !running) {
+                            remaining = cr2[15:0]; running = cr2[15:0] != 0;
+                            eot = cr2[15:0] == 0; suspended = 0; receive_divider = 0;
+                        }
+                        break;
+                    case 4:
+                        cr2 = write_data;
+                        if (!running) { loaded = 0; tx_used = 0; tx_fifo = 0; txtf = 0; }
+                        break;
+                    case 8: cfg1 = write_data; break;
+                    case 12: cfg2 = write_data; break;
+                    case 16: ier = write_data & 2047; break;
+                    case 24:
+                        if (write_data[3]) { eot = 0; }
+                        if (write_data[4]) { txtf = 0; }
+                        if (write_data[6]) { overrun = 0; }
+                        if (write_data[11]) { suspended = 0; }
+                        break;
+                    case 64: crcpoly = write_data; break;
+                    case 76: udrdr = write_data; break;
+                    case 80: i2scfgr = write_data; break;
+                    default: break;
+                }
+            }
+        }
+    }
+}
+
+chip STM32H750I2C(clk, reset, read_enable, write_enable, address, size_code, write_data,
+                 register_block, enabled, peripheral_reset, data, mapped, event_irq, error_irq, trace) {
+    input {
+        clk, reset, read_enable, write_enable, enabled, peripheral_reset;
+        address[32], write_data[32], register_block[24], size_code[2];
+    }
+    output {
+        data[32], mapped, event_irq, error_irq, trace[128];
+    }
+    const ZERO7[7] = 0;
+    const ZERO128[128] = 0;
+    const BYTE_MASK[128] = 255;
+    const ALL128[128] = 340282366920938463463374607431768211455;
+    cr1[32] = 0;
+    cr2[32] = 0;
+    oar1[32] = 0;
+    oar2[32] = 0;
+    timing[32] = 0;
+    timeout[32] = 0;
+    flags[16] = 0;
+    busy = 0;
+    starting = 0;
+    accepted = 0;
+    reading = 0;
+    tx_full = 0;
+    rx_full = 0;
+    tc = 0;
+    tcr = 0;
+    need_pointer = 0;
+    remaining[8] = 0;
+    tx_latch[8] = 0;
+    rx_latch[8] = 0;
+    pointer[8] = 0;
+    target[7] = 0;
+    total[32] = 0;
+    last_tx[32] = 0;
+    last_rx[32] = 0;
+    // The external device keeps its registers across an RCC controller reset.
+    registers[16][128] = 0;
+    identification[8] = 66;
+    row[4] = pointer[7:4];
+    shift[7] = (ZERO7 + pointer[3:0]) << 3;
+    device_line[128] = registers[row];
+    stored_byte[8] = device_line >> shift;
+    device_byte[8] = pointer == 0 ? identification : stored_byte;
+    mask[128] = BYTE_MASK << shift;
+    new_line[128] = (device_line & (ALL128 ^ mask)) | ((ZERO128 + tx_latch) << shift);
+    offset[8] = address[7:0];
+    wire {
+        selected, register_write, receive_read, tx_ready, consume_tx, consume_rx;
+    }
+    selected = (address[31:8] == register_block && address[1:0] == 0 && size_code < 3 &&
+               (offset <= 40 && (size_code == 2 || offset == 36 || offset == 40)));
+    register_write = selected && write_enable && enabled;
+    receive_read = selected && read_enable && !write_enable && enabled && offset == 36;
+    tx_ready = busy && !starting && accepted && !reading && remaining != 0 && !tx_full;
+    consume_tx = busy && !starting && accepted && !reading && remaining != 0 && tx_full;
+    consume_rx = receive_read && rx_full;
+    status[32] = ((!tx_full ? 1 : 0) | (tx_ready ? 2 : 0) | (rx_full ? 4 : 0) |
+                  flags | (tc ? 64 : 0) | (tcr ? 128 : 0) | (busy ? 32768 : 0));
+    mapped = selected;
+    event_irq = (enabled && cr1[0] && ((cr1[1] && tx_ready) || (cr1[2] && rx_full) ||
+                 (cr1[4] && flags[4]) || (cr1[5] && flags[5]) || (cr1[6] && (tc || tcr))));
+    error_irq = enabled && cr1[0] && cr1[7] && (flags & 16128) != 0;
+    trace[31:0] = last_tx;
+    trace[63:32] = last_rx;
+    trace[95:64] = total;
+    trace[111:96] = status[15:0];
+    trace[118:112] = target;
+    trace[126:119] = pointer;
+    trace[127] = cr1[0];
+
+    if (selected && enabled) {
+        switch (offset) {
+            case 0: data = cr1; break;
+            case 4: data = cr2; break;
+            case 8: data = oar1; break;
+            case 12: data = oar2; break;
+            case 16: data = timing; break;
+            case 20: data = timeout; break;
+            case 24: data = status; break;
+            case 36: data = rx_latch; break;
+            case 40: data = tx_latch; break;
+            default: data = 0; break;
+        }
+    } else { data = 0; }
+
+    clock(clk, 10kHz) {
+        if (reset) {
+            clear { registers };
+            identification = 66; // Register zero identifies the modeled test peer.
+            pointer = 0;
+        } else if (enabled && !peripheral_reset && cr1[0] && consume_tx && !need_pointer) {
+            if (pointer == 0) { identification = tx_latch; }
+            else { registers[row] = new_line; }
+        }
+        if (reset || peripheral_reset) {
+            clear {
+                cr1, cr2, oar1, oar2, timing, timeout, flags, busy, starting, accepted, reading, tx_full,
+                rx_full, tc, tcr, need_pointer, remaining, tx_latch, rx_latch, target, total, last_tx,
+                last_rx
+            };
+        } else if (enabled) {
+            if (cr1[0]) {
+                if (starting) {
+                    starting = 0;
+                    if (target != 80 || cr2[11]) {
+                        // An absent address is observable as NACK, followed by STOP.
+                        flags = flags | 48; busy = 0; accepted = 0; tx_full = 0;
+                    } else {
+                        accepted = 1;
+                        if (remaining == 0) {
+                            if (cr2[25]) { flags = flags | 32; busy = 0; }
+                            else if (cr2[24]) { tcr = 1; }
+                            else { tc = 1; }
+                        }
+                    }
+                } else if (consume_tx) {
+                    tx_full = 0; last_tx = tx_latch; total = total + 1;
+                    remaining = remaining - 1;
+                    if (need_pointer) { pointer = tx_latch; need_pointer = 0; }
+                    else { pointer = pointer + 1; }
+                    if (remaining == 1) {
+                        if (cr2[24]) { tcr = 1; }
+                        else if (cr2[25]) { flags = flags | 32; busy = 0; }
+                        else { tc = 1; }
+                    }
+                } else if (busy && accepted && reading && remaining != 0 && !rx_full) {
+                    rx_latch = device_byte; rx_full = 1;
+                }
+                if (consume_rx) {
+                    rx_full = 0; last_rx = rx_latch; total = total + 1;
+                    remaining = remaining - 1; pointer = pointer + 1;
+                    if (remaining == 1) {
+                        if (cr2[24]) { tcr = 1; }
+                        else if (cr2[25]) { flags = flags | 32; busy = 0; }
+                        else { tc = 1; }
+                    }
+                }
+            }
+            if (register_write) {
+                switch (offset) {
+                    case 0:
+                        cr1 = write_data;
+                        if (!write_data[0]) {
+                            clear { busy, starting, accepted, remaining, tx_full, rx_full, tc, tcr, flags };
+                        }
+                        break;
+                    case 4:
+                        cr2 = write_data & 4294942719;
+                        if (cr1[0] && write_data[13]) {
+                            target = write_data[7:1]; reading = write_data[10];
+                            remaining = write_data[23:16]; busy = 1; starting = 1;
+                            clear { tc, tcr, accepted, rx_full };
+                            need_pointer = !write_data[10];
+                        } else if (cr1[0] && write_data[14]) {
+                            clear { busy, starting, accepted, remaining };
+                            tx_full = 0; rx_full = 0; tc = 0; tcr = 0; flags = flags | 32;
+                        } else if (tcr) {
+                            remaining = write_data[23:16]; tcr = 0;
+                        }
+                        break;
+                    case 8: oar1 = write_data; break;
+                    case 12: oar2 = write_data; break;
+                    case 16: timing = write_data; break;
+                    case 20: timeout = write_data; break;
+                    case 24: if (write_data[0]) { tx_full = 0; } break;
+                    case 28: flags = flags & (65535 ^ write_data[15:0]); break;
+                    case 40: if (cr1[0]) { tx_latch = write_data[7:0]; tx_full = 1; } break;
+                    default: break;
+                }
+            }
+        }
+    }
+}
+
+// The three controllers keep distinct state and distinct NVIC interrupt lines.
+chip STM32H750Serial(clk, reset, read_enable, write_enable, address, size_code, write_data,
+                    clocks, peripheral_resets, data, mapped, irq_lines, trace) {
+    input {
+        clk, reset, read_enable, write_enable;
+        address[32], write_data[32], size_code[2], clocks[3], peripheral_resets[3];
+    }
+    output {
+        data[32], mapped, irq_lines[240], trace[384];
+    }
+    const ZERO240[240] = 0;
+    wire {
+        spi_data[32], spi_trace[128], spi_map, spi_irq, spi_clock, spi_reset;
+    }
+    spi_clock = clocks[0];
+    spi_reset = peripheral_resets[0];
+    STM32H750SPI(clk, reset, read_enable, write_enable, address, size_code, write_data,
+                 spi_clock, spi_reset, spi_data, spi_map, spi_irq, spi_trace);
+    for (int bus = 1; bus <= 2; bus++) {
+        wire {
+            i2c*{bus}_data[32], i2c*{bus}_trace[128];
+        }
+        i2c*{bus}_block[24] = *{4194384 + 4 * bus}; // 0x40005400, 0x40005800
+        wire {
+            i2c*{bus}_map, i2c*{bus}_ev, i2c*{bus}_er, i2c*{bus}_clock, i2c*{bus}_reset;
+        }
+        i2c*{bus}_clock = clocks[bus];
+        i2c*{bus}_reset = peripheral_resets[bus];
+        STM32H750I2C(clk, reset, read_enable, write_enable, address, size_code, write_data,
+                     i2c*{bus}_block, i2c*{bus}_clock, i2c*{bus}_reset,
+                     i2c*{bus}_data, i2c*{bus}_map, i2c*{bus}_ev, i2c*{bus}_er, i2c*{bus}_trace);
+        trace[128 * bus + 127:128 * bus] = i2c*{bus}_trace;
+    }
+    data = spi_data | i2c1_data | i2c2_data;
+    mapped = spi_map || i2c1_map || i2c2_map;
+    irq_lines = (((ZERO240 + spi_irq) << 35) | ((ZERO240 + i2c1_ev) << 31) |
+                 ((ZERO240 + i2c1_er) << 32) | ((ZERO240 + i2c2_ev) << 33) |
+                 ((ZERO240 + i2c2_er) << 34));
+    trace[127:0] = spi_trace;
+}

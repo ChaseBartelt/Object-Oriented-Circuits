@@ -1,0 +1,182 @@
+
+ // BEGIN FIRMWARE PLATFORM
+// STM32H750 SRAM, startup registers, and serial peripheral simulation.
+
+// Models one SRAM window with address decoding and read/write control.
+chip M7FirmwareMemoryWindow(clk, reset, write_enable, address, last_address, byte_count,
+                            size_code, write_data, base, limit, ready,
+                            data, mapped, first_hit, last_hit, first_words) {
+    input {
+        clk, reset, write_enable, ready;
+        address[32], last_address[32], write_data[32], base[32], limit[32];
+        size_code[2], byte_count[3];
+    }
+    output { data[32], first_words[352], mapped, first_hit, last_hit; }
+    wire { page_data[32], page_write; }
+
+    // Decode the first and final addresses of the requested access.
+    first_hit = address >= base && address < limit;
+    last_hit = last_address >= base && last_address < limit;
+    mapped = ready && first_hit;
+    page_write = write_enable && mapped;
+    offset[10] = address - base;
+
+    // Access the SRAM page and return zero when it is not selected.
+    M7FirmwareRAMPage(clk, reset, page_write, offset, size_code, write_data, page_data, first_words);
+    data = mapped ? page_data : 0;
+}
+
+// Generates 13 independent SRAM windows with compile-time chip instantiation.
+chip M7FirmwareMemoryBank(clk, reset, write_enable, address, size_code, write_data, external_ready,
+                          data, mapped, range_valid, first_words) {
+    input {
+        clk, reset, write_enable, external_ready;
+        address[32], write_data[32], size_code[2];
+    }
+    output { data[32], mapped, range_valid, first_words[352]; }
+
+    // Packed 32-bit address boundaries for the 13 memory windows.
+    const PAGE_COUNT[32] = 13;
+    const BASE_TABLE_0[416] = 21158915158316218316851938949740048221899309909218387035256979718337612446478645754020799449688835800435180296580270588428288;
+    const LIMIT_TABLE_0[416] = 21158955505970572818968985606060747619153152042914357585956120293510208356509140608254943274153133964252427963643282551997440;
+    const EXTERNAL_PAGES[13] = 0;
+
+    // Determine access width and the final byte address.
+    byte_count[3] = size_code == 0 ? 1 : size_code == 1 ? 2 : 4;
+    last_address[32] = address + byte_count - 1;
+
+    // Initialize the accumulated address hits and memory data.
+    wire accumulator {
+        store_enable, decoded0, first0, last0;
+        data_or0[32];
+    }
+    store_enable = write_enable;
+    decoded0 = 0; first0 = 0; last0 = 0; data_or0 = 0;
+
+    // Generate each memory window with separate wires and stored state.
+    for (int i = 0; i < PAGE_COUNT; i++) {
+        wire {
+            sram*{i}_base[32], sram*{i}_limit[32], sram*{i}_data[32], sram*{i}_words[352];
+            sram*{i}_ready, sram*{i}_mapped, sram*{i}_first, sram*{i}_last;
+            decoded*{i + 1}, first*{i + 1}, last*{i + 1}, data_or*{i + 1}[32];
+        }
+
+        // Select this window's address range from the packed tables.
+        sram*{i}_base = BASE_TABLE_0[32 * i + 31:32 * i];
+        sram*{i}_limit = LIMIT_TABLE_0[32 * i + 31:32 * i];
+        sram*{i}_ready = !EXTERNAL_PAGES[i] || external_ready;
+
+        // Instantiate the independently addressable SRAM page.
+        M7FirmwareMemoryWindow(clk, reset, store_enable, address, last_address, byte_count,
+                               size_code, write_data, sram*{i}_base, sram*{i}_limit, sram*{i}_ready,
+                               sram*{i}_data, sram*{i}_mapped, sram*{i}_first, sram*{i}_last, sram*{i}_words);
+
+        // Accumulate page hits and combine selected read data.
+        decoded*{i + 1} = decoded*{i} || sram*{i}_mapped;
+        first*{i + 1} = first*{i} || sram*{i}_first;
+        last*{i + 1} = last*{i} || sram*{i}_last;
+        data_or*{i + 1} = data_or*{i} | sram*{i}_data;
+    }
+
+    // Check both access boundaries; mapped remains based on page decoding.
+    range_valid = first13 && last13;
+    mapped = decoded13;
+    data = data_or13;
+
+    // Export selected SRAM words for CPU and schematic viewer inspection.
+    // Preserve the original word ordering used by firmware tests.
+    first_words[31:0] = sram0_words[95:64];
+    first_words[63:32] = sram0_words[31:0];
+    first_words[95:64] = sram0_words[63:32];
+    first_words[351:96] = 0;
+}
+
+// Connects the CPU memory bus to startup registers, serial peripherals, and SRAM.
+chip M7FirmwarePlatform(clk, reset, read_enable, write_enable, address, size_code, write_data,
+                        reset_base, data, mapped, first_words, platform_status,
+                        audio_board, irq_numbers, device_irqs, audio_trace, serial_trace, peripheral_read) {
+    input bus {
+        clk, reset, read_enable, write_enable, peripheral_read;
+        address[32], write_data[32], size_code[2];
+    }
+    output platform {
+        reset_base[32], data[32], first_words[352];
+        mapped, platform_status[2], audio_board, irq_numbers[10], device_irqs[240], audio_trace[162], serial_trace[384];
+    }
+    wire interconnects {
+        registers_data[32], shared_ram_data[32];
+        registers_mapped, board_led, sysclk_pll, shared_ram_mapped, ram_range_valid;
+        qspi_clock, fmc_clock, tim2_clock, rng_clock, qspi_reset, fmc_reset;
+        dma1_clock, sai1_clock, codec_reset_n;
+        serial_clocks[3], serial_resets[3], serial_data[32], serial_mapped, serial_irqs[240];
+        memory_ready;
+    }
+
+    // STM32H750 internal-flash reset base: 0x08000000.
+    reset_base = 134217728;
+
+    // Configure startup registers, clocks, GPIO, and peripheral resets.
+    STM32H750StartupRegisters(clk, reset, address, size_code, write_data, write_enable,
+                              registers_data, registers_mapped, board_led, sysclk_pll,
+                              qspi_clock, fmc_clock, tim2_clock, rng_clock, qspi_reset, fmc_reset,
+                              dma1_clock, sai1_clock, codec_reset_n, serial_clocks, serial_resets);
+
+    // Simulate memory-mapped SPI1 and I2C1/I2C2 controllers.
+    STM32H750Serial(clk, reset, peripheral_read, write_enable, address, size_code, write_data,
+                    serial_clocks, serial_resets, serial_data, serial_mapped, serial_irqs, serial_trace);
+
+    // Publish board status and serial interrupt signals.
+    // Audio hardware is disabled in this platform configuration.
+    platform_status[0] = board_led;
+    platform_status[1] = sysclk_pll;
+    audio_board = 0; irq_numbers = 32; device_irqs = serial_irqs; audio_trace = 0;
+
+    // Shared SRAM is permanently enabled for this firmware model.
+    memory_ready = 1;
+    M7FirmwareMemoryBank(clk, reset, write_enable, address, size_code, write_data, memory_ready,
+                         shared_ram_data, shared_ram_mapped, ram_range_valid, first_words);
+
+    // Combine decoded memory regions and their read-data responses.
+    mapped = registers_mapped || serial_mapped || shared_ram_mapped;
+    data = (registers_mapped ? registers_data : 0) | (serial_mapped ? serial_data : 0) | shared_ram_data;
+}
+// END FIRMWARE PLATFORM
+
+// Provides the firmware entry address and onboard status probes.
+chip STM32H750ViewerProbes(pc, status, entry, at_main, board_led, sysclk_pll) {
+    input { pc[32], status[2]; }
+    output { entry[32], at_main, board_led, sysclk_pll; }
+
+    // Detect when execution reaches the firmware's main entry point.
+    entry = 134218760;
+    at_main = pc == entry;
+    board_led = status[0];
+    sysclk_pll = status[1];
+}
+
+// Extracts SPI1 and I2C1/I2C2 activity from the packed 384-bit trace.
+chip STM32H750SerialProbes(trace, SPI1_TX, SPI1_RX, SPI1_TRANSFERS, SPI1_STATUS,
+                          I2C1_TX, I2C1_RX, I2C1_TRANSFERS, I2C1_STATUS,
+                          I2C2_TX, I2C2_RX, I2C2_TRANSFERS, I2C2_STATUS) {
+    input { trace[384]; }
+    output serial {
+        SPI1_TX[32], SPI1_RX[32], SPI1_TRANSFERS[32], SPI1_STATUS[32];
+        for (int i = 1; i <= 2; i++) {
+            I2C*{i}_TX[32], I2C*{i}_RX[32], I2C*{i}_TRANSFERS[32], I2C*{i}_STATUS[32];
+        }
+    }
+
+    // SPI1 occupies the first 128 bits of the serial trace.
+    SPI1_TX = trace[31:0];
+    SPI1_RX = trace[63:32];
+    SPI1_TRANSFERS = trace[95:64];
+    SPI1_STATUS = trace[127:96];
+
+    // Generate the four probe assignments for each I2C controller.
+    for (int i = 1; i <= 2; i++) {
+        I2C*{i}_TX = trace[128 * i + 31:128 * i];
+        I2C*{i}_RX = trace[128 * i + 63:128 * i + 32];
+        I2C*{i}_TRANSFERS = trace[128 * i + 95:128 * i + 64];
+        I2C*{i}_STATUS = trace[128 * i + 127:128 * i + 96];
+    }
+}

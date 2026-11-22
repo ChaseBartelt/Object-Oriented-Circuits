@@ -1,0 +1,138 @@
+
+ // STM32H750 SPI/I2C firmware simulation.
+ // Boots compiled ST HAL firmware from internal flash.
+ // Firmware main entry: 0x080004B0.
+
+// Cortex-M7 instruction decoding, execution, DSP, and floating point.
+include("core/thumb/base.ckt");
+include("core/system/registers.ckt");
+include("core/floating_point/binary32.ckt");
+include("core/floating_point/advanced.ckt");
+include("core/thumb/wide.ckt");
+include("core/thumb/dsp.ckt");
+include("core/thumb/memory.ckt");
+include("core/system/hints.ckt");
+include("core/execution.ckt");
+
+// Compiled firmware image and STM32 peripheral models.
+include("firmware/images/DaisySeed_SPI_I2C_rom.ckt");
+include("core/memory/storage.ckt");
+include("firmware/stm32h750/STM32H750_StartupRegisters.ckt");
+include("firmware/stm32h750/STM32H750_Serial.ckt");
+include("boards/DaisySeed_SPI_I2C_platform.ckt");
+
+// Interrupts, memory protection, and system bus.
+include("core/system/interrupts.ckt");
+include("core/system/protection.ckt");
+include("core/memory/bus.ckt");
+
+main STM32H750_BOOT {
+
+    // Firmware entry point, onboard LED, and system clock probes.
+    output viewer {
+        BOARD_LED, SYSCLK_PLL, MAIN_ADDRESS[32], AT_MAIN;
+    }
+    STM32H750ViewerProbes(PC, platform_status, MAIN_ADDRESS, AT_MAIN, BOARD_LED, SYSCLK_PLL);
+
+    // SPI1 and I2C1/I2C2 transaction and status probes.
+    output serial {
+        SPI1_TX[32], SPI1_RX[32], SPI1_TRANSFERS[32], SPI1_STATUS[32];
+        for (int i = 1; i <= 2; i++) {
+            I2C*{i}_TX[32], I2C*{i}_RX[32], I2C*{i}_TRANSFERS[32], I2C*{i}_STATUS[32];
+        }
+    }
+    STM32H750SerialProbes(serial_trace, SPI1_TX, SPI1_RX, SPI1_TRANSFERS, SPI1_STATUS,
+                          I2C1_TX, I2C1_RX, I2C1_TRANSFERS, I2C1_STATUS,
+                          I2C2_TX, I2C2_RX, I2C2_TRANSFERS, I2C2_STATUS);
+
+    // External clock, reset, and interrupt sources.
+    input controls {
+        CLK, RESET, IRQ0, IRQ1, NMI;
+        IRQ_LINES[240];
+    }
+
+    // CPU registers, execution state, and system control.
+    output state {
+        PC[32], MSP[32], PSP[32], SP[32], LR[32], IR[32], LAST_PC[32], LAST_IR[32], RETIRED[32];
+        NZCV[4], FAULT_CODE[3], BUS_SIZE[2], EXCEPTION_DEPTH[5], ITSTATE[8];
+        BOOTED, FAULT, WIDE, BUS_READ, BUS_WRITE, IRQ_PENDING, IRQ_ACTIVE;
+        SLEEPING, EVENT_LATCH;
+        CONTROL[3], IPSR[9], PENDING_EXCEPTION[9], BASEPRI[8];
+        SVC_PRIORITY[8], PENDSV_PRIORITY[8], SYSTICK_PRIORITY[8], VECTOR_BASE[32];
+        IRQ0_ENABLED, IRQ0_PENDING, IRQ0_ACTIVE, IRQ0_PRIORITY[8];
+        IRQ1_ENABLED, IRQ1_PENDING, IRQ1_ACTIVE, IRQ1_PRIORITY[8];
+        NMI_PENDING, NMI_ACTIVE, PRIGROUP[3];
+
+        // Configurable fault status and MPU permissions.
+        USAGEFAULT_ENABLED, USAGEFAULT_ACTIVE, USAGEFAULT_PRIORITY[8], DIVZERO_TRAP;
+        MEMMANAGE_ENABLED, MEMMANAGE_ACTIVE, MEMMANAGE_PRIORITY[8];
+        BUSFAULT_ENABLED, BUSFAULT_ACTIVE, BUSFAULT_PRIORITY[8];
+        CFSR[32], HFSR[32], BFAR[32], MMFAR[32];
+        FETCH_ALLOWED, DATA_ALLOWED;
+        PRIMASK, FAULTMASK, PRIVILEGED, PENDSV_PENDING;
+
+        // Floating-point control and register probes.
+        CPACR[32], FPCCR[32], FPDSCR[32], FPCAR[32], FPSCR[32];
+        S0[32], S15[32], S16[32], S31[32];
+        FP_ACTIVE_FRAME, FP_LAZY_ACTIVE;
+
+        // Memory bus and HAL firmware test results.
+        BUS_ADDR[32], BUS_WDATA[32], BUS_RDATA[32];
+        BOOT_SIGNATURE[32], DATA_VALUE[32], BSS_VALUE[32], HAL_TICK[32];
+        SERIAL_STAGE[32], SERIAL_IRQ_COMPLETIONS[32];
+
+        // Additional RAM probes and ARM general-purpose registers.
+        for (int i = 6; i <= 10; i++) { RAM*{i}[32]; }
+        for (int i = 0; i < 13; i++) { R*{i}[32]; }
+    }
+
+    // Internal connections between the CPU, memory, and interrupt controller.
+    wire interconnects {
+        fetch_ok, flash_mapped, bus_valid, systick_ack, pendsv_ack;
+        irq0_ack, irq0_return, irq1_ack, irq1_return;
+        nmi_set, sev_on_pend, sleep_on_exit;
+        vector_access, data_privileged;
+        raise_fault, set_cfsr[32], set_hfsr[32];
+        flash_data[32], platform_status[2];
+        irq_numbers[10], audio_trace[162], serial_trace[384];
+        external_exception[9], external_priority[8], external_active_priority[8], external_pending_lines[240];
+        external_ack_lines[240], external_active_lines[240], external_return_lines[240];
+    }
+
+    // Fetch 16-bit and 32-bit Thumb instructions from firmware ROM.
+    M7FirmwareFlash(PC, BUS_ADDR, BOOTED, IR, WIDE, fetch_ok, flash_data, flash_mapped);
+
+    // Memory subsystem: SRAM, SPI/I2C, SysTick, NVIC, SCB, and MPU.
+    // Named list preserves all 94 positional connections.
+    memory_pins[93:0] = "CLK, RESET, BUS_READ, BUS_WRITE, BUS_ADDR, BUS_SIZE, BUS_WDATA, flash_data,
+        flash_mapped, systick_ack, pendsv_ack, PRIVILEGED, IPSR, PENDING_EXCEPTION, EXCEPTION_DEPTH, IRQ0,
+        irq0_ack, IRQ0_ACTIVE, irq0_return, IRQ0_ENABLED, IRQ0_PENDING, IRQ0_PRIORITY, raise_fault, set_cfsr,
+        set_hfsr, CFSR, HFSR, BFAR, MMFAR, CPACR, FPCCR, FPDSCR,
+        FP_LAZY_ACTIVE, FPCAR, data_privileged, PC, WIDE, FAULTMASK, vector_access, FETCH_ALLOWED,
+        DATA_ALLOWED, BUS_RDATA, bus_valid, IRQ_PENDING, PENDSV_PENDING, SVC_PRIORITY, PENDSV_PRIORITY, SYSTICK_PRIORITY,
+        VECTOR_BASE, sev_on_pend, sleep_on_exit, BOOT_SIGNATURE, DATA_VALUE, BSS_VALUE, HAL_TICK, SERIAL_STAGE,
+        SERIAL_IRQ_COMPLETIONS, RAM6, RAM7, RAM8, RAM9, RAM10, IRQ1, irq1_ack,
+        IRQ1_ACTIVE, irq1_return, IRQ1_ENABLED, IRQ1_PENDING, IRQ1_PRIORITY, USAGEFAULT_ENABLED, USAGEFAULT_PRIORITY, USAGEFAULT_ACTIVE,
+        DIVZERO_TRAP, MEMMANAGE_ENABLED, MEMMANAGE_PRIORITY, MEMMANAGE_ACTIVE, BUSFAULT_ENABLED, BUSFAULT_PRIORITY, BUSFAULT_ACTIVE, NMI_PENDING,
+        nmi_set, PRIGROUP, platform_status, irq_numbers, audio_trace, IRQ_LINES, external_ack_lines, external_active_lines,
+        external_return_lines, external_exception, external_priority, external_active_priority, external_pending_lines, serial_trace";
+    M7FirmwareMemory(memory_pins[93:0]);
+
+    // Cortex-M7 processor: ALU, DSP, FPU, registers, and exception execution.
+    // Named list preserves all 112 positional connections.
+    core_pins[111:0] = "CLK, RESET, IR, WIDE, fetch_ok, FETCH_ALLOWED, DATA_ALLOWED, BUS_RDATA,
+        bus_valid, vector_access, IRQ_PENDING, PENDSV_PENDING, SVC_PRIORITY, PENDSV_PRIORITY, SYSTICK_PRIORITY, VECTOR_BASE,
+        sev_on_pend, sleep_on_exit, IRQ0_ENABLED, IRQ0_PENDING, IRQ0_PRIORITY, irq0_ack, IRQ0_ACTIVE, irq0_return,
+        systick_ack, pendsv_ack, IRQ_ACTIVE, PENDING_EXCEPTION, EXCEPTION_DEPTH, SLEEPING, EVENT_LATCH, raise_fault,
+        set_cfsr, set_hfsr, USAGEFAULT_ENABLED, USAGEFAULT_PRIORITY, USAGEFAULT_ACTIVE, DIVZERO_TRAP, MEMMANAGE_ENABLED, MEMMANAGE_PRIORITY,
+        MEMMANAGE_ACTIVE, BUSFAULT_ENABLED, BUSFAULT_PRIORITY, BUSFAULT_ACTIVE, PC, MSP, PSP, SP,
+        LR, NZCV, BOOTED, FAULT, FAULT_CODE, LAST_PC, LAST_IR, RETIRED,
+        CONTROL, IPSR, PRIMASK, BASEPRI, FAULTMASK, PRIVILEGED, ITSTATE, BUS_ADDR,
+        BUS_WDATA, BUS_READ, BUS_WRITE, BUS_SIZE, R0, R1, R2, R3,
+        R4, R5, R6, R7, R8, R9, R10, R11,
+        R12, CPACR, FPCCR, FPDSCR, FPSCR, S0, S15, S16,
+        S31, FP_ACTIVE_FRAME, FP_LAZY_ACTIVE, FPCAR, data_privileged, IRQ1_PENDING, IRQ1_ENABLED, IRQ1_PRIORITY,
+        irq1_ack, IRQ1_ACTIVE, irq1_return, NMI, nmi_set, NMI_PENDING, NMI_ACTIVE, PRIGROUP,
+        irq_numbers, external_exception, external_priority, external_active_priority, external_pending_lines, external_ack_lines, external_active_lines, external_return_lines";
+    M7FirmwareCore(core_pins[111:0]);
+}

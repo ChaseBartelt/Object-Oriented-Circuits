@@ -318,6 +318,10 @@ def result_rows(result):
             if p.kind == "S":
                 add(name + " threshold", "V(control) - V(reference)", p.threshold, "V", provided=True)
                 continue
+            if p.kind == "D":
+                add(prefix + name + " model", "Generic diode (anode → cathode)",
+                    p.diode.kind if p.diode else "rectifier", provided=True)
+                continue
             if p.kind == "K":
                 add(name + " state", "Manual switch", "Closed" if p.closed else "Open", provided=True)
                 continue
@@ -607,6 +611,12 @@ def component_labels(circuit):
         labels[p.name] = label = [name.replace("_", " ")]
         # Manual switches show their interactive state, not the finite numerical
         # resistance used internally to model the selected contact state.
+        if p.kind == "D":
+            model = p.diode
+            label.append((model.kind.upper() if model.kind in {"led", "pin"} else model.kind.capitalize()) if model else "Rectifier")
+            if model and model.kind in {"zener", "avalanche"}:
+                label.append(format_value(model.breakdown, "V"))
+            continue
         if p.kind == "K":
             label.append("Closed" if p.closed else "Open")
             continue

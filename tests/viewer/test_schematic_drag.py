@@ -63,6 +63,79 @@ class SchematicDragTest(unittest.TestCase):
         self.view.preview_drag(end)
         return end
 
+    def test_hand_pan_can_center_top_left_and_fit_uses_drawing_bounds(self):
+        view = self.view
+        viewport = view.viewport()
+        button = Qt.MouseButton.LeftButton
+        center = viewport.rect().center()
+        drawing = view.scene().itemsBoundingRect()
+        fitted = view.transform().m11()
+        self.assertGreater(view.mapFromScene(drawing).boundingRect().width(), .75 * viewport.width())
+
+        start = QPoint(20, 20)
+        top_left = drawing.topLeft()
+        end = start + center - view.mapFromScene(top_left)
+        self.assertIsNone(view.target(start))
+        self.assertTrue(viewport.rect().contains(end))
+        QTest.mousePress(viewport, button, pos=start)
+        QTest.mouseMove(viewport, end)
+        QTest.mouseRelease(viewport, button, pos=end)
+        self.assertLessEqual((view.mapFromScene(top_left) - center).manhattanLength(), 2)
+        self.assertFalse(view.fitted)
+
+        cursor = viewport.rect().bottomRight() - QPoint(20, 20)
+        QTest.mouseMove(viewport, cursor)
+        fixed = view.mapToScene(cursor)
+        view.zoom(1 / 1.22)
+        self.assertLessEqual((view.mapFromScene(fixed) - cursor).manhattanLength(), 2)
+
+        view.fit()
+        self.assertAlmostEqual(view.transform().m11(), fitted)
+        self.assertLessEqual((view.mapFromScene(drawing.center()) - center).manhattanLength(), 2)
+        self.assertTrue(view.fitted)
+
+    def test_boundary_drag_can_pass_another_terminal_on_the_same_column(self):
+        r1, r2 = self.circuit.components
+        first, neighbor = (-3, 0), (-3, 2)
+        drawing = Layout(
+            symbols=[(r1, (0, 0), (4, 0), "+"), (r2, (0, 2), (4, 2), "+")],
+            positions={"R1": (0, 0), "R2": (0, 2)}, pin_grid=.25,
+            boundary={"a": first, "c": neighbor},
+            wires={"a": [(first, (0, 0))], "c": [(neighbor, (0, 2))]},
+        )
+        self.view.draw(self.circuit, layout=drawing)
+        button = Qt.MouseButton.LeftButton
+        QTest.mousePress(self.view.viewport(), button, pos=self.view.mapFromScene(point(first)))
+        self.assertEqual(self.view.drag.kind, "boundary")
+        QTest.mouseRelease(self.view.viewport(), button, pos=self.view.mapFromScene(point(neighbor)))
+        moved = self.view.layout
+        x, y = moved.boundary["a"]
+        self.assertAlmostEqual(abs(x - neighbor[0]) + abs(y - neighbor[1]), .25)
+        self.assertEqual(moved.boundary["c"], neighbor)
+        self.assertEqual(moved.wires["c"], drawing.wires["c"])
+        self.assertEqual(list(moved.pins()), list(drawing.pins()))
+        self.assertEqual(moved.connectors, [])
+        self.assertTrue(preserves_nets(self.circuit, moved))
+        self.view.undo_placement()
+        self.assertIs(self.view.layout, drawing)
+
+    def test_powered_opamp_hit_area_is_the_triangle_with_its_own_selection_bounds(self):
+        circuit = compile_circuit("op1(plus,minus,out,vcc,vee);", render_only=True)
+        amp, = circuit.components
+        drawing = Layout(symbols=[(amp, (0, 0), (4, 0), "+")],
+                         positions={amp.name: (0, 0)}, pin_grid=.25)
+        self.view.draw(circuit, layout=drawing)
+        center = self.view.mapFromScene(point((1.9, 0)))
+        outside = self.view.mapFromScene(point((3.5, .7)))
+        self.assertEqual(self.view.target(center), ("component", amp.name))
+        self.assertIsNone(self.view.target(outside))
+        self.view.selected_symbols = {amp.name}
+        self.view.selection_key = self.key
+        self.view.paint_selection()
+        outline, = self.view.selection_items
+        self.assertLess(outline.rect().height(), 2 * SCALE)
+        self.assertLess(outline.rect().width(), 2.1 * SCALE)
+
     def test_wire_drag_keeps_a_grid_square_around_a_chip(self):
         circuit = compile_circuit(
             "chip Block(a, b) { Rinside(1k) between(a, b); }\n"

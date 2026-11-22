@@ -8,15 +8,18 @@ Verilog constructs. Board conditioning comes from the same wrapper as FPGA build
 # Combinational values settle between clock transitions; edge-triggered assignments sample
 # the previous state before their updates are committed together.
 
+import ast
 from dataclasses import dataclass, field
 from graphlib import CycleError, TopologicalSorter
+from heapq import heapify, heappop, heappush
 import re
 from time import perf_counter
+from types import CodeType, FunctionType
 
 from circuitlab.exporters.clocked import PRECEDENCE, frequency
 from circuitlab.exporters.verilog import compile_chips
 from circuitlab.language.pin_banks import expand_pin_banks
-from circuitlab.math.digital_fast import BOOLEAN, OPS as BINARY
+from circuitlab.math.digital_fast import BOOLEAN
 from circuitlab.model.graph import CircuitError
 
 
@@ -58,12 +61,13 @@ class _Module:
 class _Parser:
     """Parse only the declarations and statements emitted by OOC."""
 
-    # Bound generated text and token counts before building a runtime. These
-    # limits keep unusually large designs from overwhelming interactive use.
     def __init__(self, text):
-        if len(text) > 1_000_000:
-            raise _error("generated design is too large for the interactive simulator.")
-        self.tokens, offset = [], 0
+        self._tokens = self._scan(text)
+        self._token = next(self._tokens, None)
+
+    @staticmethod
+    def _scan(text):
+        offset = 0
         # Match at the current offset, rather than searching ahead. An unsupported
         # character must fail here instead of disappearing between valid tokens.
         while offset < len(text):
@@ -72,16 +76,13 @@ class _Parser:
                 raise _error("unsupported generated HDL token.")
             token = match[0]
             if not token.isspace() and not token.startswith("//"):
-                self.tokens.append(token)
+                yield token
             offset = match.end()
-        if len(self.tokens) > 100_000:
-            raise _error("generated design exceeds the interactive token limit.")
-        self.index = 0
 
     # None is the end-of-input sentinel; take() turns unexpected EOF into a
     # controlled parse error even inside a block missing its closing keyword.
     def peek(self):
-        return self.tokens[self.index] if self.index < len(self.tokens) else None
+        return self._token
 
     # Consume exactly one token, optionally requiring a particular spelling.
     # All grammar routines use this to reject malformed generated constructs.
@@ -89,7 +90,7 @@ class _Parser:
         token = self.peek()
         if token is None or (expected is not None and token != expected):
             raise _error(f"expected {expected or 'a token'} in generated HDL, got {token!r}.")
-        self.index += 1
+        self._token = next(self._tokens, None)
         return token
 
     # Keywords are handled by their surrounding grammar; signal/module names
@@ -331,77 +332,169 @@ class _Parser:
         return modules
 
 
-# Compile the validated expression structure into integer operations, not source-code eval.
-def _expression(node, names, widths, slots, depth=0):
-    """Bind a validated expression to integer values; never execute source text."""
-    # Return (callable, result_width, read_names). The callable reads the live
-    # slot array; read_names supplies dependency ordering and UI metadata.
-    # This depth check also catches long, flat-looking expression chains whose
-    # tuple trees became deep during parsing.
-    if depth > 128:
-        raise _error("expression depth exceeds the interactive simulator limit.")
-    op = node[0]
-    if op == "literal":
-        # A literal has no signal dependencies and was already checked to fit.
-        return lambda values: node[1], node[2], set()
-    if op == "concat":
-        pieces = [_expression(part, names, widths, slots, depth + 1) for part in node[1]]
-        # Pack the first expression into the most significant bits. Mask each
-        # piece to its own width before appending the next one.
-        def packed(values):
-            result = 0
-            for expression, width, _ in pieces:
-                result = (result << width) | (expression(values) & ((1 << width) - 1))
-            return result
-        return packed, sum(width for _, width, _ in pieces), set().union(*(reads for _, _, reads in pieces))
-    if op in {"name", "bit", "slice"}:
-        if node[1] not in names:
-            raise _error(f"unknown generated signal {node[1]}.")
-        # Translate a module-local identifier through its hierarchy binding, then
-        # capture the numeric slot index instead of looking up strings each cycle.
-        name = names[node[1]]
-        index, width = slots[name], widths[name]
-        if op == "bit":
-            if node[2] >= width:
-                raise _error("generated bit index is outside its signal.")
-            return lambda values: (values[index] >> node[2]) & 1, 1, {name}
-        if op == "slice":
-            high, low = node[2:]
-            if not 0 <= low <= high < width:
-                raise _error("generated slice is outside its signal.")
-            # A slice is shifted down to bit zero and clipped to high-low+1 bits;
-            # its result width differs from the width of the original signal.
-            mask = (1 << (high - low + 1)) - 1
-            return lambda values: (values[index] >> low) & mask, high - low + 1, {name}
-        return lambda values: values[index], width, {name}
-    left, left_width, reads = _expression(node[1], names, widths, slots, depth + 1)
-    # Logical operators produce integer 0/1, even when their input is a vector.
-    if op == "!":
-        return lambda values: int(not left(values)), 1, reads
-    # Evaluate only the chosen branch at runtime, but record reads from both
-    # branches and the condition. The dependency graph must remain valid
-    # when a different branch is selected on a later cycle.
-    if op == "?:":
-        yes, yes_width, yes_reads = _expression(node[2], names, widths, slots, depth + 1)
-        no, no_width, no_reads = _expression(node[3], names, widths, slots, depth + 1)
-        return (lambda values: yes(values) if left(values) else no(values),
-                max(yes_width, no_width), reads | yes_reads | no_reads)
-    right, right_width, right_reads = _expression(node[2], names, widths, slots, depth + 1)
-    # Width is determined at every operator, before a destination assignment.
-    # For example, an 8-bit (255+1) wraps to zero even if later assigned into
-    # a 16-bit register. Shifts retain the left width; comparisons yield 1 bit.
-    width = 1 if op in BOOLEAN else left_width if op in {"<<", ">>"} else max(left_width, right_width)
-    mask, function = (1 << width) - 1, BINARY[op]
-    # A shift by the operand width or more is zero in this unsigned model.
-    # Check that case before shifting to avoid huge Python intermediates.
-    if op in {"<<", ">>"}:
-        def shifted(values):
-            count = right(values)
-            return 0 if count >= width else function(left(values), count) & mask
-        return shifted, width, reads | right_reads
-    # Mask after each binary operation. This gives subtraction modular
-    # unsigned behavior and converts comparison/logical bool results to bits.
-    return lambda values: int(function(left(values), right(values))) & mask, width, reads | right_reads
+# Generate bytecode from the simulator's validated integer-expression tree.
+# Source identifiers become numeric slot indexes; no user text is compiled as Python.
+_BINARY_AST = {"+": ast.Add, "-": ast.Sub, "&": ast.BitAnd, "|": ast.BitOr,
+               "^": ast.BitXor, "<<": ast.LShift, ">>": ast.RShift}
+_COMPARE_AST = {"==": ast.Eq, "!=": ast.NotEq, "<": ast.Lt, "<=": ast.LtE,
+                ">": ast.Gt, ">=": ast.GtE}
+
+
+def _expression(node, names, widths, slots, depth=0, *, keep_ast=False):
+    """Bind an unsigned HDL expression to one slot-reading bytecode function."""
+    temporary = 0
+
+    def literal(value):
+        return ast.Constant(value=value)
+
+    def binary(left, op, right):
+        return ast.BinOp(left=left, op=op(), right=right)
+
+    def masked(value, width):
+        return binary(value, ast.BitAnd, literal((1 << width) - 1))
+
+    def balanced(parts):
+        # Large concatenations need logarithmic AST depth, rather than a long
+        # left-associated chain that could exhaust the Python compiler's stack.
+        while len(parts) > 1:
+            parts = [binary(parts[i], ast.BitOr, parts[i + 1]) if i + 1 < len(parts)
+                     else parts[i] for i in range(0, len(parts), 2)]
+        return parts[0]
+
+    def bind(tree, level):
+        nonlocal temporary
+        if level > 128:
+            raise _error("expression depth exceeds the interactive simulator limit.")
+        op = tree[0]
+        if op == "literal":
+            return literal(tree[1]), tree[2], set()
+        if op == "concat":
+            pieces = [bind(part, level + 1) for part in tree[1]]
+            offset, packed = 0, []
+            for value, width, _ in reversed(pieces):
+                value = masked(value, width)
+                packed.append(binary(value, ast.LShift, literal(offset)) if offset else value)
+                offset += width
+            return balanced(packed), offset, set().union(*(reads for _, _, reads in pieces))
+        if op in {"name", "bit", "slice"}:
+            if tree[1] not in names:
+                raise _error(f"unknown generated signal {tree[1]}.")
+            name = names[tree[1]]
+            width = widths[name]
+            value = ast.Subscript(value=ast.Name(id="values", ctx=ast.Load()),
+                                  slice=literal(slots[name]), ctx=ast.Load())
+            if op == "bit":
+                if tree[2] >= width:
+                    raise _error("generated bit index is outside its signal.")
+                return masked(binary(value, ast.RShift, literal(tree[2])), 1), 1, {name}
+            if op == "slice":
+                high, low = tree[2:]
+                if not 0 <= low <= high < width:
+                    raise _error("generated slice is outside its signal.")
+                width = high - low + 1
+                return masked(binary(value, ast.RShift, literal(low)), width), width, {name}
+            return value, width, {name}
+        left, left_width, reads = bind(tree[1], level + 1)
+        if op == "!":
+            return ast.IfExp(test=left, body=literal(0), orelse=literal(1)), 1, reads
+        if op == "?:":
+            yes, yes_width, yes_reads = bind(tree[2], level + 1)
+            no, no_width, no_reads = bind(tree[3], level + 1)
+            return ast.IfExp(test=left, body=yes, orelse=no), max(yes_width, no_width), reads | yes_reads | no_reads
+        right, right_width, right_reads = bind(tree[2], level + 1)
+        width = 1 if op in BOOLEAN else left_width if op in {"<<", ">>"} else max(left_width, right_width)
+        if op in _COMPARE_AST:
+            value = ast.Compare(left=left, ops=[_COMPARE_AST[op]()], comparators=[right])
+        elif op in {"&&", "||"}:
+            # Both inputs remain pure integer expressions. Comparing each to
+            # zero reproduces the previous eager logical-operator evaluation.
+            truth = lambda value: ast.Compare(left=value, ops=[ast.NotEq()], comparators=[literal(0)])
+            value = binary(truth(left), ast.BitAnd if op == "&&" else ast.BitOr, truth(right))
+        elif op in {"<<", ">>"}:
+            operation = _BINARY_AST[op]
+            if tree[2][0] == "literal":
+                value = literal(0) if tree[2][1] >= width else binary(left, operation, right)
+            elif (1 << right_width) - 1 < width:
+                value = binary(left, operation, right)
+            else:
+                # Evaluate a variable shift count only once. Counts at least
+                # as wide as the operand produce zero without allocating a
+                # potentially enormous intermediate Python integer.
+                temporary += 1
+                target = f"_shift{temporary}"
+                count = ast.NamedExpr(target=ast.Name(id=target, ctx=ast.Store()), value=right)
+                wide = ast.Compare(left=count, ops=[ast.GtE()], comparators=[literal(width)])
+                shifted = binary(left, operation, ast.Name(id=target, ctx=ast.Load()))
+                value = ast.IfExp(test=wide, body=literal(0), orelse=shifted)
+        else:
+            value = binary(left, _BINARY_AST[op], right)
+        # Every operation is clipped at its expression width, independently
+        # of the later destination assignment's mask.
+        return masked(value, width), width, reads | right_reads
+
+    value, width, reads = bind(node, depth)
+    function = _bytecode_function([ast.Return(value=value)], ("values",))
+    if keep_ast:
+        function._digital_ast = value
+    return function, width, reads
+
+
+def _bytecode_function(body, arguments):
+    """Compile a trusted generated AST, without evaluating source text."""
+    function = ast.FunctionDef(
+        name="_digital_evaluate",
+        args=ast.arguments(posonlyargs=[], args=[ast.arg(arg=name) for name in arguments],
+                           kwonlyargs=[], kw_defaults=[], defaults=[]),
+        body=body or [ast.Pass()], decorator_list=[],
+    )
+    module = ast.fix_missing_locations(ast.Module(body=[function], type_ignores=[]))
+    code = compile(module, "<OOC digital operation>", "exec")
+    body = next(value for value in code.co_consts if isinstance(value, CodeType))
+    return FunctionType(body, {"__builtins__": {}})
+
+
+def _edge_executor(blocks):
+    """Stage all selected edge writes while every RHS reads pre-edge values."""
+    expressions = []
+
+    def pending_slot(index, context):
+        return ast.Subscript(value=ast.Name(id="pending", ctx=ast.Load()),
+                             slice=ast.Constant(value=index), ctx=context)
+
+    def rows(statements):
+        body = []
+        for statement in statements:
+            kind = statement[0]
+            expression = statement[2] if kind in {"write", "partial"} else statement[1]
+            expressions.append(expression)
+            value = expression._digital_ast
+            if kind == "write":
+                value = ast.BinOp(left=value, op=ast.BitAnd(), right=ast.Constant(value=statement[3]))
+                body.append(ast.Assign(targets=[pending_slot(statement[1], ast.Store())], value=value))
+            elif kind == "partial":
+                _, target, _, mask, low = statement
+                previous = ast.Call(
+                    func=ast.Attribute(value=ast.Name(id="pending", ctx=ast.Load()), attr="get", ctx=ast.Load()),
+                    args=[ast.Constant(value=target), ast.Subscript(value=ast.Name(id="values", ctx=ast.Load()),
+                          slice=ast.Constant(value=target), ctx=ast.Load())], keywords=[],
+                )
+                kept = ast.BinOp(left=previous, op=ast.BitAnd(), right=ast.Constant(value=~mask))
+                shifted = ast.BinOp(left=value, op=ast.LShift(), right=ast.Constant(value=low))
+                changed = ast.BinOp(left=shifted, op=ast.BitAnd(), right=ast.Constant(value=mask))
+                body.append(ast.Assign(targets=[pending_slot(target, ast.Store())],
+                                       value=ast.BinOp(left=kept, op=ast.BitOr(), right=changed)))
+            else:
+                body.append(ast.If(test=value, body=rows(statement[2]) or [ast.Pass()],
+                                   orelse=rows(statement[3])))
+        return body
+
+    body = [node for statements in blocks for node in rows(statements)]
+    execute = _bytecode_function(body, ("values", "pending"))
+    # The standalone expression functions remain useful as compiled statement
+    # metadata. They no longer need to retain the temporary AST after lowering.
+    for expression in set(expressions):
+        del expression._digital_ast
+    return execute
 
 
 class DigitalSimulation:
@@ -415,27 +508,34 @@ class DigitalSimulation:
     # Build in stages: compile OOC to HDL, parse it, flatten its scopes, bind
     # expressions to slots, order combinational drivers, and compile edge blocks.
     # The resulting functions and arrays are reused by step() and advance().
-    def __init__(self, source, profile="ooc"):
-        if len(source) > 1_000_000:
-            raise _error("source exceeds the interactive size limit.")
+    def __init__(self, source, profile="ooc", *, design=None, path=None, read_source=None):
         # Simulation follows the compiler's lowered design, including generated
         # counters and phase increments, instead of interpreting OOC a second way.
-        instances = []
-        chips = compile_chips(source, instances=instances)
+        if design is None:
+            instances = []
+            chips = compile_chips(source, instances=instances, path=path, read_source=read_source)
+            self.instances = tuple(instances)
+        else:
+            chips, self.instances = design.modules, design.instances
         if len(chips) != 1:
             raise _error("select one chip; multi-chip simulation is not yet supported.")
-        self.profile = profile
-        self.instances = tuple(instances)
         # Use the same board wrapper as an FPGA build, so switch synchronizer
         # registers and their cycle delays are real simulated state. The ordinary
         # OOC profile uses the board-neutral core HDL directly.
-        if profile == "de10-lite":
-            from circuitlab.tooling.fpga import compile_de10_lite
-            hdl, _, _ = compile_de10_lite(source)
-        elif profile == "ooc":
-            hdl = chips[0][3]
-        else:
-            raise _error("choose the ooc or de10-lite profile.")
+        hdl = chips[0][3]
+        if profile in {"auto", "de10-lite"}:
+            from circuitlab.tooling.fpga import FpgaError, prepare_de10_lite
+            try:
+                hdl, _, _ = prepare_de10_lite(chips)
+            except (CircuitError, FpgaError):
+                if profile == "de10-lite":
+                    raise
+                profile = "ooc"
+            else:
+                profile = "de10-lite"
+        elif profile != "ooc":
+            raise _error("choose the auto, ooc or de10-lite profile.")
+        self.profile = profile
         modules = _Parser(hdl).parse()
         # The compiler emits the top module first: the core by itself, or the
         # board wrapper before its renamed user core.
@@ -521,8 +621,6 @@ class DigitalSimulation:
                         {pin: names[net] for pin, net in connections.items()}, (*ancestors, module.name))
 
         flatten(top)
-        if len(widths) > 4096:
-            raise _error("design exceeds 4096 simulated signals.")
         # Many blocks may share a clock, but their canonical clock must be the
         # same top-level input. Derived clocks and multiple independent clocks
         # would require a different event scheduler.
@@ -538,6 +636,7 @@ class DigitalSimulation:
         # All slot arrays follow the same insertion order. Undeclared initial
         # values start at zero; combinational outputs are recomputed on reset.
         self._slots = {name: index for index, name in enumerate(widths)}
+        self._visible_slots = tuple((name, self._slots[name]) for name in self.signals)
         self._initial = [initials.get(name, 0) for name in widths]
         self._drivers, edges, dependencies = {}, [], {}
         # Compile each driven net into (destination_slot, callable, target_mask).
@@ -552,7 +651,12 @@ class DigitalSimulation:
         # driver in one pass, regardless of its source declaration order.
         try:
             order = TopologicalSorter({name: reads & drivers.keys() for name, reads in dependencies.items()}).static_order()
-            self._settlers = [self._drivers[name] for name in order]
+            self._settlers = []
+            self._readers = [[] for _ in widths]
+            for rank, name in enumerate(order):
+                self._settlers.append(self._drivers[name])
+                for read in dependencies[name]:
+                    self._readers[self._slots[read]].append(rank)
         # This ideal model rejects combinational loops instead of trying to
         # iterate them to convergence or assign an analog oscillation behavior.
         except CycleError:
@@ -569,7 +673,7 @@ class DigitalSimulation:
                     target = names.get(statement[1])
                     if target not in registers:
                         raise _error("clocked assignment does not target a register.")
-                    expression, _, reads = _expression(statement[2], names, widths, self._slots)
+                    expression, _, reads = _expression(statement[2], names, widths, self._slots, keep_ast=True)
                     # State depends on both its RHS and the conditions deciding whether that
                     # write occurs. Record the clock too, so metadata reflects the edge source.
                     dependencies.setdefault(target, set()).update(reads | controls | {clock})
@@ -587,7 +691,7 @@ class DigitalSimulation:
                         result.append(("write", self._slots[target], expression, (1 << widths[target]) - 1))
                     targets.add(target)
                 else:
-                    condition, _, reads = _expression(statement[1], names, widths, self._slots)
+                    condition, _, reads = _expression(statement[1], names, widths, self._slots, keep_ast=True)
                     # Compile both paths, adding this condition to their control dependencies.
                     # A false-path guard is retained explicitly for the viewer's description.
                     yes, yes_targets = compile_statements(statement[2], names, registers, clock,
@@ -609,8 +713,9 @@ class DigitalSimulation:
             owners.update(targets)
             edges.append(compiled)
         self._edges = edges
+        self._execute_edges = _edge_executor(edges)
         # Acceleration is optional. Failure to build a bounded fast plan leaves
-        # the ordinary edge interpreter intact; it does not invalidate the design.
+        # ordinary exact stepping intact; it does not invalidate the design.
         from circuitlab.math.digital_fast import FastPlan, PlanLimit
         try:
             self._fast_plan = FastPlan(blocks, drivers, widths, self._slots, self.clocks, visible)
@@ -726,20 +831,40 @@ class DigitalSimulation:
             self.frequency = 50_000_000.0 if self.clocks else None
         self.reset()
 
-    # Recompute combinational drivers once in dependency order after an input, clock,
-    # or register change, separately from committing pending register writes.
-    def _settle(self):
-        # The dependency order was fixed during construction. Each callable sees
-        # any upstream driven nets already updated in this pass; no iterative
-        # fixed-point search is needed because combinational cycles were rejected.
-        for slot, expression, mask in self._settlers:
-            self._values[slot] = expression(self._values) & mask
+    def _settle(self, changed=None):
+        """Propagate changes through the combinational graph in dependency order."""
+        values, settlers = self._values, self._settlers
+        if changed is None:
+            for slot, expression, mask in settlers:
+                values[slot] = expression(values) & mask
+            return
+
+        # Each reader ranks after all of its drivers. The heap therefore runs
+        # each affected expression just once, even when several inputs change.
+        readers = self._readers
+        pending = list({rank for slot in changed for rank in readers[slot]})
+        if not pending:
+            return
+        heapify(pending)
+        queued = bytearray(len(settlers))
+        for rank in pending:
+            queued[rank] = 1
+        while pending:
+            slot, expression, mask = settlers[heappop(pending)]
+            value = expression(values) & mask
+            if values[slot] != value:
+                values[slot] = value
+                for rank in readers[slot]:
+                    if not queued[rank]:
+                        queued[rank] = 1
+                        heappush(pending, rank)
 
     # Publish visible values as a fresh dictionary, leaving hidden slots
     # private. Later publishes replace this dictionary, so a saved dictionary
     # from a sample retains its integer readings from that moment.
     def _publish(self):
-        self.values = {name: self._values[self._slots[name]] for name in self.signals}
+        values = self._values
+        self.values = {name: values[slot] for name, slot in self._visible_slots}
 
     # Copy the reset template before mutating state. Inputs return to zero,
     # literal register/constant initializers are restored, and driven outputs
@@ -758,51 +883,38 @@ class DigitalSimulation:
         width = self.signals[name]
         if not 0 <= value < (1 << width):
             raise _error(f'Input "{name}" requires an unsigned {width}-bit value (0..{(1 << width) - 1}).')
-        self._values[self._slots[name]] = value
-        self._settle()
+        slot = self._slots[name]
+        if self._values[slot] != value:
+            self._values[slot] = value
+            self._settle((slot,))
         self._publish()
 
     # Advance one complete edge cycle. Every clocked right-hand side must observe the same
     # pre-edge state, even when several assignments update connected registers.
     def step(self):
-        # pending holds next-state values while _values stays at the pre-commit
-        # state. Thus r<=r+1; r<=r+1 computes old_r+1 twice and stores it once,
-        # rather than incrementing twice as sequential Python assignments would.
-        def execute(statements):
-            for statement in statements:
-                if statement[0] == "write":
-                    pending[statement[1]] = statement[2](self._values) & statement[3]
-                elif statement[0] == "partial":
-                    _, target, expression, mask, low = statement
-                    # Merge into earlier pending destination bits, but evaluate the new RHS
-                    # from old _values. This preserves earlier nonoverlapping slice writes;
-                    # a later write replaces overlapping bits in source order.
-                    previous = pending.get(target, self._values[target])
-                    pending[target] = (previous & ~mask) | ((expression(self._values) << low) & mask)
-                else:
-                    # Branch choices also observe the shared pre-commit state, including the
-                    # high clock level, rather than any values already staged in pending.
-                    execute(statement[2] if statement[1](self._values) else statement[3])
-
-        # Raise the clock and settle its combinational dependents before reading
-        # edge expressions. This makes an RHS that explicitly reads clk see 1.
+        # The compiled executor only writes pending state. Every expression
+        # reads the same pre-commit values, including the high clock level.
+        # Raising the clock leaves all other inputs and registers settled.
+        # Recompute the clock's dependents before sampling edge expressions.
         if self.clocks:
             slot = self._slots[self.clocks[0]]
             self._values[slot] = 1
-            self._settle()
+            self._settle((slot,))
             pending = {}
-            for statements in self._edges:
-                execute(statements)
+            self._execute_edges(self._values, pending)
             # Every block has finished sampling before any register is committed.
             # For a two-stage synchronizer, stage two therefore sees the old stage
             # one value, even when the stages are written by different blocks.
-            for target, value in pending.items():
-                self._values[target] = value
             self._values[slot] = 0
+            changed = [slot]
+            for target, value in pending.items():
+                if self._values[target] != value:
+                    self._values[target] = value
+                    changed.append(target)
+            self._settle(changed)
         # After commit, publish at clock-low with combinational outputs settled.
         # For a clockless design, this still advances the sample index by one
         # without creating an edge or assigning a physical clock frequency.
-        self._settle()
         self.cycles += 1
         self._publish()
         return self.values
@@ -851,10 +963,14 @@ class DigitalSimulation:
             # held state alone, then recompute all combinational values and publish
             # the same settled endpoint that repeated ordinary steps would reach.
             def move(amount):
+                changed = []
                 for slot, (delta, mask) in increments.items():
-                    self._values[slot] = (self._values[slot] + delta * amount) & mask
+                    value = (self._values[slot] + delta * amount) & mask
+                    if self._values[slot] != value:
+                        self._values[slot] = value
+                        changed.append(slot)
                 self.cycles += amount
-                self._settle()
+                self._settle(changed)
                 self._publish()
 
             # Sample on both sides of the interval's final boundary. The planner

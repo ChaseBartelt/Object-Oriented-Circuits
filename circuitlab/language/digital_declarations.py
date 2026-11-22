@@ -6,6 +6,7 @@
 import re
 
 from circuitlab.language.pin_banks import expand_pin_banks, pin_bank_names
+from circuitlab.model.graph import CircuitError
 
 
 NAME = r"[A-Za-z_][A-Za-z0-9_]*"
@@ -24,6 +25,40 @@ STATE = re.compile(rf"({NAME})(?:\s*\[[^]]*\])?\s*(?:=(?!=)\s*(.*))?")
 # 0xff, leaving unsupported literal forms for the normal state diagnostics
 # instead of changing them into combinational wire expressions.
 NUMERIC_INITIALIZER = re.compile(r"[+-]?[0-9][A-Za-z0-9_.]*")
+PORT_BLOCK = re.compile(rf"(input|output|wire)(?:\s+({NAME}))?\s*\{{", re.I)
+PORT_LIST = re.compile(rf"{NAME}(?:\s*\[[^]\n]+\])?(?:\s*,\s*{NAME}(?:\s*\[[^]\n]+\])?)*")
+
+
+def normalize_port_blocks(rows):
+    """Lower signal declaration groups after static loops expand their members.
+
+    Keep the original row metadata so declaration errors still name the member's
+    source line. Runtime blocks cannot declare ports, matching ordinary syntax.
+    """
+    result, direction, depth = [], None, 0
+    opening_line = None
+    for row in rows:
+        text, line = row[:2]
+        if header := PORT_BLOCK.fullmatch(text):
+            if direction is not None or depth:
+                raise CircuitError("Put input/output/wire blocks directly inside a chip or main.", line)
+            direction, opening_line = header[1].lower(), line
+        elif direction is not None:
+            if text == "}":
+                direction = None
+            elif not PORT_LIST.fullmatch(text):
+                raise CircuitError(
+                    "List signal names and optional widths inside input/output/wire blocks; "
+                    "put assignments outside them.", line,
+                )
+            else:
+                result.append((f"{text} = {direction}", *row[1:]))
+        else:
+            result.append(row)
+            depth += int(text.endswith("{")) - int(text == "}")
+    if direction is not None:
+        raise CircuitError(f"Close the {direction} block with }}.", opening_line)
+    return result
 
 
 def normalize_wire_declarations(rows, pins=()):

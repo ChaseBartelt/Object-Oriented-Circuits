@@ -12,6 +12,7 @@ from circuitlab.model.graph import Component
 BJT_PIN_OFFSET = 0.85
 POT_PIN_OFFSET = 0.85
 PACKAGE_WIDTH = 6.8
+PACKAGE_LEAD = 0.55
 PACKAGE_WIRE_CLEARANCE = 0.25
 
 
@@ -81,6 +82,26 @@ def package_pins(part, grid=0):
         yield label, net, left, (middle - row) * max(1, 2 * grid)
 
 
+def quad_package(part, a=None, b=None):
+    """Identify an unplaced large chip or an existing four-sided placement."""
+    # Saved two-sided chips have the original narrow span. Keep their pin
+    # coordinates so the stored wires still attach to the same contacts.
+    return (isinstance(part, ChipPackage) and part.physical_pin_count > 32
+            and (a is None or abs(b[0] - a[0]) > PACKAGE_WIDTH + 0.5))
+
+
+def _quad_side_counts(part):
+    rows, extra = divmod(part.physical_pin_count, 4)
+    implicit = len(part.package_pins) - part.physical_pin_count
+    return tuple(rows + (index < extra) + (implicit if index == 3 else 0)
+                 for index in range(4))
+
+
+def package_width(part):
+    """Measure the horizontal span between the outermost package contacts."""
+    return max(_quad_side_counts(part)) + 2 if quad_package(part) else PACKAGE_WIDTH
+
+
 def package_half_height(part, grid=0):
     """Measure the package body using only its physical pins for a chip."""
     if isinstance(part, ChipPackage):
@@ -92,8 +113,57 @@ def package_half_height(part, grid=0):
 
 def package_body_corners(part, a, b, grid=0):
     """Return the outline corners, excluding the leads to the side pins."""
-    half_height = package_half_height(part, grid)
-    return (a[0] + .55, a[1] - half_height), (b[0] - .55, a[1] + half_height)
+    half_height = (abs(b[0] - a[0]) / 2 - PACKAGE_LEAD if quad_package(part, a, b)
+                   else package_half_height(part, grid))
+    return (a[0] + PACKAGE_LEAD, a[1] - half_height), (b[0] - PACKAGE_LEAD, a[1] + half_height)
+
+
+def package_contacts(part, a, b, grid=0):
+    """Yield pin name, net, side, outer contact and body edge in package order."""
+    (left, bottom), (right, top) = package_body_corners(part, a, b, grid)
+    y = a[1]
+    if not quad_package(part, a, b):
+        for label, net, on_left, offset in package_pins(part, grid):
+            if on_left:
+                yield label, net, "left", (a[0], y + offset), (left, y + offset)
+            else:
+                yield label, net, "right", (b[0], y + offset), (right, y + offset)
+        return
+
+    # Viewed from above, numbering starts at the upper-left pin and goes
+    # down the left, across the bottom, up the right and across the top.
+    x = (a[0] + b[0]) / 2
+    radius = (b[0] - a[0]) / 2
+    pitch = max(1, 2 * grid)
+    pins = iter(part.package_pins)
+    for side, count in zip(("left", "bottom", "right", "top"), _quad_side_counts(part)):
+        for row in range(count):
+            label, net = next(pins)
+            offset = ((count - 1) / 2 - row) * pitch
+            if side == "left":
+                terminal, edge = (a[0], y + offset), (left, y + offset)
+            elif side == "bottom":
+                terminal, edge = (x - offset, y - radius), (x - offset, bottom)
+            elif side == "right":
+                terminal, edge = (b[0], y - offset), (right, y - offset)
+            else:
+                terminal, edge = (x + offset, y + radius), (x + offset, top)
+            yield label, net, side, terminal, edge
+
+
+def quad_routing_pins(part, a, b):
+    """Fan vertical contacts outward in staggered rows before using side gutters."""
+    center = (a[0] + b[0]) / 2
+    radius = (b[0] - a[0]) / 2
+    for _, net, side, (px, py), _ in package_contacts(part, a, b):
+        if side in {"left", "right"}:
+            yield net, side == "left", py - a[1], (px, py), (px, py)
+        else:
+            # From either edge toward the center, each next horizontal row
+            # is farther from the body so it clears the earlier pin stubs.
+            distance = .5 + (radius - abs(px - center)) / 2
+            lane = py + (distance if side == "top" else -distance)
+            yield net, px < center, lane - a[1], (px, py), (px, lane)
 
 
 # Use the device-specific contact positions rather than treating every glyph as a simple
@@ -101,8 +171,8 @@ def package_body_corners(part, a, b, grid=0):
 def symbol_pins(part, a, b, top, *, grid=0):
     """Yield each net and its coordinates for one placed symbol."""
     if part.kind == "H":
-        for _, net, left, offset in package_pins(part, grid):
-            yield net, ((a if left else b)[0], a[1] + offset)
+        for _, net, _, terminal, _ in package_contacts(part, a, b, grid):
+            yield net, terminal
     elif part.kind in {"O", "A"}:
         offset = pin_offset(0.35, grid)
         plus, minus = (offset, -offset) if top == "+" else (-offset, offset)
@@ -149,6 +219,11 @@ def routed_pins(symbol, turns, grid=0):
 def symbol_bounds(symbol, turns, *, body_only=False):
     """Return opposite corners of the rotated symbol or its body."""
     part, a, b, _ = symbol
+    if quad_package(part, a, b):
+        lo, hi = package_body_corners(part, a, b) if body_only else (
+            (a[0], a[1] - (b[0] - a[0]) / 2), (b[0], b[1] + (b[0] - a[0]) / 2)
+        )
+        return rotate_point(lo, a, b, turns), rotate_point(hi, a, b, turns)
     if part.kind == "O" and body_only:
         left, right = opamp_body(a, b)
         return rotate_point((left, a[1] - .72), a, b, turns), rotate_point((right, a[1] + .72), a, b, turns)
@@ -156,10 +231,11 @@ def symbol_bounds(symbol, turns, *, body_only=False):
         package_half_height(part) if part.kind == "H"
         else 2.0 if part.kind == "A" else 1.4 if part.kind == "O" and part.vplus
         else 0.9 if part.kind in {"Q", "O", "S", "P"}
+        else 0.8 if part.kind == "D" and part.diode and part.diode.kind in {"led", "photo"}
         else 0.6 if part.kind == "K" else 0.45
     )
     if body_only and (axis := wire_axis((a, b))) is not None:
-        half_body = {"C": .18, "V": .48, "I": .48}.get(part.kind, .75)
+        half_body = {"C": .18, "V": .48, "I": .48, "D": .6}.get(part.kind, .75)
         inset = {"H": .55, "A": .8, "Q": .8, "S": .8, "P": .8}.get(
             part.kind, max(0, abs(a[axis] - b[axis]) / 2 - half_body)
         )
@@ -232,7 +308,7 @@ def along(a, b, fraction):
     return tuple(x + (y - x) * fraction for x, y in zip(a, b))
 
 
-def component_pins(parts, flipped=(), reversed_parts=()):
+def component_pins(parts, flipped=(), reversed_parts=(), *, quad=True):
     """Describe each grid pin as (component index, net, left side, y offset)."""
     pins = [
         (i, e.p, e.kind != "O" and i not in reversed_parts, 0.0)
@@ -264,7 +340,10 @@ def component_pins(parts, flipped=(), reversed_parts=()):
             # remain centered above and below the triangle.
             pins.extend(((i, part.vplus, True, 1.25), (i, part.vminus, True, -1.25)))
     for i, part in enumerate(parts):
-        if part.kind == "H":
+        if quad and quad_package(part):
+            pins.extend((i, net, left, offset) for net, left, offset, _, _ in
+                        quad_routing_pins(part, (0, 0), (package_width(part), 0)))
+        elif part.kind == "H":
             pins.extend((i, net, left, offset) for _, net, left, offset in package_pins(part))
         elif part.kind in {"Q", "S", "P"}:
             a, b = (0.0, 0.0), (4.3, 0.0)
@@ -331,7 +410,7 @@ def grid_symbol(part, x, y, grounds, *, top="+", reverse=False):
         start, end = (x + 2.15, y), (x + 2.15, y - 2.5)
         reverse = not source_pin_is_upper(part, True, grounds)
     else:
-        width = PACKAGE_WIDTH if part.kind == "H" else 4.3
+        width = package_width(part) if part.kind == "H" else 4.3
         start, end = (x, y), (x + width, y)
     if reverse:
         start, end = end, start

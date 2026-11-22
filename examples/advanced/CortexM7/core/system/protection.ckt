@@ -1,0 +1,308 @@
+// CMSIS enables and invalidates both L1 caches during board initialization.
+// CPU and DMA share coherent RAM here, so maintenance writes need no data flush.
+chip M7FirmwareCacheControl(clk, reset, present, read_enable, write_enable, address,
+                           size_code, write_data, data, mapped) {
+    input bus {
+        clk, reset, present, read_enable, write_enable;
+        address[32], write_data[32], size_code[2];
+    }
+    output cache_status {
+        data[32], mapped;
+    }
+    const CLIDR[32] = 3758157176;
+    const CTR[32] = 3758157180;
+    const CCSIDR[32] = 3758157184;
+    const CSSELR[32] = 3758157188;
+    const ICIALLU[32] = 3758157648;
+    const ICIMVAU[32] = 3758157656;
+    const BPIALL[32] = 3758157688;
+    const DATA_CACHE[32] = 1040409;
+    const INSTRUCTION_CACHE[32] = 2088969;
+    // CSSELR selects the cache described by CCSIDR; maintenance writes are accepted as modeled no-ops.
+    selector[4] = 0;
+    wire decode {
+        word_access, maintenance;
+    }
+    word_access = present && size_code == 2 && address[1:0] == 0;
+    maintenance = address == ICIALLU || (address >= ICIMVAU && address <= BPIALL);
+    mapped = (word_access && (address == CLIDR || address == CTR || address == CCSIDR ||
+              address == CSSELR || (write_enable && maintenance)));
+    data = (read_enable && mapped ? (address == CLIDR ? 150994947 : address == CTR ? 2147680259 :
+            address == CSSELR ? selector : address == CCSIDR && selector[3:1] == 0 ?
+            (selector[0] ? INSTRUCTION_CACHE : DATA_CACHE) : 0) : 0);
+    clock(clk, 10kHz) {
+        if (reset) { selector = 0; }
+        else if (write_enable && word_access && address == CSSELR) { selector = write_data[3:0]; }
+    }
+}
+
+// SCB fault status. The core supplies a one-cycle fault event and its status bits.
+chip M7FirmwareFaultStatus(clk, reset, read_enable, write_enable, address, size_code, write_data,
+                           raise_fault, set_cfsr, set_hfsr, fault_address, data, mapped, cfsr, hfsr, bfar, mmfar) {
+    input fault_bus {
+        clk, reset, read_enable, write_enable, raise_fault;
+        address[32], write_data[32], set_cfsr[32], set_hfsr[32], fault_address[32], size_code[2];
+    }
+    output fault_status {
+        data[32], cfsr[32], hfsr[32], bfar[32], mmfar[32];
+        mapped;
+    }
+
+    const CFSR_ADDRESS[32] = 3758157096;
+    const HFSR_ADDRESS[32] = 3758157100;
+    const MMFAR_ADDRESS[32] = 3758157108;
+    const BFAR_ADDRESS[32] = 3758157112;
+    const WORD_ADDRESS[32] = 4294967292;
+    const ALL_BITS[32] = 4294967295;
+    const CFSR_BITS[32] = 51363771;
+    const HFSR_BITS[32] = 3221225474;
+    const ZERO5[5] = 0;
+
+    // Fault status is sticky until software clears bits or reset occurs.
+    configurable_faults[32] = 0;
+    hard_faults[32] = 0;
+    // MMFAR and BFAR share the same capture/software-write rules.
+    fault_addresses[2][32] = 0;
+
+    wire decode {
+        word_access, halfword_access, cfsr_selected, hfsr_selected, bfar_selected, mmfar_selected;
+    }
+    word_access = size_code == 2 && address[1:0] == 0;
+    halfword_access = size_code == 1 && !address[0];
+    cfsr_selected = ((size_code == 0 || halfword_access || word_access) &&
+                     (address & WORD_ADDRESS) == CFSR_ADDRESS);
+    hfsr_selected = word_access && address == HFSR_ADDRESS;
+    bfar_selected = word_access && address == BFAR_ADDRESS;
+    mmfar_selected = word_access && address == MMFAR_ADDRESS;
+    mapped = cfsr_selected || hfsr_selected || bfar_selected || mmfar_selected;
+    lane_shift[5] = (ZERO5 + address[1:0]) << 3;
+    lane_mask[32] = size_code == 0 ? 255 : (size_code == 1 ? 65535 : ALL_BITS);
+
+    cfsr = configurable_faults;
+    hfsr = hard_faults;
+    bfar = fault_addresses[1];
+    mmfar = fault_addresses[0];
+    data = (read_enable && mapped ? (cfsr_selected ? ((cfsr >> lane_shift) & lane_mask) :
+            (hfsr_selected ? hfsr : (mmfar_selected ? mmfar : bfar))) : 0);
+
+    // CFSR and HFSR writes clear the selected ones. New fault bits take precedence.
+    clear_cfsr[32] = write_enable && cfsr_selected ? ((write_data & lane_mask) << lane_shift) : 0;
+    clear_hfsr[32] = write_enable && hfsr_selected ? write_data : 0;
+    new_cfsr[32] = raise_fault ? (set_cfsr & CFSR_BITS) : 0;
+    new_hfsr[32] = raise_fault ? (set_hfsr & HFSR_BITS) : 0;
+
+    clock(clk, 10kHz) {
+        if (reset) {
+            clear { configurable_faults, hard_faults, fault_addresses };
+        } else {
+            configurable_faults = (configurable_faults & (ALL_BITS ^ clear_cfsr)) | new_cfsr;
+            hard_faults = (hard_faults & (ALL_BITS ^ clear_hfsr)) | new_hfsr;
+            for (int i = 0; i < 2; i++) {
+                if (raise_fault && set_cfsr[8 * i + 7]) {
+                    fault_addresses[i] = fault_address;
+                } else if (write_enable && (i == 0 ? mmfar_selected : bfar_selected)) {
+                    fault_addresses[i] = write_data;
+                }
+            }
+        }
+    }
+}
+
+// System control registers for coprocessor access and automatic FP preservation.
+chip M7FirmwareFPControl(clk, reset, read_enable, write_enable, address, size_code, write_data,
+                         lazy_active, fpcar, data, mapped, cpacr, fpccr, fpdscr) {
+    input fp_bus {
+        clk, reset, read_enable, write_enable, lazy_active;
+        address[32], write_data[32], fpcar[32], size_code[2];
+    }
+    output fp_status {
+        data[32], cpacr[32], fpccr[32], fpdscr[32];
+        mapped;
+    }
+
+    const CPACR_ADDRESS[32] = 3758157192;
+    const FPCCR_ADDRESS[32] = 3758157620;
+    const FPCAR_ADDRESS[32] = 3758157624;
+    const FPDSCR_ADDRESS[32] = 3758157628;
+
+    // Preserve the hardware reset default of FPCCR bits [31:30] = 3.
+    coprocessor_access[4] = 0;
+    fp_context_control[2] = 3;
+    fp_defaults[5] = 0;
+    wire decode {
+        cpacr_selected, fpccr_selected, fpcar_selected, fpdscr_selected;
+    }
+    cpacr_selected = size_code == 2 && address == CPACR_ADDRESS;
+    fpccr_selected = size_code == 2 && address == FPCCR_ADDRESS;
+    fpcar_selected = size_code == 2 && address == FPCAR_ADDRESS;
+    fpdscr_selected = size_code == 2 && address == FPDSCR_ADDRESS;
+    mapped = cpacr_selected || fpccr_selected || fpcar_selected || fpdscr_selected;
+    cpacr[31:24] = 0;
+    cpacr[23:20] = coprocessor_access;
+    cpacr[19:0] = 0;
+    fpccr[31:30] = fp_context_control;
+    fpccr[29:1] = 0;
+    fpccr[0] = lazy_active;
+    fpdscr[31:27] = 0;
+    fpdscr[26:22] = fp_defaults;
+    fpdscr[21:0] = 0;
+    data = (read_enable && mapped ? (cpacr_selected ? cpacr : (fpccr_selected ? fpccr :
+           (fpcar_selected ? fpcar : fpdscr))) : 0);
+
+    clock(clk, 10kHz) {
+        if (reset) {
+            coprocessor_access = 0;
+            fp_context_control = 3;
+            fp_defaults = 0;
+        } else if (write_enable) {
+            if (cpacr_selected) { coprocessor_access = write_data[23:20]; }
+            if (fpccr_selected) { fp_context_control = write_data[31:30]; }
+            if (fpdscr_selected) { fp_defaults = write_data[26:22]; }
+        }
+    }
+}
+
+// Select the highest matching enabled region for one address before enforcing AP and XN.
+chip M7MPUAddressCheck(address, privileged, use_regions, priv_default, execute_access, write_access,
+                      bases, attributes, allowed) {
+    input address_query {
+        address[32], bases[256], attributes[256];
+        privileged, use_regions, priv_default, execute_access, write_access;
+    }
+    output access_result {
+        allowed;
+    }
+
+    const ZERO6[6] = 0;
+    const ZERO8[8] = 0;
+    const PPB_PREFIX[12] = 3584;
+    wire regions {
+        region_sizes[48], subregions[24], hits[8];
+    }
+    // Evaluate eight region matches in parallel; the highest numbered matching region wins.
+    for (int i = 0; i < 8; i++) {
+        region_sizes[i * 6 + 5 : i * 6] = ZERO6 + attributes[i * 32 + 5 : i * 32 + 1] + 1;
+        subregions[i * 3 + 2 : i * 3] = address >> (region_sizes[i * 6 + 5 : i * 6] - 3);
+        hits[i] = (attributes[i * 32] && region_sizes[i * 6 + 5 : i * 6] >= 5 &&
+                   (address >> region_sizes[i * 6 + 5 : i * 6]) ==
+                   (bases[i * 32 + 31 : i * 32] >> region_sizes[i * 6 + 5 : i * 6]) &&
+                   (region_sizes[i * 6 + 5 : i * 6] < 8 ||
+                    ((attributes[i * 32 + 15 : i * 32 + 8] >> subregions[i * 3 + 2 : i * 3]) & 1) == 0));
+    }
+
+    selected[3] = (hits[7] ? 7 : hits[6] ? 6 : hits[5] ? 5 : hits[4] ? 4 :
+                   hits[3] ? 3 : hits[2] ? 2 : hits[1] ? 1 : 0);
+    selected_attrs[32] = attributes >> ((ZERO8 + selected) << 5);
+    ap[3] = selected_attrs[26:24];
+    wire permissions {
+        read_ok, write_ok, region_allowed, def_allowed, system_space, ppb;
+    }
+    read_ok = (ap == 3 || ap >= 6 || ap == 2 || (privileged && (ap == 1 || ap == 5)));
+    write_ok = ap == 3 || (privileged && (ap == 1 || ap == 2));
+    system_space = address[31:29] == 7;
+    ppb = address[31:20] == PPB_PREFIX;
+    region_allowed = (execute_access ? (read_ok && !selected_attrs[28] && !system_space) :
+                      (write_access ? write_ok : read_ok));
+    // With MPU disabled, use the default map; otherwise fall back only if privileged and enabled.
+    def_allowed = (!execute_access || address[31:29] < 2 ||
+                   address[31:29] == 3 || address[31:29] == 4);
+    // The memory bus enforces the independent PPB privilege requirement.
+    allowed = ((!use_regions || ppb) ? def_allowed : (hits != 0 ? region_allowed :
+               (privileged && priv_default && def_allowed)));
+}
+
+// Eight unified Armv7-M MPU regions. Memory attributes are stored for readback.
+// Registers require privilege. Data queries use a naturally aligned address.
+chip M7FirmwareMPU(clk, reset, read_enable, write_enable, address, size_code, write_data,
+                   privileged, data_privileged, fault_priority, fetch_address, fetch_wide, data_address, data_write,
+                   bus_data, mapped, fetch_allowed, data_allowed) {
+    input mpu_bus {
+        clk, reset, read_enable, write_enable, privileged, data_privileged, fault_priority, fetch_wide, data_write;
+        address[32], write_data[32], fetch_address[32], data_address[32], size_code[2];
+    }
+    output mpu_status {
+        bus_data[32];
+        mapped, fetch_allowed, data_allowed;
+    }
+
+    const TYPE_ADDRESS[32] = 3758157200;
+    const CTRL_ADDRESS[32] = 3758157204;
+    const RNR_ADDRESS[32] = 3758157208;
+    const RBAR_ADDRESS[32] = 3758157212;
+    const RASR_A3_ADDRESS[32] = 3758157240;
+    const MPU_TYPE[32] = 2048;
+    const RBAR_BITS[32] = 4294967264;
+    const RASR_BITS[32] = 390070079;
+
+    // Registers model MPU enable/background-map state and eight independently configured regions.
+    control[3] = 0;
+    region_number[3] = 0;
+    base_registers[8][32] = 0;
+    attr_registers[8][32] = 0;
+
+    wire decode {
+        word_access, type_selected, ctrl_selected, rnr_selected, pair_selected;
+        base_selected, attrs_selected, use_regions, update_number, valid_base_write;
+    }
+    word_access = size_code == 2 && address[1:0] == 0;
+    type_selected = word_access && address == TYPE_ADDRESS;
+    ctrl_selected = word_access && address == CTRL_ADDRESS;
+    rnr_selected = word_access && address == RNR_ADDRESS;
+    pair_selected = word_access && address >= RBAR_ADDRESS && address <= RASR_A3_ADDRESS;
+    base_selected = pair_selected && address[2];
+    attrs_selected = pair_selected && !address[2];
+    mapped = type_selected || ctrl_selected || rnr_selected || pair_selected;
+    update_number = base_selected && write_data[4];
+    valid_base_write = base_selected && (!write_data[4] || write_data[3:0] < 8);
+    base_index[3] = update_number ? write_data[2:0] : region_number;
+    selected_base[32] = base_registers[region_number];
+    selected_attrs[32] = attr_registers[region_number];
+    base_value[32] = selected_base | region_number;
+    bus_data = (read_enable && privileged && mapped ? (type_selected ? MPU_TYPE : ctrl_selected ? control :
+                rnr_selected ? region_number : base_selected ? base_value : selected_attrs) : 0);
+
+    // The v7-M aliases share the selected region, including RBAR.VALID changing RNR.
+    wire regions {
+        packed_bases[256], packed_attrs[256];
+    }
+    for (int i = 0; i < 8; i++) {
+        packed_bases[i * 32 + 31 : i * 32] = base_registers[i];
+        packed_attrs[i * 32 + 31 : i * 32] = attr_registers[i];
+    }
+    // HardFault/NMI handling can bypass configured MPU regions unless HFNMIENA is set.
+    use_regions = control[0] && (!fault_priority || control[1]);
+    wire permissions {
+        first_allowed, second_allowed, priv_default, instruction_read, no_access;
+    }
+    priv_default = control[2];
+    instruction_read = 1;
+    no_access = 0;
+    next_halfword[32] = fetch_address + 2;
+    M7MPUAddressCheck(fetch_address, privileged, use_regions, priv_default, instruction_read, no_access,
+                      packed_bases, packed_attrs, first_allowed);
+    M7MPUAddressCheck(next_halfword, privileged, use_regions, priv_default, instruction_read, no_access,
+                      packed_bases, packed_attrs, second_allowed);
+    M7MPUAddressCheck(data_address, data_privileged, use_regions, priv_default, no_access, data_write,
+                      packed_bases, packed_attrs, data_allowed);
+    fetch_allowed = first_allowed && (!fetch_wide || second_allowed);
+
+    // Reset both the selector and all region definitions; writes require privilege.
+    clock(clk, 10kHz) {
+        if (reset) {
+            clear { control, region_number };
+            for (int i = 0; i < 8; i++) {
+                clear { base_registers[i], attr_registers[i] };
+            }
+        } else if (write_enable && privileged) {
+            if (ctrl_selected) { control = write_data[2:0]; }
+            if (rnr_selected && write_data[7:0] < 8) { region_number = write_data[2:0]; }
+            if (valid_base_write) {
+                base_registers[base_index] = write_data & RBAR_BITS;
+                if (update_number) { region_number = base_index; }
+            }
+            if (attrs_selected) { attr_registers[region_number] = write_data & RASR_BITS; }
+        }
+    }
+}
+
+

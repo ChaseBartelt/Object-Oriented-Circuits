@@ -20,6 +20,10 @@ from circuitlab.language.syntax import INCLUDE, NET_METHODS, OVERRIDE, SECTION, 
 CHIP_LIBRARY = Path(__file__).resolve().parents[1] / "libraries" / "chips"
 
 
+def includes_files(source):
+    return any(INCLUDE.fullmatch(text) for text, _, _ in source_rows(source))
+
+
 def include_path(name, source_path=None):
     """Resolve a short bundled chip name or an explicit file path."""
     # Normalize library paths before searching or checking containment. Bare

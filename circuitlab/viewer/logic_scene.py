@@ -7,18 +7,18 @@ import math
 from copy import deepcopy
 
 from PySide6.QtCore import QPointF, QRectF, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QKeySequence, QPainter, QPainterPath, QPen, QPolygonF
-from PySide6.QtWidgets import QGraphicsObject, QGraphicsPathItem, QGraphicsScene, QGraphicsView
+from PySide6.QtGui import QColor, QKeySequence, QPainter, QPainterPath, QPen
+from PySide6.QtWidgets import QGraphicsObject, QGraphicsPathItem, QGraphicsScene, QGraphicsView, QStyleOptionGraphicsItem
 
 from circuitlab.layout.logic import LogicGeometry
 from circuitlab.layout.logic_hierarchy import logic_hierarchy
-from circuitlab.viewer.behavior_diagram import _layers, behavior_graph, block_positions, dependency_paths
+from circuitlab.viewer.behavior_diagram import _layers, arrowhead, behavior_graph, block_positions, dependency_paths
 from circuitlab.viewer.behavior_scope import chip_diagram_model
 
 
 HIGH, LOW, BUS = "#55d991", "#999999", "#cccccc"
 NODE_WIDTH, NODE_HEIGHT, COLUMN, ROW = 180, 58, 244, 82
-MAX_NODES = 120
+HIERARCHY_PREFERENCE = 120
 
 
 class _Node(QGraphicsObject):
@@ -37,14 +37,17 @@ class _Node(QGraphicsObject):
         return QRectF(0, 0, NODE_WIDTH, self.height)
 
     def paint(self, painter, option, widget=None):
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        detailed = QStyleOptionGraphicsItem.levelOfDetailFromTransform(painter.worldTransform()) >= .45
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, detailed)
         if self.module is not None:
-            self._paint_module(painter)
+            self._paint_module(painter, detailed)
             return
         color = QColor(BUS if self.width > 1 else HIGH if self.value else LOW)
         painter.setPen(QPen(color if self.kind != "chip" else QColor("#888888"), 1.8))
         painter.setBrush(QColor("#343434" if self.kind == "chip" else "#282828"))
         painter.drawRoundedRect(self.boundingRect().adjusted(1, 1, -1, -1), 7, 7)
+        if not detailed:
+            return
         if self.kind == "chip":
             painter.setPen(QColor("#f2f2f2"))
             painter.drawText(QRectF(9, 4, NODE_WIDTH - 18, min(self.height - 8, 116)),
@@ -74,10 +77,12 @@ class _Node(QGraphicsObject):
         painter.setPen(color)
         painter.drawText(QRectF(9, self.height - 24, NODE_WIDTH - 18, 20), Qt.AlignmentFlag.AlignVCenter, label)
 
-    def _paint_module(self, painter):
+    def _paint_module(self, painter, detailed):
         painter.setPen(QPen(QColor("#81aecb"), 1.8))
         painter.setBrush(QColor("#263744"))
         painter.drawRoundedRect(self.boundingRect().adjusted(1, 1, -1, -1), 7, 7)
+        if not detailed:
+            return
         outputs = [port for port in self.module.ports if port.direction == "output"]
         ports = sorted(outputs, key=lambda port: not 1 < port.width <= 32)[:2]
         preview = " · ".join(f"{port.label} {_logic_value(self.view.values.get(port.live), port.width)}"
@@ -104,18 +109,27 @@ class _Edge(QGraphicsPathItem):
         self.setAcceptedMouseButtons(Qt.MouseButton.LeftButton)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setToolTip(f"{source} → {target}")
+        self.color = LOW
         self.setPen(QPen(QColor(LOW), 1.7))
+        self.arrow = arrowhead(path)
+
+    def set_level(self, width, value):
+        color = BUS if width > 1 else HIGH if value else LOW
+        if color != self.color:
+            self.color = color
+            self.setPen(QPen(QColor(color), 2.5 if width > 1 else 1.7))
+
+    def setPath(self, path):
+        super().setPath(path)
+        self.arrow = arrowhead(path)
 
     def paint(self, painter, option, widget=None):
         super().paint(painter, option, widget)
-        end = self.path().pointAtPercent(1)
-        before = self.path().pointAtPercent(.98)
-        angle = math.atan2(end.y() - before.y(), end.x() - before.x())
-        arrow = QPolygonF([end, end - QPointF(8 * math.cos(angle - .45), 8 * math.sin(angle - .45)),
-                          end - QPointF(8 * math.cos(angle + .45), 8 * math.sin(angle + .45))])
+        if QStyleOptionGraphicsItem.levelOfDetailFromTransform(painter.worldTransform()) < .45:
+            return
         painter.setPen(self.pen())
         painter.setBrush(self.pen().color())
-        painter.drawPolygon(arrow)
+        painter.drawPolygon(self.arrow)
 
 class LogicSceneView(QGraphicsView):
     input_toggled = Signal(str)
@@ -138,7 +152,6 @@ class LogicSceneView(QGraphicsView):
         self.graph_values, self.bindings, self.edge_signals = {}, {}, {}
         self.scope = None
         self.expanded = False
-        self.notice = ""
         self._pan = None
         self.geometry = None
         self._placements, self._history = {}, []
@@ -152,8 +165,14 @@ class LogicSceneView(QGraphicsView):
         self.inputs = tuple(simulation.inputs) if simulation else ()
         self.outputs = tuple(simulation.outputs) if simulation else ()
         self.values = dict(simulation.values) if simulation else {}
-        # A large assembly opens on its block diagram, where its internals fit.
-        self.expanded = bool(self.instances and behavior_graph(simulation)[2])
+        # Start with the immediate modules on larger hierarchical designs.
+        self.expanded = False
+        if self.instances:
+            omitted = set(simulation.clocks) | set(self.outputs)
+            kinds = getattr(simulation, "signal_kinds", {})
+            ungrouped = sum(name not in omitted and kinds.get(name) != "constant"
+                            for name in simulation.signals)
+            self.expanded = max(ungrouped, len(self.inputs) + len(self.outputs)) > HIERARCHY_PREFERENCE
         self.scope = None
         self._build()
 
@@ -204,28 +223,16 @@ class LogicSceneView(QGraphicsView):
         self.chip_item = None
         self.blocks = {}
         self.graph_values, self.bindings, self.edge_signals = {}, {}, {}
-        self.notice = ""
         sim = self.simulation
         if sim is None:
             self.resetTransform()
             self.setSceneRect(QRectF())
             return
-        if not self.expanded and self.instances and len(self.inputs) + len(self.outputs) > MAX_NODES:
-            self.expanded = True
-        if not self.expanded and len(self.inputs) + len(self.outputs) > MAX_NODES:
-            self.notice = f"Port view exceeds {MAX_NODES} nodes; use the signal table and probes."
-            title = scene.addText(self.notice)
-            title.setDefaultTextColor(QColor("#f2f2f2"))
-            self.fit()
-            return
         if self.expanded:
             blocks, edges, hierarchy = self._open_graph()
-            self.expanded = bool(self.instances) or not self.notice
-        if self.notice or self.expanded:
-            title = scene.addText(self.notice or self._graph_title(hierarchy))
+            title = scene.addText(self._graph_title(hierarchy))
             title.setDefaultTextColor(QColor("#bbbbbb"))
             title.setPos(0, -55)
-        if self.expanded:
             self._paint_graph(blocks, edges, hierarchy)
         else:
             rows = max(len(self.inputs), len(self.outputs), 1)
@@ -260,16 +267,13 @@ class LogicSceneView(QGraphicsView):
         if self.instances:
             hierarchy = logic_hierarchy(self.simulation, self.instances, self.scope)
             if hierarchy.blocks:
-                self.notice = hierarchy.notice
-                if not self.notice:
-                    self.edge_signals = hierarchy.edge_signals
-                    return hierarchy.blocks, hierarchy.edges, True
-                return {}, (), True
+                self.edge_signals = hierarchy.edge_signals
+                return hierarchy.blocks, hierarchy.edges, True
         sim = self.simulation
         if self.scope is not None:
             sim, self.bindings = chip_diagram_model(self.instances, self.scope, sim)
-        blocks, edges, self.notice = behavior_graph(sim)
-        return ({}, (), False) if self.notice else (blocks, edges, False)
+        blocks, edges = behavior_graph(sim)
+        return blocks, edges, False
 
     def _graph_title(self, hierarchy):
         if not self.instances:
@@ -320,7 +324,8 @@ class LogicSceneView(QGraphicsView):
         self.resetTransform()
         scale = max(.8, min(1.0, self.viewport().width() / max(area.width(), 1)))
         self.scale(scale, scale)
-        self.centerOn(area.center().x(), area.top() + self.viewport().height() / (2 * scale))
+        visible_width = min(area.width(), self.viewport().width() / scale)
+        self.centerOn(area.left() + visible_width / 2, area.top() + self.viewport().height() / (2 * scale))
 
     # Update existing node/edge values without rebuilding the graph or refitting the viewport.
     def set_values(self, values):
@@ -342,19 +347,13 @@ class LogicSceneView(QGraphicsView):
                 item.value = value
                 item.update()
         for (source, target), item in self.edge_items.items():
-            if source == '__chip__':
-                source = target
-            block = self.blocks.get(source)
             if signals := self.edge_signals.get((source, target)):
                 width = sum(self.simulation.signals[signal] for signal in signals)
                 value = self.values.get(signals[0], 0)
             else:
-                width = block.width if block else self.simulation.signals.get(source, 1) if self.simulation else 1
-                value = block.value(self.graph_values) if block else self.values.get(source, 0)
-            color = QColor(BUS if width > 1 else HIGH if value else LOW)
-            pen_width = 2.5 if width > 1 else 1.7
-            if item.pen().color() != color or item.pen().widthF() != pen_width:
-                item.setPen(QPen(color, pen_width))
+                node = self.node_items[target if source == '__chip__' else source]
+                width, value = node.width, node.value
+            item.set_level(width, value)
 
     def toggle_hood(self):
         if self.simulation is not None:

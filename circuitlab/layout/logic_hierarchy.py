@@ -9,7 +9,6 @@ from types import MappingProxyType
 from circuitlab.layout.hierarchy import METHOD_PREFIX
 
 
-MAX_BLOCKS, MAX_CONNECTIONS = 120, 400
 ACRONYMS = {"alu", "cpu", "io", "mmio", "ram", "rom"}
 
 
@@ -55,7 +54,6 @@ class LogicBlock:
 class LogicHierarchyView:
     blocks: Mapping[str, LogicBlock]
     edge_signals: Mapping[tuple[str, str], tuple[str, ...]]
-    notice: str
 
     @property
     def edges(self):
@@ -97,10 +95,6 @@ def logic_hierarchy(simulation, instances, scope=None):
         for source in sources:
             for target in readers[live]:
                 edge_signals[source, target][live] = None
-    notice = ""
-    if len(blocks) > MAX_BLOCKS or len(edge_signals) > MAX_CONNECTIONS:
-        notice = (f"{len(blocks)} chips / {len(edge_signals)} connections exceed the hierarchy view limit "
-                  f"({MAX_BLOCKS} chips / {MAX_CONNECTIONS} connections).")
     return LogicHierarchyView(MappingProxyType(blocks), MappingProxyType({
         edge: tuple(signals) for edge, signals in edge_signals.items()
-    }), notice)
+    }))

@@ -312,5 +312,12 @@
       "$0"
     ],
     "description": "Define custom model properties with inferred SI units, without schematic components."
+  },
+  "Diode": {
+    "prefix": "diode",
+    "body": [
+      "D.${1|rect,Schot,Tun,Zener,LED,PIN,Varactor,Photo,Avalanche|}${2:1} between(${3:anode}, ${4:cathode});"
+    ],
+    "description": "Two-terminal diode: first wire is anode, second is cathode. Empty parentheses use generic defaults."
   }
 }

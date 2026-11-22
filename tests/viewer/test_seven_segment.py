@@ -74,8 +74,7 @@ class SevenSegmentTest(unittest.TestCase):
         source += ' '.join(f'HEX{digit}[7:0]=sevenseg(requests >> {digit});' for digit in range(6))
         self.widget.set_source(source + '}')
         self.assertIsNotNone(self.widget.simulation, self.widget.status.text())
-        blocks, _, notice = behavior_graph(self.widget.simulation)
-        self.assertEqual(notice, '')
+        blocks, _ = behavior_graph(self.widget.simulation)
         for digit in range(6):
             block = blocks[f'HEX{digit}[7:0]']
             self.assertEqual(block.members, tuple(f'HEX{digit}{bit}' for bit in range(8)))

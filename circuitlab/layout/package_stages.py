@@ -7,7 +7,7 @@ from math import ceil
 
 from circuitlab.layout.geometry import (
     ChipPackage, Layout, add_wire, ground_at, ground_lead, inline_grounded_voltage,
-    package_half_height, package_pins, place_symbol,
+    package_half_height, package_pins, place_symbol, quad_package,
 )
 from circuitlab.layout.checks import mark_crossings
 from circuitlab.layout.lead_spacing import TERMINAL_SPANS
@@ -244,7 +244,7 @@ def package_stage_layout(circuit, labels):
     """Lay out independent package feedback stages with continuous supply rails."""
     parts, grounds = circuit.components, circuit.grounds
     packages = [part for part in parts if isinstance(part, ChipPackage)]
-    if not packages or len(parts) > 64:
+    if not packages or len(parts) > 64 or any(map(quad_package, packages)):
         return None
     owners = defaultdict(list)
     for part in parts:

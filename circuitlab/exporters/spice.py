@@ -11,6 +11,8 @@ from circuitlab.math.analysis import conflicts
 from circuitlab.language.compiler import compile_circuit
 from circuitlab.model.graph import AudioAmpModel, Circuit, CircuitError, OpAmpModel, ground_references
 from circuitlab.model.potentiometer import expand_potentiometers
+from circuitlab.model.diode import DiodeModel
+from circuitlab.exporters.diodes import diode_subcircuit
 from circuitlab.math.equations import solve_known
 from circuitlab.math.nonlinear import SWITCH_TRANSITION
 from circuitlab.math.opamps import common_inverse
@@ -484,6 +486,13 @@ def spice_circuit(circuit: Circuit) -> SpiceCircuit:
                     amplifier_models[key] = model_names.claim(f"EC_OpAmp{len(amplifier_models) + 1}")
                     definitions += behavioral_opamp_subcircuit(amplifier_models[key], *key)
                 spec = amplifier_models[key]
+        elif kind == "D":
+            model = part.diode or DiodeModel()
+            key = ("diode", model)
+            if key not in amplifier_models:
+                amplifier_models[key] = model_names.claim(f"EC_Diode{len(amplifier_models) + 1}")
+                definitions += diode_subcircuit(amplifier_models[key], model)
+            spec = amplifier_models[key]
         elif kind == "Q":
             spec = models[part.name]
         elif kind == "S":
@@ -495,7 +504,7 @@ def spice_circuit(circuit: Circuit) -> SpiceCircuit:
             raise CircuitError(f"SPICE export does not support component type {kind}.")
         label = part.label or part.name
         preferred = label if label[:1].upper() == kind else part.name
-        name = names.claim(preferred, kind)
+        name = names.claim(preferred, "X" if kind == "D" else kind)
         if name != label:
             lines.append(f"* Component {ascii(label)} = {name}")
         if part.kind == "X":

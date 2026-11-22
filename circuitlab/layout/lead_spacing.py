@@ -12,7 +12,7 @@ from circuitlab.layout.wire_edit import clean_point, replace_route, route_anchor
 # room for both the body and a short lead, including the switch's contacts.
 TERMINAL_SPANS = {
     "R": 2, "C": .75, "L": 2, "X": 2, "Z": 2,
-    "V": 1.5, "I": 1.5, "K": 2, "O": 2.5,
+    "V": 1.5, "I": 1.5, "K": 2, "O": 2.5, "D": 1.5,
 }
 
 

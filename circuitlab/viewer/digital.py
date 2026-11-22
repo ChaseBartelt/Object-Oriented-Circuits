@@ -11,7 +11,7 @@ from time import perf_counter
 from PySide6.QtCore import QPointF, QRectF, QSignalBlocker, QTimer, Qt, Signal
 from PySide6.QtGui import QActionGroup, QColor, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (
-    QAbstractItemView, QCheckBox, QComboBox, QGridLayout, QGroupBox, QHBoxLayout,
+    QAbstractItemView, QCheckBox, QComboBox, QFrame, QGridLayout, QGroupBox, QHBoxLayout,
     QHeaderView, QInputDialog, QLabel, QMenu, QMessageBox, QPushButton, QScrollArea, QSplitter, QTableWidget,
     QTableWidgetItem, QTabWidget, QToolButton, QVBoxLayout, QWidget,
 )
@@ -26,6 +26,7 @@ from circuitlab.viewer.widgets import button
 HIGH = "#55d991"
 LOW = "#999999"
 TRACE_COLORS = ("#55d991", "#6fc5ff", "#ffcf70", "#d7a2ff")
+RUN_WORK_SECONDS = .020
 
 
 def display_value(value, width):
@@ -68,7 +69,8 @@ class DigitalWaveform(QWidget):
 
     def paintEvent(self, event):
         painter = QPainter(self)
-        painter.fillRect(self.rect(), QColor("#191919"))
+        dirty = event.rect()
+        painter.fillRect(dirty, QColor("#191919"))
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.setPen(QColor("#f2f2f2"))
         if not self.history:
@@ -77,7 +79,12 @@ class DigitalWaveform(QWidget):
         left, right = min(145, self.width() // 3), self.width() - 16
         first, last = self.history[0][0], self.history[-1][0]
         span = max(1, last - first)
-        for row, name in enumerate(self.traces):
+        # A CPU probe can have thousands of dependencies. Paint only rows in
+        # the exposed region of the scroll area, including partial rows.
+        first_row = max(0, (dirty.top() - 16) // 38)
+        last_row = min(len(self.traces), (dirty.bottom() - 16) // 38 + 1)
+        for row in range(first_row, last_row):
+            name = self.traces[row]
             top = 16 + row * 38
             value = self.history[-1][1][name]
             label = f"{name}  {display_value(value, self.widths[name])}"
@@ -101,8 +108,10 @@ class DigitalWaveform(QWidget):
             path.lineTo(right, previous_y)
             painter.setPen(QPen(QColor(TRACE_COLORS[row % len(TRACE_COLORS)]), 1.8))
             painter.drawPath(path)
-        painter.setPen(QColor("#bbbbbb"))
         bottom = 38 * len(self.traces) + 36
+        if dirty.bottom() < bottom - 16:
+            return
+        painter.setPen(QColor("#bbbbbb"))
         axis = "Cycle" if self.clocked else "Event"
         painter.drawText(QPointF(left, bottom), f"{axis} {first:,}")
         painter.drawText(QRectF(left, bottom - 16, right - left, 20),
@@ -119,6 +128,7 @@ class DigitalSimulator(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.source = ""
+        self._design = None
         self.simulation = None
         self.layout_records = {}
         self._skip_layout_capture = False
@@ -162,17 +172,26 @@ class DigitalSimulator(QWidget):
         self.status.setTextFormat(Qt.TextFormat.PlainText)
         self.status.hide()
         layout.addWidget(self.status)
-        ports = QHBoxLayout()
+        self.ports_panel = QWidget()
+        self.ports_panel.setMaximumHeight(210)
+        ports = QHBoxLayout(self.ports_panel)
+        ports.setContentsMargins(0, 0, 0, 0)
         self.input_group = QGroupBox()
         self.output_group = QGroupBox()
         self.input_grid = QGridLayout(self.input_group)
         self.output_grid = QGridLayout(self.output_group)
-        self.input_toggle = self._port_toggle("Inputs", self.input_group, toolbar)
-        self.output_toggle = self._port_toggle("Outputs", self.output_group, toolbar)
+        self.input_grid.setAlignment(Qt.AlignmentFlag.AlignTop)
+        self.output_grid.setAlignment(Qt.AlignmentFlag.AlignTop)
+        self.input_scroll = self._scroll_ports(self.input_group)
+        self.output_scroll = self._scroll_ports(self.output_group)
+        self.ports_toggle = self._port_toggle("Pins", toolbar)
+        self.ports_toggle.setToolTip("Collapse or restore the input and output panels")
+        self.input_toggle = self._port_toggle("Inputs", toolbar)
+        self.output_toggle = self._port_toggle("Outputs", toolbar)
         toolbar.addStretch()
-        ports.addWidget(self.input_group, 1)
-        ports.addWidget(self.output_group, 1)
-        layout.addLayout(ports)
+        ports.addWidget(self.input_scroll, 1)
+        ports.addWidget(self.output_scroll, 4)
+        layout.addWidget(self.ports_panel)
         self.hex_display = SevenSegmentDisplay()
         self.hex_display.segment_probed.connect(self.select_signal)
         layout.addWidget(self.hex_display)
@@ -224,7 +243,14 @@ class DigitalSimulator(QWidget):
         self._clear()
 
     @staticmethod
-    def _port_toggle(title, group, toolbar):
+    def _scroll_ports(group):
+        scroll = QScrollArea()
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(group)
+        return scroll
+
+    def _port_toggle(self, title, toolbar):
         toggle = QToolButton()
         toggle.setText(title)
         toggle.setCheckable(True)
@@ -232,11 +258,23 @@ class DigitalSimulator(QWidget):
         toggle.setArrowType(Qt.ArrowType.DownArrow)
         toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
         def expand(shown):
-            group.setVisible(shown)
             toggle.setArrowType(Qt.ArrowType.DownArrow if shown else Qt.ArrowType.RightArrow)
+            self._update_port_panels()
         toggle.toggled.connect(expand)
         toolbar.addWidget(toggle)
         return toggle
+
+    def _update_port_panels(self):
+        self.input_toggle.setEnabled(bool(self.input_buttons))
+        self.output_toggle.setEnabled(bool(self.output_labels))
+        self.ports_toggle.setEnabled(bool(self.input_buttons or self.output_labels))
+        show_inputs = bool(self.input_buttons) and self.input_toggle.isChecked()
+        show_outputs = bool(self.output_labels) and self.output_toggle.isChecked()
+        self.input_group.setVisible(show_inputs)
+        self.input_scroll.setVisible(show_inputs)
+        self.output_group.setVisible(show_outputs)
+        self.output_scroll.setVisible(show_outputs)
+        self.ports_panel.setVisible(self.ports_toggle.isChecked() and (show_inputs or show_outputs))
 
     def toggle_input(self, name):
         if self.simulation is not None and name in self.simulation.inputs:
@@ -274,7 +312,7 @@ class DigitalSimulator(QWidget):
 
     def _profile_changed(self, *_):
         self.user_profile = True
-        self.set_source(self.source)
+        self.set_source(self.source, design=self._design)
 
     def logic_placements(self):
         if self.simulation is not None and not self._skip_layout_capture:
@@ -299,6 +337,8 @@ class DigitalSimulator(QWidget):
                 item.widget().deleteLater()
         self.input_buttons.clear()
         self.output_labels.clear()
+        self._displayed_values = {}
+        self._update_port_panels()
         with QSignalBlocker(self.probe):
             self.probe.clear()
         self.table.setRowCount(0)
@@ -317,26 +357,35 @@ class DigitalSimulator(QWidget):
         self.status.setText(str(error))
         self.status.show()
 
-    def set_source(self, source):
+    def selected_profile(self):
+        return self.profile.currentData() if self.user_profile else "auto"
+
+    def set_source(self, source, *, design=None):
         self.source = source
+        self._design = design
         self._clear()
         if not source.strip():
             return
-        if not self.user_profile:
-            from circuitlab.tooling.fpga import compile_de10_lite
-            try:
-                compile_de10_lite(source)
-                chosen = 1
-            except (CircuitError, ValueError):
-                chosen = 0
-            with QSignalBlocker(self.profile):
-                self.profile.setCurrentIndex(chosen)
         try:
-            self.simulation = DigitalSimulation(source, profile=self.profile.currentData())
+            sim = DigitalSimulation(source, profile=self.selected_profile(), design=design)
         except (CircuitError, ValueError) as error:
             self._show_error(error)
             return
-        sim = self.simulation
+        self._show_simulation(sim)
+
+    def set_prepared_source(self, source, simulation, error, *, design=None):
+        self.source = source
+        self._design = design
+        self._clear()
+        if error is not None:
+            self._show_error(error)
+        elif simulation is not None:
+            self._show_simulation(simulation)
+
+    def _show_simulation(self, sim):
+        self.simulation = sim
+        with QSignalBlocker(self.profile):
+            self.profile.setCurrentIndex(self.profile.findData(sim.profile))
         self.hex_display.configure(sim)
         for index, name in enumerate(sim.inputs):
             control = QPushButton(name)
@@ -352,10 +401,11 @@ class DigitalSimulator(QWidget):
             label = QLabel()
             label.setAlignment(Qt.AlignmentFlag.AlignCenter)
             label.setTextFormat(Qt.TextFormat.PlainText)
+            if sim.signals[name] != 1:
+                label.setStyleSheet("color: #cccccc; font-weight: 600; padding: 5px;")
             self.output_labels[name] = label
             self.output_grid.addWidget(label, index // 5, index % 5)
-        self.output_toggle.setEnabled(bool(self.output_labels))
-        self.output_group.setVisible(bool(self.output_labels) and self.output_toggle.isChecked())
+        self._update_port_panels()
         self.port_view.configure(sim)
         self.port_view.restore_placement(self.layout_records.get(sim.profile, {}))
         self.table.setRowCount(len(sim.signals))
@@ -364,8 +414,7 @@ class DigitalSimulator(QWidget):
                 self.table.setItem(row, 0, QTableWidgetItem(name))
                 self.table.setItem(row, 1, QTableWidgetItem(str(width)))
                 self.table.setItem(row, 2, QTableWidgetItem())
-                if name not in sim.clocks:
-                    self.probe.addItem(name)
+            self.probe.addItems([name for name in sim.signals if name not in sim.clocks])
             if sim.outputs:
                 self.probe.setCurrentText(sim.outputs[0])
         clocked = bool(sim.clocks)
@@ -414,19 +463,27 @@ class DigitalSimulator(QWidget):
             first, last = self.waveform.history[0][0], self.waveform.history[-1][0]
             self.history_label.setText(f"{axis} {first:,}–{last:,} · sampled")
         for name, control in self.input_buttons.items():
+            value = sim.values[name]
+            if self._displayed_values.get(name) == value:
+                continue
             with QSignalBlocker(control):
-                control.setChecked(bool(sim.values[name]))
+                control.setChecked(bool(value))
             width = sim.signals[name]
-            control.setText(f"{name}  {display_value(sim.values[name], width)}")
+            control.setText(f"{name}  {display_value(value, width)}")
         for name, label in self.output_labels.items():
             value, width = sim.values[name], sim.signals[name]
+            if self._displayed_values.get(name) == value:
+                continue
             label.setText(f"● {name}  {value}" if width == 1 else f"{name}[{width}]  0x{value:X} ({value})")
-            color = HIGH if value else LOW
-            label.setStyleSheet(f"color: {color if width == 1 else '#cccccc'}; font-weight: 600; padding: 5px;")
+            if width == 1:
+                label.setStyleSheet(f"color: {HIGH if value else LOW}; font-weight: 600; padding: 5px;")
         for row, (name, width) in enumerate(sim.signals.items()):
-            self.table.item(row, 2).setText(display_value(sim.values[name], width))
+            value = sim.values[name]
+            if self._displayed_values.get(name) != value:
+                self.table.item(row, 2).setText(display_value(value, width))
         self.port_view.set_values(sim.values)
         self.hex_display.set_values(sim.values)
+        self._displayed_values = sim.values
         self.values_changed.emit(dict(sim.values))
 
     def _failure(self, error):
@@ -504,7 +561,7 @@ class DigitalSimulator(QWidget):
         try:
             if due:
                 sim.advance(due, traces=self.waveform.traces, sample=self.waveform.sample,
-                            sample_every=max(1, ceil(due / 128)), deadline=now + .008)
+                            sample_every=max(1, ceil(due / 128)), deadline=now + RUN_WORK_SECONDS)
             overdue = max(0, int(self._target_cycle + 1e-7) - sim.cycles)
             lag = overdue / (sim.frequency * self.speed)
             if lag > .1:

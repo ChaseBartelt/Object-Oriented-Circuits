@@ -82,8 +82,6 @@ class LogicGeometry:
     """Grid movement and bounded versioned placement, independent of Qt/source."""
 
     def __init__(self, rects, routes, record=None):
-        if len(rects) > MAX_NODES or len(routes) > MAX_WIRES:
-            raise ValueError("Digital layout exceeds its geometry limit.")
         self._rects, self._routes, self._anchors, self._offsets = {}, {}, {}, {}
         for name, rect in rects.items():
             if (not isinstance(name, str) or len(name) > 512 or not isinstance(rect, (list, tuple))
@@ -131,7 +129,10 @@ class LogicGeometry:
         if not isinstance(record, dict) or record.get("version") != 1:
             return False
         nodes, wires = record.get("nodes", {}), record.get("wires", [])
-        if not isinstance(nodes, dict) or len(nodes) > MAX_NODES or not isinstance(wires, list) or len(wires) > MAX_WIRES:
+        # A compiled graph can exceed the older record limits. Use its size to
+        # allow its own layout while still bounding arbitrary embedded rows.
+        if (not isinstance(nodes, dict) or len(nodes) > max(MAX_NODES, len(self._rects))
+                or not isinstance(wires, list) or len(wires) > max(MAX_WIRES, len(self._routes))):
             return False
         rects = dict(self._rects)
         for name, pos in nodes.items():

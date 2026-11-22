@@ -90,10 +90,12 @@ class SourceTools:
                 raise ValueError('This value is generated. Edit its parameter or definition in the IDE.')
             part = next(part for part in circuit.components if part.name == name)
             hint = (' in ohms (e.g. 2-j2 or 4+j4)' if part.kind == 'Z' else
-                    ' as resistance, position (e.g. 10k,25%; position defaults to 50% from low)' if part.kind == 'P' else '')
+                    ' as resistance, position (e.g. 10k,25%; position defaults to 50% from low)' if part.kind == 'P' else
+                    ' as diode voltage/parameters (e.g. 5.1V, rs=2ohm)' if part.kind == 'D' else '')
             previous = (match['value'] or '').strip()
+            blank = 'defaults' if part.kind == 'D' else 'unspecified'
             value, ok = QInputDialog.getText(self.window, 'Edit component value',
-                f'{name} value{hint} (blank = unspecified):\nShared definitions update all their instances.', text=previous)
+                f'{name} value{hint} (blank = {blank}):\nShared definitions update all their instances.', text=previous)
             if ok and value.strip() != previous:
                 self.apply(edit_value(circuit, name, value, root, source, reader))
         except (ValueError, OSError, CircuitError, StopIteration) as error:

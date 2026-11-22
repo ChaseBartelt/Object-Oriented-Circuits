@@ -18,3 +18,8 @@ main{  # Assemble the declared parts and chips using the named connections below
 
     op1(0, w4, out, pos, neg);  # Ideal amplifier: the feedback connections determine this channel's behavior.
 }
+
+
+# @ooc-layout-begin padding=2
+# {"version":1,"mode":"auto","layouts":[[null,"auto",{"symbols":[["S1","K",["pos","W2"],[0.75,0.25],[2.75,0.25],"+"],["R2","R",["W2","W3"],[3.0,0.25],[5.0,0.25],"+"],["Vbattery1","V",["pos","0"],[0.75,-0.25],[0.75,-1.75],"+"],["Vbattery2","V",["neg","0"],[7.0,-1.0],[7.0,-2.5],"+"],["op1","O",["0","W3","out","0","pos","neg"],[5.75,0.0],[8.25,0.0],"-"],["R1","R",["W3","out"],[5.75,1.75],[7.75,1.75],"+"]],"wires":{"pos":[[[0.75,-0.25],[0.75,0.25]],[[0.75,0.25],[0.75,1.25]],[[0.75,1.25],[7.0,1.25]]],"W3":[[[5.0,0.25],[5.5,0.25]],[[5.5,0.25],[5.5,1.75]],[[5.5,0.25],[5.75,0.25]],[[5.5,1.75],[5.75,1.75]]],"out":[[[7.75,1.75],[8.25,1.75]],[[8.25,0.0],[8.25,1.75]]],"W2":[[[2.75,0.25],[3.0,0.25]]],"neg":[[[7.0,-1.25],[7.0,-1.0]]],"0":[[[5.75,-0.25],[6.0,-0.25]]]},"junctions":{"W3":[[5.5,0.25]]},"labels":{},"grounds":[[0.75,-1.75],[7.0,-2.5],[6.0,-0.25]],"ground_names":[],"ground_rotations":[[[6.0,-0.25],1]],"connectors":[],"boundary":{},"rotations":{},"crossings":[["W3",[5.5,0.25],[5.5,1.75],[1.25]]],"label_offsets":[[["component","op1"],[0.7299566346997564,-0.601674259029237]]],"pin_grid":0.25}]],"logic":{"schematic":{},"simulation":{}}}
+# @ooc-layout-end

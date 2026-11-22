@@ -697,7 +697,7 @@ class MainWindow(QMainWindow):
         if not mask_comments(source).strip():
             self.scope_sidebar.set_circuit(None)
             self.status.setText("Open a circuit or enter known quantities.")
-        elif self.library_preview(source) or (has_chip(source) and not self.includes_files(source)):
+        elif has_chip(source) or self.library_preview(source):
             try:
                 self._draw_source(source, "dc", preserve_scope=preserve_scope)
             except CircuitError as error:
@@ -736,9 +736,10 @@ class MainWindow(QMainWindow):
     # connected schematic even when its operating point is not yet determined.
     def _draw_source(self, source, mode, *, preserve_scope=False):
         """Render a compiled graph even when electrical analysis cannot solve it."""
-        digital = has_chip(source) and not self.includes_files(source)
+        digital = has_chip(source)
         if digital:
-            circuit = CircuitSession(source=source).render()
+            session = CircuitSession(source=source, path=self.path, read_source=self.read_linked_source)
+            circuit = session.render()
         else:
             preview = self.library_preview(source)
             if preview:
@@ -747,7 +748,7 @@ class MainWindow(QMainWindow):
         self.schematic.draw(circuit, self.pins)
         self.scope_sidebar.set_circuit(circuit, preserve_state=preserve_scope)
         if digital:
-            self.digital.set_source(source)
+            self.digital.set_source(source, design=session.digital_design)
             self.views.setTabVisible(self.digital_tab, self.digital.simulation is not None)
         else:
             self.clear_digital()
@@ -1051,7 +1052,7 @@ class MainWindow(QMainWindow):
 
     def export_verilog(self):
         return self._export_file(
-            lambda: export_verilog(self.editor.toPlainText()),
+            lambda: export_verilog(self.editor.toPlainText(), path=self.path, read_source=self.read_linked_source),
             "Export Verilog",
             ".v",
             "Verilog source (*.v)",

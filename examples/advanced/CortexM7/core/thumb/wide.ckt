@@ -1,0 +1,310 @@
+// Integer data processing that uses Thumb-2's flexible second operand.
+chip M7ThumbDataDecode(ir, expanded_imm, kind, rd, rn, rm, ra, value,
+                       shift_type, shift_count, register_shift, immediate, immediate_carry, set_flags) {
+    input instruction {
+        ir[32], expanded_imm[32];
+    }
+    output decoded {
+        kind[5], rd[4], rn[4], rm[4], ra[4], shift_type[2], shift_count[5], value[32];
+        register_shift, immediate, immediate_carry, set_flags;
+    }
+    const ZERO32[32] = 0;
+    const ZERO6[6] = 0;
+    const ZERO5[5] = 0;
+    // Separate Thumb halfwords before decoding wide and narrow instruction forms.
+    first[16] = ir[15:0];
+    second[16] = ir[31:16];
+    wide_rn[4] = first[3:0];
+    wide_rd[4] = second[11:8];
+    wide_rm[4] = second[3:0];
+    wide_ra[4] = second[15:12];
+    modifier[4] = first[8:5];
+    low_d[4] = first[2:0];
+    low_m[4] = first[5:3];
+    low_alu[4] = first[9:6];
+    wire shift_fields {
+        wide_shift[5];
+    }
+    wide_shift[4:2] = second[14:12];
+    wide_shift[1:0] = second[7:6];
+    wire immediate_fields {
+        imm12[12];
+    }
+    imm12[11] = first[10];
+    imm12[10:8] = second[14:12];
+    imm12[7:0] = second[7:0];
+    wire upper_immediate {
+        upper_imm[16];
+    }
+    upper_imm[15:12] = wide_rn;
+    upper_imm[11:0] = imm12;
+    wire flexible_operand {
+        plain_register, modified, flexible, recognized_imm, alias_test, valid_flex;
+    }
+    // Validate flexible-operand encodings and reject forbidden register combinations.
+    plain_register = (first & 65024) == 59904 && !second[15];
+    modified = (first & 64000) == 61440 && !second[15];
+    recognized_imm = imm12[11:10] != 0 || imm12[9:8] == 0 || imm12[7:0] != 0;
+    flexible = plain_register || (modified && recognized_imm);
+    alias_test = first[4] && (modifier == 0 || modifier == 4 || modifier == 8 || modifier == 13);
+    valid_flex = ((wide_rd != 15 || alias_test) && (wide_rn != 15 || modifier == 2 || modifier == 3) &&
+                 (!plain_register || (wide_rm != 13 && wide_rm != 15)) &&
+                 ((wide_rn != 13 && wide_rd != 13) || modifier == 8 || modifier == 13));
+    flex_kind[5] = (modifier == 8 ? 1 : modifier == 13 ? 2 : modifier == 10 ? 3 :
+                    modifier == 11 ? 4 : modifier == 14 ? 5 :
+                    modifier == 0 ? 6 : modifier == 4 ? 7 : modifier == 2 ? 8 :
+                    modifier == 3 ? 9 : modifier == 1 ? 10 : 0);
+    wire wide_operations {
+        plain_add, mov_top, wide_reg_shift, dual_encoding, reverse_bits, count_zero, extend_width;
+    }
+    plain_add = ((first & 64480) == 61952 || (first & 64480) == 62112) && !second[15] && wide_rd != 15;
+    mov_top = (first & 64496) == 62144 && !second[15] && wide_rd != 13 && wide_rd != 15;
+    wide_reg_shift = (first & 65408) == 64000 && second[15:12] == 15 && second[7:4] == 0;
+    dual_encoding = second[15:12] == 15 && wide_rd != 13 && wide_rd != 15 && wide_rm != 13 && wide_rm != 15;
+    reverse_bits = (first & 65520) == 64144 && second[7:6] == 2 && wide_rn == wide_rm;
+    count_zero = (first & 65520) == 64176 && second[7:4] == 8 && wide_rn == wide_rm;
+    extend_width = (first & 65455) == 64015 && second[7:6] == 2;
+    wire other_operations {
+        extract_field, insert_field, field_ok, multiply, divide, narrow_shift, narrow_compare, narrow_rev, narrow_adr;
+    }
+    extract_field = (((first & 65408) == 62208 && first[6:5] == 2) ||
+                     ((first & 65408) == 62336 && first[6:5] == 2));
+    insert_field = (first & 65520) == 62304;
+    field_ok = (!second[15] && !second[5] && wide_rd != 13 && wide_rd != 15 && wide_rn != 13 &&
+               (insert_field ? second[4:0] >= wide_shift :
+                (wide_rn != 15 && (ZERO6 + wide_shift + second[4:0]) < 32)));
+    multiply = ((first & 65520) == 64256 && wide_rn != 13 && wide_rn != 15 &&
+                wide_rd != 13 && wide_rd != 15 && wide_rm != 13 && wide_rm != 15 &&
+                wide_ra != 13 && (second[7:4] == 0 || (second[7:4] == 1 && wide_ra != 15)));
+    divide = ((first & 65488) == 64400 && dual_encoding && second[7:4] == 15 &&
+              wide_rn != 13 && wide_rn != 15);
+    narrow_shift = first[15:10] == 16 && (low_alu == 2 || low_alu == 3 || low_alu == 4 || low_alu == 7);
+    narrow_compare = first[15:10] == 16 && (low_alu == 8 || low_alu == 11);
+    narrow_rev = first[15:8] == 186 && first[7:6] != 2;
+    narrow_adr = first[15:11] == 20;
+    wire narrow_operations {
+        narrow_asr;
+    }
+    narrow_asr = first[15:11] == 2;
+
+    // Select the instruction family; a zero kind denotes an unsupported form.
+    kind = (flexible && valid_flex ? flex_kind :
+            plain_add ? (first[7] ? 2 : 1) : mov_top ? 12 :
+            wide_reg_shift && dual_encoding && wide_rn != 13 && wide_rn != 15 ? 11 :
+            dual_encoding && count_zero ? 13 :
+            dual_encoding && reverse_bits ? (second[5:4] == 0 ? 14 : second[5:4] == 1 ? 15 :
+                                              second[5:4] == 2 ? 17 : 16) :
+            dual_encoding && extend_width ? (first[6] ? (first[4] ? 29 : 27) : (first[4] ? 28 : 26)) :
+            field_ok && insert_field ? 20 : field_ok && extract_field ? (first[7] ? 18 : 19) :
+            multiply ? (wide_ra == 15 ? 21 : second[4] ? 23 : 22) :
+            divide ? (first[5] ? 24 : 25) :
+            narrow_shift || narrow_asr ? 11 : narrow_compare ? (low_alu == 8 ? 6 : 1) :
+            narrow_rev ? (first[7:6] == 3 ? 16 : 14 + first[7:6]) :
+            narrow_adr ? 1 : 0);
+    wire register_selection {
+        narrow_data, uses_old_dest;
+    }
+    narrow_data = narrow_shift || narrow_compare || narrow_rev || narrow_adr || narrow_asr;
+    uses_old_dest = kind == 12 || kind == 20;
+    // Resolve operand aliases and construct the immediate/shift controls.
+    rd = (narrow_compare ? 15 : narrow_adr ? first[10:8] : narrow_data ? low_d : wide_rd);
+    rn = (narrow_adr ? 15 : narrow_data ? low_d : kind == 12 ? wide_rd : wide_rn);
+    rm = narrow_data ? low_m : wide_rm;
+    ra = uses_old_dest ? wide_rd : wide_ra;
+    immediate = modified || plain_add || mov_top || narrow_adr;
+    value = (modified ? expanded_imm : mov_top ? upper_imm : narrow_adr ? ((ZERO32 + first[7:0]) << 2) :
+             (kind >= 18 && kind <= 20) ? second[4:0] : imm12);
+    register_shift = narrow_shift || wide_reg_shift;
+    shift_type = (narrow_shift ? (low_alu == 7 ? 3 : low_alu - 2) :
+                  narrow_asr ? 2 : wide_reg_shift ? first[6:5] : plain_register ? second[5:4] : 0);
+    shift_count = (narrow_asr ? first[10:6] : kind >= 26 ? ((ZERO5 + second[5:4]) << 3) :
+                   plain_register || (kind >= 18 && kind <= 20) ? wide_shift : 0);
+    immediate_carry = modified && imm12[11:10] != 0;
+    set_flags = (narrow_compare || narrow_shift || narrow_asr ||
+                 ((flexible || wide_reg_shift) && first[4]));
+}
+
+chip M7ThumbShift(value, kind, amount, register_shift, carry_in, result, carry_out) {
+    input shift_inputs {
+        value[32], kind[2], amount[8];
+        register_shift, carry_in;
+    }
+    output shift_result {
+        result[32], carry_out;
+    }
+    const ALL32[32] = 4294967295;
+    const ZERO8[8] = 0;
+    // Immediate LSR/ASR #0 means a 32-bit shift; RRX is handled separately.
+    distance[8] = !register_shift && amount == 0 && (kind == 1 || kind == 2) ? 32 : amount;
+    rotate[8] = ZERO8 + distance[4:0];
+    extend[32] = value[31] && kind == 2 ? ALL32 : 0;
+    right_value[32] = distance >= 32 ? extend : ((value >> distance) | (extend << (32 - distance)));
+    rotation[32] = (value >> rotate) | (value << (32 - rotate));
+    wire edge_cases {
+        rrx, unchanged;
+    }
+    rrx = kind == 3 && !register_shift && amount == 0;
+    unchanged = distance == 0 && !rrx;
+    result = (unchanged ? value : rrx ? ((carry_in ? 2147483648 : 0) | (value >> 1)) :
+              kind == 0 ? (value << distance) : kind == 3 ? rotation : right_value);
+    // Propagate carry-in for unchanged values, otherwise return the shifted-out bit.
+    carry_out = (unchanged ? carry_in : rrx ? value[0] : kind == 0 ?
+                 (distance <= 32 && ((value >> (32 - distance)) & 1) != 0) :
+                 kind == 3 ? result[31] : distance > 32 ? (kind == 2 && value[31]) :
+                 ((value >> (distance - 1)) & 1) != 0);
+}
+
+// Restoring division produces a 32-bit quotient. A zero divisor returns zero
+// with the model's reset configuration of CCR.DIV_0_TRP.
+chip M7ThumbDivideStep(remainder, input_bit, divisor, next_remainder, result_bit) {
+    input stage_inputs {
+        remainder[32], input_bit, divisor[32];
+    }
+    output stage_result {
+        next_remainder[32], result_bit;
+    }
+    const ZERO33[33] = 0;
+    partial[33] = ((ZERO33 + remainder) << 1) | input_bit;
+    difference[33] = partial - divisor;
+    result_bit = !difference[32];
+    next_remainder = result_bit ? difference[31:0] : partial[31:0];
+}
+
+// Restoring integer division, processing one input bit per stage.
+chip M7ThumbDivide(a, b, signed_operation, quotient) {
+    input operands {
+        a[32], b[32], signed_operation;
+    }
+    output quotient_result {
+        quotient[32];
+    }
+    const ZERO32[32] = 0;
+    const residual0[32] = 0;
+    dividend[32] = signed_operation && a[31] ? ZERO32 - a : a;
+    divisor[32] = signed_operation && b[31] ? ZERO32 - b : b;
+    wire quotient_bits {
+        input_bit[31:0], result_bit[31:0];
+    }
+    // Generate 32 independent restoring stages, from MSB to LSB.
+    for (int i = 0; i < 32; i++) {
+        wire division_stages {
+            residual*{i + 1}[32];
+        }
+        input_bit[i] = dividend[i];
+        M7ThumbDivideStep(residual*{i}, input_bit*{31 - i}, divisor,
+                          residual*{i + 1}, result_bit*{31 - i});
+    }
+    magnitude[32] = result_bit[31:0];
+    quotient = divisor == 0 ? 0 : signed_operation && (a[31] ^ b[31]) ? ZERO32 - magnitude : magnitude;
+}
+
+chip M7ThumbData(kind, a, b, accumulate, product, literal, shift_type, shift_count,
+                 register_shift, immediate, immediate_carry, nzcv, result, next_flags) {
+    input operands {
+        kind[5], shift_count[5], shift_type[2], nzcv[4];
+        a[32], b[32], accumulate[32], product[32], literal[32];
+        register_shift, immediate, immediate_carry;
+    }
+    output results {
+        result[32], next_flags[4];
+    }
+    const ALL32[32] = 4294967295;
+    const ZERO33[33] = 0;
+    wire execution_values {
+        shifted[32], quotient[32];
+        shift_carry, carry_in, signed_divide;
+    }
+    carry_in = nzcv[1];
+    signed_divide = kind == 25;
+    shifted_value[32] = register_shift ? a : b;
+    amount[8] = register_shift ? b[7:0] : shift_count;
+    // Decode and apply the flexible shifter operand, including its carry.
+    M7ThumbShift(shifted_value, shift_type, amount, register_shift, carry_in, shifted, shift_carry);
+    divide_a[32] = kind == 24 || kind == 25 ? a : 0;
+    divide_b[32] = kind == 24 || kind == 25 ? b : 1;
+    M7ThumbDivide(divide_a, divide_b, signed_divide, quotient);
+    right[32] = immediate ? literal : shifted;
+    left_num[32] = kind == 5 ? right : a;
+    right_num[32] = kind == 5 ? a : right;
+    wire arithmetic_flags {
+        sub, arithmetic, add_carry, sub_borrow, overflow;
+    }
+    sub = kind == 2 || kind == 4 || kind == 5;
+    arithmetic = kind >= 1 && kind <= 5;
+    sum[33] = ZERO33 + left_num + right_num + (kind == 3 ? carry_in : 0);
+    difference[33] = ZERO33 + left_num - right_num - (kind == 4 ? !carry_in : 0);
+    add_carry = sum[32];
+    sub_borrow = difference[32];
+    numeric[32] = sub ? difference[31:0] : sum[31:0];
+    overflow = ((sub ? left_num[31] != right_num[31] : left_num[31] == right_num[31]) &&
+               numeric[31] != left_num[31]);
+    wire reordering {
+        reverse_bytes[32], reverse_pairs[32], reversed_bits[32];
+    }
+    // Byte and halfword reordering is compile-time-generated combinational wiring.
+    for (int i = 0; i < 4; i++) {
+        reverse_bytes[i * 8 + 7 : i * 8] = b[(3 - i) * 8 + 7 : (3 - i) * 8];
+        reverse_pairs[i * 8 + 7 : i * 8] = b[(i + 1 - 2 * (i % 2)) * 8 + 7 : (i + 1 - 2 * (i % 2)) * 8];
+    }
+    for (int i = 0; i < 32; i++) { reversed_bits[i] = b[31 - i]; }
+    wire leading_half {
+        half_high;
+    }
+    // Count leading zeros hierarchically in 16-, 8-, then 4-bit groups.
+    half_high = b[31:16] != 0;
+    clz_half[16] = half_high ? b[31:16] : b[15:0];
+    wire leading_byte {
+        byte_high;
+    }
+    byte_high = clz_half[15:8] != 0;
+    clz_byte[8] = byte_high ? clz_half[15:8] : clz_half[7:0];
+    wire leading_nibble {
+        nibble_high;
+    }
+    nibble_high = clz_byte[7:4] != 0;
+    clz_nibble[4] = nibble_high ? clz_byte[7:4] : clz_byte[3:0];
+    leading[6] = (b == 0 ? 32 : (half_high ? 0 : 16) + (byte_high ? 0 : 8) +
+                  (nibble_high ? 0 : 4) + (clz_nibble[3] ? 0 : clz_nibble[2] ? 1 : clz_nibble[1] ? 2 : 3));
+    rotated[32] = (b >> shift_count) | (b << (32 - shift_count));
+    // Shared mask supports bitfield extraction and insertion.
+    field_end[5] = literal[4:0];
+    field_width[5] = kind == 20 ? field_end - shift_count : field_end;
+    field_mask[32] = ALL32 >> (31 - field_width);
+    extracted[32] = (a >> shift_count) & field_mask;
+    inserted[32] = (accumulate & (ALL32 ^ (field_mask << shift_count))) | ((a & field_mask) << shift_count);
+    // Select the arithmetic, multiply, divide, bitfield, or reversing result.
+    switch (kind) {
+        case 6: result = a & right; break;
+        case 7: result = a ^ right; break;
+        case 8: result = a | right; break;
+        case 9: result = a | (ALL32 ^ right); break;
+        case 10: result = a & (ALL32 ^ right); break;
+        case 11: result = shifted; break;
+        case 12: result = (literal << 16) | a[15:0]; break;
+        case 13: result = leading; break;
+        case 14: result = reverse_bytes; break;
+        case 15: result = reverse_pairs; break;
+        case 16: result = reverse_pairs[15:0] | (b[7] ? 4294901760 : 0); break;
+        case 17: result = reversed_bits; break;
+        case 18: result = extracted; break;
+        case 19: result = extracted | (((extracted >> field_width) & 1) != 0 ? (ALL32 ^ field_mask) : 0); break;
+        case 20: result = inserted; break;
+        case 21: result = product; break;
+        case 22: result = accumulate + product; break;
+        case 23: result = accumulate - product; break;
+        case 24: result = quotient; break;
+        case 25: result = quotient; break;
+        case 26: result = rotated[15:0] | (rotated[15] ? 4294901760 : 0); break;
+        case 27: result = rotated[7:0] | (rotated[7] ? 4294967040 : 0); break;
+        case 28: result = rotated[15:0]; break;
+        case 29: result = rotated[7:0]; break;
+        default: result = numeric;
+    }
+    // Update NZCV using operation-specific carry and signed-overflow rules.
+    next_flags[3] = result[31];
+    next_flags[2] = result == 0;
+    next_flags[1] = (arithmetic ? (sub ? !sub_borrow : add_carry) :
+                    (immediate ? (immediate_carry ? literal[31] : carry_in) : shift_carry));
+    next_flags[0] = arithmetic ? overflow : nzcv[0];
+}
+

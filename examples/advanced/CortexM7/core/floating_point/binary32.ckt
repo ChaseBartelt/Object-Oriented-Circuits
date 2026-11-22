@@ -1,0 +1,551 @@
+// Decode the FPv5 single-precision forms used by the firmware and RTOS port.
+chip M7FPDecode(ir, fp_op, core_reg, vd, vn, vm, fp_count) {
+    input instruction {
+        ir[32];
+    }
+    output decoded {
+        fp_op[5], core_reg[4], vd[5], vn[5], vm[5], fp_count[6];
+    }
+    // Shared encoding fields retain the widths of the original literals.
+    int FP_CLASS_MASK = 65456;
+    int FP_OPERAND_MASK = 3856;
+    int FP_ARITHMETIC_TAG = 2560;
+    int FP_CONTROL_MASK = 3920;
+    int FP_CONTROL_TAG = 2624;
+
+    // Split Thumb-2 instruction halfwords before testing FP opcode patterns.
+    first[16] = ir[15:0];
+    second[16] = ir[31:16];
+    rt[4] = second[15:12];
+    rn[4] = first[3:0];
+    wire operations {
+        move, system, vstmdb, vldmia, multiple, list_ok, double_list;
+        add_sub, multiply, divide, compare, convert, move_literal, unary, memory, square_root, fused, select_fp;
+        accumulate;
+    }
+    move = ((first & 65504) == 60928 && (second & 3967) == 2576 &&
+            rt != 13 && rt != 15);
+    system = ((first & 65519) == 61153 && second[11:0] == 2576 &&
+              rt != 13 && (first[4] || rt != 15));
+    // The supported list transfers both use base register writeback.
+    vstmdb = (first & FP_CLASS_MASK) == 60704;
+    vldmia = (first & FP_CLASS_MASK) == 60592;
+    multiple = vstmdb || vldmia;
+    add_sub = (first & FP_CLASS_MASK) == 60976 && (second & FP_OPERAND_MASK) == FP_ARITHMETIC_TAG;
+    multiply = (first & FP_CLASS_MASK) == 60960 && (second & FP_OPERAND_MASK) == FP_ARITHMETIC_TAG;
+    accumulate = (first & 65440) == 60928 && (second & FP_OPERAND_MASK) == FP_ARITHMETIC_TAG;
+    divide = (first & FP_CLASS_MASK) == 61056 && (second & FP_CONTROL_MASK) == FP_ARITHMETIC_TAG;
+    compare = ((first & 65470) == 61108 && (second & FP_CONTROL_MASK) == FP_CONTROL_TAG &&
+              (!first[0] || (second & 47) == 0));
+    convert = (((first & 65471) == 61112 || (first & 65470) == 61116) &&
+              (second & FP_CONTROL_MASK) == FP_CONTROL_TAG);
+    move_literal = (first & FP_CLASS_MASK) == 61104 && (second & 4080) == FP_ARITHMETIC_TAG;
+    unary = ((first & 65470) == 61104 && (second & FP_CONTROL_MASK) == FP_CONTROL_TAG &&
+            !(first[0] && second[7]));
+    memory = ((first & 65312) == 60672 && second[11:8] == 10 &&
+             (first[4] || rn != 15));
+
+    // VSQRT and the four fused multiply/accumulate encodings in single precision.
+    square_root = (first & 65471) == 61105 && (second & 4048) == 2752;
+    fused = (((first & FP_CLASS_MASK) == 61088 || (first & FP_CLASS_MASK) == 61072) &&
+             (second & FP_OPERAND_MASK) == FP_ARITHMETIC_TAG);
+    // VSEL.F32 has a four-way condition in the first halfword instead of an IT condition.
+    select_fp = (first & 65408) == 65024 && (second & FP_CONTROL_MASK) == FP_ARITHMETIC_TAG;
+
+    // Assemble S-register indexes; certain encodings reuse core-register fields.
+    vd[4:1] = move ? rn : rt;
+    vd[0] = move ? second[7] : first[6];
+    vn[4:1] = multiple || compare ? rt : rn;
+    vn[0] = multiple || compare ? first[6] && !double_list : second[7];
+    vm[4:1] = second[3:0];
+    vm[0] = second[5];
+    core_reg = multiple || memory ? rn : rt;
+    fp_count = second[5:0];
+
+    const ZERO9[9] = 0;
+    list_end[9] = ZERO9 + vn + second[7:0];
+    // D0–D15 spill into the same register file as pairs of consecutive S registers.
+    double_list = multiple && second[11:8] == 11 && !first[6] && !second[0];
+    list_ok = multiple && (second[11:8] == 10 || double_list) && (second[7:0] != 0 && list_end <= 32) && rn != 15;
+    fp_op = (move ? (first[4] ? 2 : 1) :
+             system ? (first[4] ? (rt == 15 ? 16 : 4) : 3) :
+             list_ok ? (vstmdb ? 5 : 6) :
+             add_sub ? (second[6] ? 8 : 7) :
+             multiply ? 9 : divide ? 10 : compare ? 11 : convert ? 12 :
+             square_root ? 19 : fused ? 20 : select_fp ? 21 : accumulate ? 22 : move_literal ? 13 :
+             memory ? (first[4] ? 14 : 15) :
+             unary ? (first[0] ? 17 : (second[7] ? 18 : 13)) : 0);
+}
+
+chip M7FPRegisters(clk, reset, read_index_a, read_index_b, read_index_c, write_enable, write_index, write_value,
+                   fpscr_write, fpscr_value, value_a, value_b, value_c, fpscr, s0, s15, s16, s31) {
+    input register_control {
+        clk, reset, write_enable, fpscr_write;
+        read_index_a[5], read_index_b[5], read_index_c[5], write_index[5];
+        write_value[32], fpscr_value[32];
+    }
+    output register_values {
+        value_a[32], value_b[32], value_c[32], fpscr[32], s0[32], s15[32], s16[32], s31[32];
+    }
+    // Each word remains visible in the viewer by its S register index.
+    // Thirty-two independent FP registers with three asynchronous read ports.
+    s[32][32] = 0;
+    status[32] = 0;
+    const FPSCR_WRITABLE[32] = 4156555423;
+    value_a = s[read_index_a];
+    value_b = s[read_index_b];
+    value_c = s[read_index_c];
+    fpscr = status;
+    s0 = s[0];
+    s15 = s[15];
+    s16 = s[16];
+    s31 = s[31];
+    // Clocked writes and reset; FPSCR writes retain only architecturally writable bits.
+    clock(clk, 10kHz) {
+        if (reset) {
+            clear { s };
+            status = 0;
+        } else {
+            if (write_enable) { s[write_index] = write_value; }
+            if (fpscr_write) { status = fpscr_value & FPSCR_WRITABLE; }
+        }
+    }
+}
+
+// Decode the shared binary32 fields once per operand. Arithmetic chips keep
+// their own NaN precedence, flush handling, rounding, and exception decisions.
+chip M7FPClassify(value, exponent, fraction, infinity, nan, signaling_nan, subnormal) {
+    input operand {
+        value[32];
+    }
+    output classification {
+        exponent[8], fraction[23], infinity, nan, signaling_nan, subnormal;
+    }
+    // Classification is shared; callers decide how exceptions are prioritized.
+    exponent = value[30:23];
+    fraction = value[22:0];
+    infinity = exponent == 255 && fraction == 0;
+    nan = exponent == 255 && fraction != 0;
+    signaling_nan = nan && !value[22];
+    subnormal = exponent == 0 && fraction != 0;
+}
+
+// Single-precision addition with alignment, normalization and FPSCR rounding.
+chip M7FPAdd(a, b, fpscr, result, next_fpscr) {
+    input operands {
+        a[32], b[32], fpscr[32];
+    }
+    output result_values {
+        result[32], next_fpscr[32];
+    }
+    const ZERO9[9] = 0;
+    const ZERO25[25] = 0;
+    const ZERO27[27] = 0;
+    const ZERO28[28] = 0;
+    const DEFAULT_NAN[32] = 2143289344;
+    wire classification {
+        a_exp[8], a_frac[23], b_exp[8], b_frac[23];
+    }
+
+    wire special_cases {
+        flush, default_nan, a_inf, b_inf, a_nan, b_nan, a_snan, b_snan;
+        a_sub, b_sub, a_flush, b_flush, opposite, invalid, any_nan;
+    }
+    // FPSCR controls subnormal flushing and the result rounding mode.
+    flush = fpscr[24];
+    default_nan = fpscr[25];
+    rounding[2] = fpscr[23:22];
+    M7FPClassify(a, a_exp, a_frac, a_inf, a_nan, a_snan, a_sub);
+    M7FPClassify(b, b_exp, b_frac, b_inf, b_nan, b_snan, b_sub);
+    opposite = a[31] != b[31];
+    invalid = a_snan || b_snan || (a_inf && b_inf && opposite);
+    any_nan = a_nan || b_nan;
+    // An SNaN wins over a QNaN. A quieted payload is returned unless DN is set.
+    nan_bits[32] = (a_snan || (a_nan && !b_snan) ? a : b) | 4194304;
+
+    a_flush = flush && a_sub;
+    b_flush = flush && b_sub;
+    // Order operands by magnitude so subtraction and sign selection are deterministic.
+    a_mag[31] = a_flush ? 0 : a[30:0];
+    b_mag[31] = b_flush ? 0 : b[30:0];
+    wire magnitude_select {
+        a_larger, result_sign, discard;
+    }
+    a_larger = a_mag >= b_mag;
+    result_sign = a_larger ? a[31] : b[31];
+
+    big[31] = a_larger ? a_mag : b_mag;
+    smaller[31] = a_larger ? b_mag : a_mag;
+    big_exponent[8] = big[30:23] == 0 ? 1 : big[30:23];
+    small_exponent[8] = smaller[30:23] == 0 ? 1 : smaller[30:23];
+    big_sig[24] = big[22:0] | (big[30:23] != 0 ? 8388608 : 0);
+    small_sig[24] = smaller[22:0] | (smaller[30:23] != 0 ? 8388608 : 0);
+    // Align the smaller operand; preserve discarded bits in the sticky bit.
+    gap[8] = big_exponent - small_exponent;
+    shift_right[5] = gap > 27 ? 27 : gap;
+    big_ext[27] = (ZERO27 + big_sig) << 3;
+    small_ext[27] = (ZERO27 + small_sig) << 3;
+    small_shifted[27] = small_ext >> shift_right;
+    recovered[27] = small_shifted << shift_right;
+    discard = recovered != small_ext;
+    small_aligned[27] = small_shifted | discard;
+    magnitude[28] = opposite ? (ZERO28 + big_ext - small_aligned) : (ZERO28 + big_ext + small_aligned);
+
+    // Normalize cancellation with a staged leading-zero count. The exponent
+    // stops at one so gradual underflow keeps a subnormal significand.
+    bits[27] = magnitude[26:0];
+    norm32[27] = bits;
+    for (int step = 16; step >= 2; step /= 2) {
+        wire normalization {
+            zero*{step}, norm*{step}[27];
+        }
+        zero*{step} = norm*{step * 2}[26:27 - step] == 0;
+        norm*{step} = zero*{step} ? norm*{step * 2} << step : norm*{step * 2};
+    }
+    leading[5] = ((zero16 ? 16 : 0) | (zero8 ? 8 : 0) |
+                  (zero4 ? 4 : 0) | (zero2 ? 2 : 0) | !norm2[26]);
+
+    shift_left[5] = magnitude[27] ? 0 : (big_exponent > leading ? leading : (big_exponent - 1));
+    normalized[27] = magnitude[27] ? (magnitude[27:1] | magnitude[0]) : (bits << shift_left);
+    bias[9] = ZERO9 + big_exponent + magnitude[27] - shift_left;
+    wire rounding_flags {
+        inexact, increment, overflow, to_infinity, flushed_result, zero_sign, finite;
+    }
+    // Round once using guard/round/sticky information and FPSCR mode.
+    inexact = normalized[2:0] != 0;
+    increment = (rounding == 0 ? (normalized[2] && normalized[1:0] != 0 || normalized[2] && normalized[3]) :
+                 inexact && ((rounding == 1 && !result_sign) || (rounding == 2 && result_sign)));
+    rounded[25] = ZERO25 + normalized[26:3] + increment;
+    final_bias[9] = bias + rounded[24];
+    overflow = final_bias >= 255;
+    to_infinity = rounding == 0 || (rounding == 1 && !result_sign) || (rounding == 2 && result_sign);
+    flushed_result = flush && bias == 1 && normalized != 0 && !normalized[26];
+    zero_sign = opposite ? rounding == 2 : result_sign;
+
+    exp_out[8] = rounded[23] || rounded[24] ? final_bias[7:0] : 0;
+    frac_out[23] = rounded[24] ? rounded[23:1] : rounded[22:0];
+    wire packed_result {
+        unbiased_result[32];
+    }
+    unbiased_result[31] = result_sign;
+    unbiased_result[30:23] = exp_out;
+    unbiased_result[22:0] = frac_out;
+    sign_bit[32] = result_sign ? 2147483648 : 0;
+    finite_bits[32] = (magnitude == 0 ? (zero_sign ? 2147483648 : 0) :
+                       flushed_result ? sign_bit :
+                       overflow ? (sign_bit | (to_infinity ? 2139095040 : 2139095039)) :
+                       unbiased_result);
+
+    finite = !any_nan && !a_inf && !b_inf;
+    result = (any_nan ? (default_nan ? DEFAULT_NAN : nan_bits) :
+              a_inf && b_inf && opposite ? DEFAULT_NAN :
+              a_inf ? a : b_inf ? b : finite_bits);
+    next_fpscr = (fpscr | (a_flush || b_flush ? 128 : 0) | (invalid ? 1 : 0) |
+                  (finite && overflow ? 4 : 0) | (finite && flushed_result ? 8 : 0) |
+                  (finite && !flushed_result && (inexact || overflow) ? 16 : 0));
+}
+
+// Normalize a nonzero binary32 significand, including subnormal inputs.
+chip M7FPNormalize(significand, normalized, shift) {
+    input operand {
+        significand[24];
+    }
+    output normalized_value {
+        normalized[24], shift[5];
+    }
+    // Binary-search leading zeros with generated 16/8/4/2-bit stages.
+    n32[24] = significand;
+    for (int step = 16; step >= 2; step /= 2) {
+        wire stages {
+            step*{step}, n*{step}[24];
+        }
+        step*{step} = n*{step * 2}[23:24 - step] == 0;
+        n*{step} = step*{step} ? n*{step * 2} << step : n*{step * 2};
+    }
+    shift = ((step16 ? 16 : 0) | (step8 ? 8 : 0) |
+              (step4 ? 4 : 0) | (step2 ? 2 : 0) | !n2[23]);
+    normalized = n2[23] ? n2 : n2 << 1;
+}
+
+// Exact 48-bit product of the two 24-bit significands.
+chip M7FPSignificandProduct(a, b, product) {
+    input operands {
+        a[24], b[24];
+    }
+    output product_result {
+        product[48];
+    }
+    const ZERO48[48] = 0;
+    // Six groups of four partial products form the exact 48-bit significand product.
+    extended[48] = ZERO48 + b;
+    for (int i = 0; i < 6; i++) {
+        partial*{i}[48] = ((a[4 * i] ? extended << *{4 * i} : 0) +
+                           (a[4 * i + 1] ? extended << *{4 * i + 1} : 0) +
+                           (a[4 * i + 2] ? extended << *{4 * i + 2} : 0) +
+                           (a[4 * i + 3] ? extended << *{4 * i + 3} : 0));
+    }
+    product = (partial0 + partial1 + partial2 + partial3 + partial4 + partial5);
+}
+
+// Generate one leading bit and 26 fractional bits. The final remainder adds
+// the sticky bit that distinguishes an exact half-way result from a larger one.
+chip M7FPDivideBit(remainder, divisor, next_remainder, bit_out) {
+    input operands {
+        remainder[24], divisor[24];
+    }
+    output step_result {
+        next_remainder[24], bit_out;
+    }
+    const ZERO25[25] = 0;
+    // One restoring-division step emits a quotient bit and updated remainder.
+    trial[25] = (ZERO25 + remainder) << 1;
+    difference[25] = trial - divisor;
+    bit_out = !difference[24];
+    next_remainder = bit_out ? difference[23:0] : trial[23:0];
+}
+
+chip M7FPSignificandQuotient(a, b, result, shift) {
+    input operands {
+        a[24], b[24];
+    }
+    output quotient_result {
+        result[27], shift;
+    }
+    const ZERO25[25] = 0;
+    wire division_state {
+        bit[25:0];
+        rem0[24];
+    }
+    // Normalize the starting numerator, then generate 26 division steps.
+    shift = a < b;
+    numerator[25] = shift ? (ZERO25 + a) << 1 : a;
+    rem0 = numerator - b;
+    for (int i = 0; i < 26; i++) {
+        wire division_stages {
+            rem*{i + 1}[24];
+        }
+        M7FPDivideBit(rem*{i}, b, rem*{i + 1}, bit*{25 - i});
+    }
+    result = 67108864 | bit[25:0] | (rem26 != 0);
+}
+
+// VMUL.F32 and VDIV.F32 share IEEE rounding, exceptional operands and FPSCR flags.
+chip M7FPMulDiv(a, b, fpscr, divide, result, next_fpscr) {
+    input operands {
+        a[32], b[32], fpscr[32], divide;
+    }
+    output result_values {
+        result[32], next_fpscr[32];
+    }
+    const ZERO10[10] = 0;
+    const ZERO25[25] = 0;
+    const DEFAULT_NAN[32] = 2143289344;
+    wire classification {
+        a_exp[8], a_frac[23], b_exp[8], b_frac[23];
+        a_sub, b_sub;
+    }
+
+    wire special_cases {
+        flush, sign, a_inf, b_inf, a_nan, b_nan, a_snan, b_snan, any_nan;
+        a_flush, b_flush, a_zero, b_zero, invalid_pair, div_zero, infinity, zero, finite;
+    }
+    // FPSCR controls subnormal flushing and the result rounding mode.
+    flush = fpscr[24];
+    sign = a[31] != b[31];
+    rounding[2] = fpscr[23:22];
+    M7FPClassify(a, a_exp, a_frac, a_inf, a_nan, a_snan, a_sub);
+    M7FPClassify(b, b_exp, b_frac, b_inf, b_nan, b_snan, b_sub);
+    any_nan = a_nan || b_nan;
+    nan_bits[32] = (a_snan || (a_nan && !b_snan) ? a : b) | 4194304;
+    a_flush = flush && a_sub;
+    b_flush = flush && b_sub;
+    a_zero = a_exp == 0 && (a_frac == 0 || a_flush);
+    b_zero = b_exp == 0 && (b_frac == 0 || b_flush);
+    // Multiplication and division have distinct invalid and divide-by-zero cases.
+    invalid_pair = (divide ? ((a_inf && b_inf) || (a_zero && b_zero)) :
+                            ((a_inf && b_zero) || (b_inf && a_zero)));
+    div_zero = divide && b_zero && !a_zero && !a_inf && !a_nan;
+    infinity = divide ? (a_inf || b_zero) : (a_inf || b_inf);
+    zero = divide ? (a_zero || b_inf) : (a_zero || b_zero);
+    finite = !any_nan && !infinity && !zero;
+
+    a_sig[24] = a_frac | (a_exp == 0 ? 0 : 8388608);
+    b_sig[24] = b_frac | (b_exp == 0 ? 0 : 8388608);
+    wire arithmetic {
+        a_normal[24], b_normal[24], a_shift[5], b_shift[5];
+        product[48], quotient[27], quotient_shift;
+    }
+    M7FPNormalize(a_sig, a_normal, a_shift);
+    M7FPNormalize(b_sig, b_normal, b_shift);
+    M7FPSignificandProduct(a_normal, b_normal, product);
+    M7FPSignificandQuotient(a_normal, b_normal, quotient, quotient_shift);
+
+    // Add 256 to the biased exponent so even the smallest results can use
+    // unsigned comparisons. Normalize the product before rounding it.
+    a_adjusted[8] = a_exp == 0 ? 1 : a_exp;
+    b_adjusted[8] = b_exp == 0 ? 1 : b_exp;
+    // Exponent offset keeps subnormal calculations within unsigned intermediate widths.
+    product_bias[10] = ZERO10 + 129 + a_adjusted + b_adjusted - a_shift - b_shift + product[47];
+    quotient_bias[10] = ZERO10 + 383 + a_adjusted - b_adjusted - a_shift + b_shift - quotient_shift;
+    bias[10] = divide ? quotient_bias : product_bias;
+    product_bits[27] = (product[47] ? (product[47:21] | (product[20:0] != 0)) :
+                                     (product[46:20] | (product[19:0] != 0)));
+    bits[27] = divide ? quotient : product_bits;
+
+    wire rounding_flags {
+        tiny, flushed, inexact, increment, overflow, to_infinity;
+    }
+    tiny = bias < 257;
+    flushed = tiny && flush;
+    gap[10] = tiny ? 257 - bias : 0;
+    down[5] = gap > 27 ? 27 : gap;
+    shifted[27] = bits >> down;
+    restored[27] = shifted << down;
+    normalized[27] = shifted | (bits != restored);
+    // Round once using guard/round/sticky information and FPSCR mode.
+    inexact = normalized[2:0] != 0;
+    increment = (rounding == 0 ? (normalized[2] && (normalized[1:0] != 0 || normalized[3])) :
+                 inexact && ((rounding == 1 && !sign) || (rounding == 2 && sign)));
+    rounded[25] = ZERO25 + normalized[26:3] + increment;
+    final_bias[10] = (tiny ? 257 : bias) + rounded[24];
+    overflow = final_bias >= 511;
+    to_infinity = rounding == 0 || (rounding == 1 && !sign) || (rounding == 2 && sign);
+
+    sign_bit[32] = sign ? 2147483648 : 0;
+    wire packed_result {
+        normal_bits[32];
+    }
+    normal_bits[31] = sign;
+    normal_bits[30:23] = rounded[23] || rounded[24] ? final_bias[7:0] : 0;
+    normal_bits[22:0] = rounded[24] ? rounded[23:1] : rounded[22:0];
+    result = (any_nan ? (fpscr[25] ? DEFAULT_NAN : nan_bits) :
+              invalid_pair ? DEFAULT_NAN :
+              infinity ? (sign_bit | 2139095040) :
+              zero || flushed ? sign_bit :
+              overflow ? (sign_bit | (to_infinity ? 2139095040 : 2139095039)) : normal_bits);
+    next_fpscr = (fpscr | (a_flush || b_flush ? 128 : 0) | (a_snan || b_snan || invalid_pair ? 1 : 0) |
+                  (div_zero ? 2 : 0) | (finite && overflow ? 4 : 0) |
+                  (finite && tiny && (inexact || flushed) ? 8 : 0) |
+                  (finite && !flushed && (inexact || overflow) ? 16 : 0));
+}
+
+// Compare either two IEEE single values or a single value against zero.
+chip M7FPCompare(a, b, fpscr, compare_zero, signal_nan, next_fpscr) {
+    input operands {
+        a[32], b[32], fpscr[32];
+        compare_zero, signal_nan;
+    }
+    output flags {
+        next_fpscr[32];
+    }
+
+    rhs[32] = compare_zero ? 0 : b;
+    a_exp[8] = a[30:23];
+    b_exp[8] = rhs[30:23];
+    a_frac[23] = a[22:0];
+    b_frac[23] = rhs[22:0];
+    wire comparison_flags {
+        a_nan, b_nan, a_flush, b_flush, unordered, invalid, equal, less;
+    }
+    a_nan = a_exp == 255 && a_frac != 0;
+    b_nan = b_exp == 255 && b_frac != 0;
+    a_flush = fpscr[24] && a_exp == 0 && a_frac != 0;
+    b_flush = fpscr[24] && b_exp == 0 && b_frac != 0;
+    // Order operands by magnitude so subtraction and sign selection are deterministic.
+    a_mag[31] = a_flush ? 0 : a[30:0];
+    b_mag[31] = b_flush ? 0 : rhs[30:0];
+    unordered = a_nan || b_nan;
+    invalid = (a_nan && (signal_nan || !a[22])) || (b_nan && (signal_nan || !rhs[22]));
+    equal = a_mag == b_mag && (a_mag == 0 || a[31] == rhs[31]);
+    less = (a[31] != rhs[31] ? a[31] : (a[31] ? a_mag > b_mag : a_mag < b_mag));
+
+    // Return comparison condition flags in FPSCR.NZCV; retain cumulative flags.
+    next_fpscr[31:28] = unordered ? 3 : (equal ? 6 : (less ? 8 : 2));
+    next_fpscr[27:0] = (fpscr[27:0] | (a_flush || b_flush ? 128 : 0) | (invalid ? 1 : 0));
+}
+
+// Convert between 32-bit integers and IEEE single precision with FPSCR flags.
+chip M7FPConvert(value, fpscr, to_integer, signed_integer, toward_zero, result, next_fpscr) {
+    input operands {
+        value[32], fpscr[32];
+        to_integer, signed_integer, toward_zero;
+    }
+    output result_values {
+        result[32], next_fpscr[32];
+    }
+    const ZERO25[25] = 0;
+    const ZERO32[32] = 0;
+    const ZERO33[33] = 0;
+
+    wire integer_rounding {
+        integer_sign, int_inexact, int_increment;
+    }
+    // Integer-to-float: compute absolute magnitude before normalization.
+    integer_sign = signed_integer && value[31];
+    absolute[32] = integer_sign ? (ZERO32 - value) : value;
+    // Staged leading-zero count simultaneously normalizes a nonzero integer.
+    aligned32[32] = absolute;
+    for (int step = 16; step >= 2; step /= 2) {
+        wire normalization_stages {
+            clz*{step}, aligned*{step}[32];
+        }
+        clz*{step} = aligned*{step * 2}[31:32 - step] == 0;
+        aligned*{step} = clz*{step} ? aligned*{step * 2} << step : aligned*{step * 2};
+    }
+    leading[5] = ((clz16 ? 16 : 0) | (clz8 ? 8 : 0) |
+                  (clz4 ? 4 : 0) | (clz2 ? 2 : 0) | !aligned2[31]);
+    normalized[32] = leading[0] ? (aligned2 << 1) : aligned2;
+
+    mode[2] = fpscr[23:22];
+    int_inexact = normalized[7:0] != 0;
+    int_increment = (mode == 0 ? (normalized[7] && (normalized[6:0] != 0 || normalized[8])) :
+                     int_inexact && ((mode == 1 && !integer_sign) || (mode == 2 && integer_sign)));
+    rounded_significand[25] = ZERO25 + normalized[31:8] + int_increment;
+    wire float_result {
+        float_bits[32];
+    }
+    float_bits[31] = integer_sign;
+    float_bits[30:23] = 158 - leading + rounded_significand[24];
+    float_bits[22:0] = rounded_significand[22:0];
+
+    exponent[8] = value[30:23];
+    fraction[23] = value[22:0];
+    wire float_rounding {
+        flush_input, nan_value, guard, sticky, float_inexact, float_increment, invalid;
+    }
+    // Float-to-integer: handle subnormals, discarded bits, and rounding separately.
+    flush_input = fpscr[24] && exponent == 0 && fraction != 0;
+    nan_value = exponent == 255 && fraction != 0;
+    significand[24] = flush_input ? 0 : (fraction | (exponent != 0 ? 8388608 : 0));
+    // For small fractions the bounded shift yields zero integer and guard bits.
+    // Reversing the shift detects any discarded bits for rounding and IXC.
+    gap[8] = exponent >= 150 ? 0 : (150 - exponent);
+    right_shift[5] = gap > 25 ? 25 : gap;
+    extended[25] = (ZERO25 + significand) << 1;
+    window[25] = extended >> right_shift;
+    recovered[25] = window << right_shift;
+    guard = window[0];
+    sticky = recovered != extended;
+    float_inexact = guard || sticky;
+    left_shift[3] = exponent - 150;
+    whole[32] = (exponent >= 150 && exponent < 158 ? ((ZERO32 + significand) << left_shift) :
+                 (exponent == 158 ? ((ZERO32 + significand) << 8) : window[24:1]));
+
+    int_mode[2] = toward_zero ? 3 : mode;
+    float_increment = (int_mode == 0 ? (guard && (sticky || whole[0])) :
+                       float_inexact && ((int_mode == 1 && !value[31]) ||
+                                         (int_mode == 2 && value[31])));
+    rounded_integer[33] = ZERO33 + whole + float_increment;
+    // Clamp invalid/out-of-range conversions to the model-defined saturation result.
+    limit[32] = signed_integer ? (value[31] ? 2147483648 : 2147483647) : 4294967295;
+    invalid = (exponent >= 159 || rounded_integer > limit ||
+               (!signed_integer && value[31] && rounded_integer != 0));
+    saturated[32] = (nan_value || (!signed_integer && value[31])) ? 0 : limit;
+    integral[32] = value[31] ? (ZERO32 - rounded_integer[31:0]) : rounded_integer[31:0];
+
+    result = to_integer ? (invalid ? saturated : integral) : (absolute == 0 ? 0 : float_bits);
+    next_fpscr = (fpscr | (to_integer && flush_input ? 128 : 0) |
+                  (to_integer && invalid ? 1 : 0) |
+                  ((to_integer ? (!invalid && float_inexact) : int_inexact) ? 16 : 0));
+}
+

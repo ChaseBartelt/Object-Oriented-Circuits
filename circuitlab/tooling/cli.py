@@ -50,7 +50,7 @@ def main(argv=None):
         if has_chip(source):
             if args.command == "solve":
                 raise CircuitError("Digital chips use the Verilog compiler. Run check to validate this file.")
-            compile_chips(source)
+            compile_chips(source, path=path)
             print("Check passed (digital chip).")
             return 0
 

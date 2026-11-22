@@ -33,8 +33,8 @@ _DO = re.compile(r"do\s*\{", re.I)
 _DO_TEST = re.compile(r"while\s*\((.*)\)\s*;", re.I)
 _ELSE = re.compile(r"else\s*\{", re.I)
 _DEVICE_BLOCK = re.compile(r"(?:(?:battery|transistor|opamp)\s|(?:analog|digital)\s*(?::\s*math)?\s*[\s{])", re.I)
-_INTERPOLATION_START = "${"
-_INTERPOLATION = re.compile(r"\$\{([^{}]*)\}")
+_INTERPOLATION_STARTS = ("${", "*{")
+_INTERPOLATION = re.compile(r"[$*]\{([^{}]*)\}")
 # Expressions contain only decimal integers, identifiers, supported
 # operators, and parentheses. There are no function calls, attributes,
 # electrical unit suffixes, or evaluation through Python source text.
@@ -64,7 +64,7 @@ MAX_EXPANDED_ROWS = 100_000
 
 
 def expand_digital_loops(rows):
-    """Unroll bounded for loops, leaving signal-dependent if/clock behavior intact."""
+    """Unroll static for loops and generated identifiers, preserving runtime behavior."""
     # This entry point uses (text, line) digital rows. A temporary Binding lets
     # it reuse the static expression/update helpers; returned rows keep their
     # original line numbers for the later HDL validators.
@@ -94,6 +94,11 @@ def expand_digital_loops(rows):
             text, line = block[index]
             row = text, line, Binding()
             index += 1
+            # Resolve explicit generated names against the current loop scope before
+            # substituting bare indexes. The shared evaluator validates expressions;
+            # digital expressions never opt into main's wire-counter shorthand.
+            if any(start in text for start in _INTERPOLATION_STARTS):
+                text, _, _ = _interpolate(row, scope, connections=False)
             match = re.fullmatch(r"for\s*\((.*)\)\s*\{", text)
             if match:
                 pieces = match[1].split(";")
@@ -173,7 +178,7 @@ def is_control_block(text):
     return text.endswith("{") and bool(_HEADER.match(text))
 
 
-# Declarations, mutations, braced controls, and ${...} interpolation opt
+# Declarations, mutations, braced controls, and ${...}/*{...} interpolation opt
 # a body into static expansion. A plain assignment alone is ambiguous
 # with electrical quantities, so it is classified later using scope.
 def is_control_statement(text):
@@ -184,7 +189,7 @@ def is_control_statement(text):
         or _DECLARATION_START.match(statement)
         or _INCREMENT.fullmatch(statement)
         or _MUTATION.match(statement)
-        or _INTERPOLATION_START in statement
+        or any(start in statement for start in _INTERPOLATION_STARTS)
         or COUNT_DECLARATION.fullmatch(statement)
         or has_count_reference(statement)
     )
@@ -636,7 +641,7 @@ class _LoopSignal(Exception):
 def _interpolate(row, scope, counts=None, *, connections=True):
     text, line, binding = row
 
-    # Evaluate only the explicit ${expression} placeholder. Lowercase output
+    # Both explicit ${expression} and *{expression} spellings use this evaluator. Lowercase output
     # renders Boolean literals as true/false; integer values use decimal text.
     def expand(match):
         value = _evaluate(_Expression(match[1], row).parse(), scope, row)
@@ -651,10 +656,10 @@ def _interpolate(row, scope, counts=None, *, connections=True):
 
     interpolate = lambda text: _INTERPOLATION.sub(expand, text)
     text = (interpolate_connections(row, interpolate, resolve) if connections else interpolate(text))
-    # The supported placeholders are not nested. A remaining ${ after the
+    # The supported placeholders are not nested. A remaining opener after the
     # single substitution pass indicates an unfinished/unsupported placeholder
     # and must not leak into generated component or net names.
-    if _INTERPOLATION_START in text:
+    if any(start in text for start in _INTERPOLATION_STARTS):
         raise _value_error(row, "Close the compile-time interpolation with }.")
     # Every generated variant retains the template's original line and binding,
     # so errors and schematic edits still identify the source template row.

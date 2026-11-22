@@ -1,0 +1,357 @@
+// Cortex-M7 boot walkthrough with an original, runnable OOC Thumb subset.
+// In Logic simulation, click Reset and then Step. Watch MSP, PC, IR, NZCV,
+// R0 through R3, and RAM0. LAST_PC and LAST_IR identify the retired instruction.
+// The first two edges read the initial MSP and the reset entry from flash.
+
+include("core/thumb/base.ckt");
+
+// Decode the 16-bit Thumb instruction subset used by the boot walkthrough.
+chip M7ThumbDecode(ir, rd, rn, imm8, move_imm, add_imm, sub_imm, compare_imm,
+                   load_word, store_word, load_literal, branch_cond, branch,
+                   supported) {
+    input instruction {
+        ir[16];
+    }
+    output decoded {
+        rd[3], rn[3], imm8[8];
+        move_imm, add_imm, sub_imm, compare_imm, load_word, store_word, load_literal;
+        branch_cond, branch, supported;
+    }
+
+    family[5] = ir[15:11];
+    move_imm = family == 4;
+    compare_imm = family == 5;
+    add_imm = family == 6;
+    sub_imm = family == 7;
+    load_literal = family == 9;
+    store_word = family == 12;
+    load_word = family == 13;
+    branch_cond = ir[15:12] == 13 && ir[11:8] < 14;
+    branch = family == 28;
+    supported = (move_imm || add_imm || sub_imm || compare_imm || load_word || store_word ||
+                 load_literal || branch_cond || branch || ir == 48896);
+
+    // Arithmetic and literal loads encode Rd in [10:8]. Register-based
+    // word transfers encode their data register in [2:0] and base in [5:3].
+    rd = load_word || store_word ? ir[2:0] : ir[10:8];
+    rn = load_word || store_word ? ir[5:3] : ir[10:8];
+    imm8 = ir[7:0];
+}
+
+// Keep R0–R12 in independent 32-bit words; this demo decodes low registers only.
+chip M7ThumbRegisters(clk, reset, write, rd, rn, write_data, operand, store_data,
+                      r0, r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12) {
+    input control {
+        clk, reset, write;
+        rd[3], rn[3];
+        write_data[32];
+    }
+    output register_file {
+        operand[32], store_data[32];
+        for (int i = 0; i < 13; i++) { r*{i}[32]; }
+    }
+    // Register storage persists across cycles and resets as a group.
+    regs[13][32] = 0;
+
+    operand = regs[rn];
+    store_data = regs[rd];
+    for (int i = 0; i < 13; i++) { r*{i} = regs[i]; }
+
+    clock(clk, 10kHz) {
+        if (reset) {
+            clear { regs };
+        } else if (write) {
+            regs[rd] = write_data;
+        }
+    }
+}
+
+// Compute immediate arithmetic and NZCV flags for the teaching instruction subset.
+chip M7ThumbALU(operand, imm8, move_imm, add_imm, condition, nzcv,
+                result, next_nzcv, condition_met) {
+    input operands {
+        operand[32], imm8[8], condition[4], nzcv[4];
+        move_imm, add_imm;
+    }
+    output arithmetic {
+        result[32], next_nzcv[4];
+        condition_met;
+    }
+
+    const ZERO33[33] = 0;
+    sum[33] = ZERO33 + operand + imm8;
+    difference[32] = operand - imm8;
+    result = move_imm ? imm8 : (add_imm ? sum[31:0] : difference);
+    next_nzcv[3] = result[31];
+    next_nzcv[2] = result == 0;
+    next_nzcv[1] = move_imm ? nzcv[1] : (add_imm ? sum[32] : operand >= imm8);
+    // The immediate is unsigned and extends with zero bits.
+    next_nzcv[0] = move_imm ? nzcv[0] : (add_imm ? !operand[31] && result[31]
+                                                  : operand[31] && !result[31]);
+
+    M7ThumbCondition(condition, nzcv, condition_met);
+}
+
+// Derive aligned literal loads, word transfers, and PC-relative branch targets.
+chip M7ThumbAddresses(pc, ir, operand, load_literal, branch,
+                      sequential, effective, branch_target) {
+    input instruction {
+        pc[32], ir[16], operand[32];
+        load_literal, branch;
+    }
+    output addresses {
+        sequential[32], effective[32], branch_target[32];
+    }
+    const ZERO32[32] = 0;
+    const WORD_MASK[32] = 4294967292;
+    const SIGN9[32] = 4294966784;
+    const SIGN12[32] = 4294963200;
+
+    // The architectural PC for these encodings is four bytes ahead.
+    // Thumb branches and PC-relative loads use the architectural PC value.
+    architectural_pc[32] = pc + 4;
+    literal_address[32] = (architectural_pc & WORD_MASK) + ((ZERO32 + ir[7:0]) << 2);
+    data_address[32] = operand + ((ZERO32 + ir[10:6]) << 2);
+    relative8[32] = (ZERO32 + ir[7:0]) << 1;
+    relative11[32] = (ZERO32 + ir[10:0]) << 1;
+    signed8[32] = ir[7] ? (relative8 | SIGN9) : relative8;
+    signed11[32] = ir[10] ? (relative11 | SIGN12) : relative11;
+    sequential = pc + 2;
+    effective = load_literal ? literal_address : data_address;
+    branch_target = architectural_pc + (branch ? signed11 : signed8);
+}
+
+// Boot from the vector table, then retire one supported Thumb instruction per cycle.
+chip M7ThumbCore(clk, reset, ir, fetch_ok, bus_data, bus_valid,
+                 pc, msp, lr, nzcv, booted, fault, fault_code, last_pc, last_ir,
+                 bus_addr, bus_write_data, bus_read, bus_write,
+                 r0, r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12) {
+    input execution {
+        clk, reset, fetch_ok, bus_valid;
+        ir[16], bus_data[32];
+    }
+    output processor_state {
+        pc[32], msp[32], lr[32], last_pc[32], bus_addr[32], bus_write_data[32];
+        last_ir[16], nzcv[4], fault_code[3];
+        booted, fault, bus_read, bus_write;
+        for (int i = 0; i < 13; i++) { r*{i}[32]; }
+    }
+
+    const WORD_MASK[32] = 4294967292;
+    const HALFWORD_MASK[32] = 4294967294;
+    phase[2] = 0;
+    current_pc[32] = 0;
+    stack_pointer[32] = 0;
+    flags[4] = 0;
+    failure[3] = 0;
+    retired_pc[32] = 0;
+    retired_ir[16] = 0;
+
+    wire decode_signals {
+        rd[3], rn[3], imm8[8];
+        move_imm, add_imm, sub_imm, compare_imm, load_word, store_word, load_literal;
+        branch_cond, branch, supported;
+        operand[32], result[32], sequential[32], effective[32], branch_target[32];
+        next_nzcv[4];
+        condition_met;
+    }
+    condition[4] = ir[11:8];
+    wire execution_control {
+        load, active, arithmetic, write_register, take_branch;
+    }
+
+    M7ThumbDecode(ir, rd, rn, imm8, move_imm, add_imm, sub_imm, compare_imm,
+                  load_word, store_word, load_literal, branch_cond, branch, supported);
+    M7ThumbALU(operand, imm8, move_imm, add_imm, condition, nzcv, result, next_nzcv, condition_met);
+    M7ThumbAddresses(pc, ir, operand, load_literal, branch, sequential, effective, branch_target);
+    M7ThumbRegisters(clk, reset, write_register, rd, rn, write_data, operand, bus_write_data,
+                     r0, r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12);
+
+    pc = current_pc;
+    msp = stack_pointer;
+    lr = 4294967295;  // Reset value. This subset has no link or exception return instructions.
+    nzcv = flags;
+    fault_code = failure;
+    fault = failure != 0;
+    booted = phase == 2;
+    last_pc = retired_pc;
+    last_ir = retired_ir;
+    load = load_word || load_literal;
+    active = !reset && booted && !fault && fetch_ok && supported;
+    arithmetic = move_imm || add_imm || sub_imm;
+    write_register = active && (arithmetic || (load && bus_valid));
+    write_data[32] = load ? bus_data : result;
+    take_branch = branch || (branch_cond && condition_met);
+    // Bus addresses 0 and 4 read the initial stack pointer and reset vector.
+    bus_addr = phase == 0 ? 0 : (phase == 1 ? 4 : (load || store_word ? effective : 0));
+    bus_read = !reset && !fault && (!booted || (active && load));
+    bus_write = active && store_word;
+
+    clock(clk, 10kHz) {
+        if (reset) {
+            clear {
+                phase, current_pc, stack_pointer, flags, failure, retired_pc, retired_ir
+            };
+        } else if (!fault) {
+            if (phase == 0) {
+                if (bus_valid) {
+                    stack_pointer = bus_data & WORD_MASK;
+                    phase = 1;
+                } else { failure = 1; }
+            } else if (phase == 1) {
+                if (bus_valid && bus_data[0]) {
+                    current_pc = bus_data & HALFWORD_MASK;
+                    phase = 2;
+                } else { failure = 1; }
+            } else if (!fetch_ok) {
+                failure = 2;
+            } else if (!supported) {
+                failure = 3;
+            } else if ((load || store_word) && !bus_valid) {
+                failure = 4;
+            } else {
+                retired_pc = current_pc;
+                retired_ir = ir;
+                current_pc = take_branch ? branch_target : sequential;
+                if (arithmetic || compare_imm) { flags = next_nzcv; }
+            }
+        }
+    }
+}
+
+// Editable ROM: reset vectors, test program, and literal pool.
+chip M7DemoFlashWord(address, word, valid) {
+    input address {
+        address[32];
+    }
+    output rom_data {
+        word[32];
+        valid;
+    }
+
+    arm(address, word, valid) {
+        .word 0x20000040;  // Initial MSP
+        .word reset + 1;   // Thumb bit on the reset vector
+    reset:
+        LDR r1, ram_base;
+        MOVS r0, #5;
+        MOVS r2, #3;
+    loop:
+        ADDS r0, #2;
+        SUBS r2, #1;
+        BNE loop;
+        CMP r0, #11;
+        BEQ done;
+        MOVS r0, #255;     // Failure marker
+        NOP;
+    done:
+        STR r0, [r1];
+        LDR r3, [r1];
+        NOP;
+    idle:
+        B idle;
+    ram_base:
+        .word 0x20000000;
+    }
+}
+
+// Read the instruction halfword selected by PC and a separate data word.
+chip M7DemoFlash(pc, address, enabled, ir, fetch_ok, data, valid) {
+    input fetch {
+        enabled;
+        pc[32], address[32];
+    }
+    output rom_data {
+        ir[16];
+        data[32];
+        fetch_ok, valid;
+    }
+    const WORD_MASK[32] = 4294967292;
+    aligned_pc[32] = pc & WORD_MASK;
+    wire fetch_signals {
+        fetch_word[32];
+        mapped;
+    }
+
+    M7DemoFlashWord(aligned_pc, fetch_word, mapped);
+    M7DemoFlashWord(address, data, valid);
+    fetch_ok = enabled && mapped && !pc[0];
+    ir = fetch_ok ? (pc[1] ? fetch_word[31:16] : fetch_word[15:0]) : 0;
+}
+
+// Model 16 aligned SRAM words starting at 0x20000000.
+chip M7DemoRAM(clk, reset, write, address, write_data, data, valid, word0, word1) {
+    input bus {
+        clk, reset, write;
+        address[32], write_data[32];
+    }
+    output memory {
+        data[32], word0[32], word1[32];
+        valid;
+    }
+    const RAM_BASE[32] = 536870912;
+    const RAM_END[32] = 536870976;
+    words[16][32] = 0;
+    index[4] = address[5:2];
+    valid = address >= RAM_BASE && address < RAM_END && address[1:0] == 0;
+    data = valid ? words[index] : 0;
+    word0 = words[0];
+    word1 = words[1];
+
+    // Writes are synchronous; invalid or unaligned addresses never modify RAM.
+    clock(clk, 10kHz) {
+        if (reset) {
+            clear { words };
+        } else if (write && valid) {
+            words[index] = write_data;
+        }
+    }
+}
+
+// Select flash or RAM data for each CPU bus transaction.
+chip M7DemoMemory(clk, reset, read, write, address, write_data, flash_data, flash_valid,
+                  bus_data, bus_valid, word0, word1) {
+    input bus {
+        clk, reset, read, write, flash_valid;
+        address[32], write_data[32], flash_data[32];
+    }
+    output memory {
+        bus_data[32], word0[32], word1[32];
+        bus_valid;
+    }
+    wire ram_signals {
+        ram_data[32];
+        ram_valid;
+    }
+
+    M7DemoRAM(clk, reset, write, address, write_data, ram_data, ram_valid, word0, word1);
+    bus_data = read ? (flash_valid ? flash_data : ram_data) : 0;
+    bus_valid = (read && (flash_valid || ram_valid)) || (write && ram_valid);
+}
+
+// Top-level viewer exposes CPU state, bus transactions, and the first two RAM words.
+main CORTEX_M7_THUMB_DEMO {
+    input controls {
+        CLK, RESET;
+    }
+    output state {
+        PC[32], MSP[32], LR[32], LAST_PC[32];
+        IR[16], LAST_IR[16], NZCV[4], FAULT_CODE[3];
+        BOOTED, FAULT;
+        for (int i = 0; i < 13; i++) { R*{i}[32]; }
+        BUS_ADDR[32], BUS_WDATA[32], BUS_RDATA[32], RAM0[32], RAM1[32];
+        BUS_READ, BUS_WRITE;
+    }
+    wire interconnects {
+        fetch_ok, flash_valid, bus_valid;
+        flash_data[32];
+    }
+
+    M7DemoFlash(PC, BUS_ADDR, BOOTED, IR, fetch_ok, flash_data, flash_valid);
+    M7DemoMemory(CLK, RESET, BUS_READ, BUS_WRITE, BUS_ADDR, BUS_WDATA, flash_data, flash_valid,
+                  BUS_RDATA, bus_valid, RAM0, RAM1);
+    M7ThumbCore(CLK, RESET, IR, fetch_ok, BUS_RDATA, bus_valid,
+                 PC, MSP, LR, NZCV, BOOTED, FAULT, FAULT_CODE, LAST_PC, LAST_IR,
+                 BUS_ADDR, BUS_WDATA, BUS_READ, BUS_WRITE,
+                 R0, R1, R2, R3, R4, R5, R6, R7, R8, R9, R10, R11, R12);
+}

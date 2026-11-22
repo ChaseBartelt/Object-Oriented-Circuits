@@ -8,7 +8,10 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass
 from itertools import groupby
 
-from circuitlab.layout.geometry import Layout, add_wire, component_pins, grid_symbol, grid_terminal, ground_at, input_source_indices, placement_order
+from circuitlab.layout.geometry import (
+    Layout, add_wire, component_pins, grid_symbol, grid_terminal, ground_at,
+    input_source_indices, package_width, placement_order, quad_package, quad_routing_pins,
+)
 from circuitlab.layout.automatic import series_runs, source_cells
 
 
@@ -94,6 +97,8 @@ def labeled(circuit, labels):
     if any(part.kind == "H" for part in parts):
         pitch += 2.5
         row_pitch += 0.7
+    widest_quad = max((package_width(part) for part in parts if quad_package(part)), default=0)
+    pitch = max(pitch, widest_quad + 3 + max(map(len, names.values()), default=0) * .7)
     # Convert each cell to drawing coordinates, with later rows below earlier
     # ones because positive y points upward. Keep symbols in component order
     # so a pin's stored component index still selects its placed symbol.
@@ -107,11 +112,19 @@ def labeled(circuit, labels):
         layout.positions[part.name] = symbol[1]
         layout.symbols.append(symbol)
 
+    quad_terminals = {
+        i: {(left, round(offset, 8)): (contact, approach)
+            for _, left, offset, contact, approach in quad_routing_pins(part, a, b)}
+        for i, (part, a, b, _) in enumerate(layout.symbols) if quad_package(part, a, b)
+    }
+
     # Translate a pin descriptor to its actual contact coordinate. Sources
     # are vertical and use their stored endpoints; other parts use the shared
     # resolver, including amplifier supply contacts and package pin offsets.
     def terminal(pin):
         i, _, left, offset = pin
+        if i in quad_terminals:
+            return quad_terminals[i][left, round(offset, 8)][0]
         if parts[i].is_source:
             return layout.symbols[i][1 if left else 2]
         _, a, b, _ = layout.symbols[i]
@@ -137,6 +150,8 @@ def labeled(circuit, labels):
                 and first[3] == second[3]
                 and not parts[first[0]].is_source
                 and not parts[second[0]].is_source
+                and all(not quad_package(parts[i]) or abs(offset) < package_width(parts[i]) / 2
+                        for i, _, _, offset in (first, second))
             ):
                 a, b = terminal(first), terminal(second)
                 add_wire(layout, net, a, b)
@@ -150,12 +165,15 @@ def labeled(circuit, labels):
             # Pin side controls stub direction for ordinary parts. Source stubs use
             # their vertical endpoint geometry instead of the horizontal side hint.
             left = pin[2] and not part.is_source
+            vertical_pin = pin[0] in quad_terminals and abs(pin[3]) > package_width(part) / 2
             # Put a lower source return just beneath the source. A grounded upper
             # terminal instead gets a short side lead so the ground symbol does not
             # sit inside the source body.
             if grounded and part.is_source:
                 lower = min(point[1] for point in layout.symbols[pin[0]][1:3])
                 b = (a[0], a[1] - 0.3) if a[1] == lower else (a[0] + 0.72, a[1])
+            elif vertical_pin:
+                b = (a[0], a[1] + (.72 if pin[3] > 0 else -.72))
             else:
                 b = (a[0] + (-0.72 if left else 0.72), a[1])
                 # Move an upper left ground farther outward to keep its symbol clear
@@ -169,6 +187,8 @@ def labeled(circuit, labels):
             # placement hints, not changes to electrical identity.
             if grounded:
                 ground_at(layout, b, net)
+                if vertical_pin and pin[3] > 0:
+                    layout.ground_rotations[b] = 2
             else:
                 # Lower-offset contacts normally put their label below the stub. Package
                 # pins use their own regular row arrangement instead of this adjustment.

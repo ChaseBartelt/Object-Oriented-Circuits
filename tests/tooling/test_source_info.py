@@ -25,7 +25,9 @@ class SourceInfoTest(unittest.TestCase):
     def test_shared_grammar_highlights_vector_ports_and_internal_wires(self):
         path = Path(__file__).resolve().parents[2] / 'ide/vscode/syntaxes/OOC.json'
         grammar = json.loads(path.read_text(encoding='utf-8'))['repository']
-        direction = re.compile(grammar['properties']['patterns'][0]['match'])
+        directions = {role: re.compile(next(pattern['match'] for pattern in grammar['properties']['patterns']
+                      if pattern.get('name') == f'meta.declaration.{role}.ooc'))
+                      for role in ('input', 'output', 'wire')}
         for source, expected in (
             ('a[8], b[8] = input;', 'input'),
             ('data[16] = output;', 'output'),
@@ -37,7 +39,7 @@ class SourceInfoTest(unittest.TestCase):
             ('LEDR[9:0] = output;', 'output'),
         ):
             with self.subTest(source=source):
-                match = direction.match(source)
+                match = directions[expected].match(source)
                 self.assertIsNotNone(match)
                 self.assertEqual(match[3], expected)
 
@@ -48,14 +50,13 @@ class SourceInfoTest(unittest.TestCase):
         for name in ('SelectByte', 'CountBy50', 'Tone', '_Private'):
             self.assertEqual(call.search(f'{name}(a, b);')[0], name)
         self.assertIsNone(call.search('data = input;'))
-        operator = re.compile(grammar['operators']['patterns'][0]['match'])
-        expression = next(pattern['match'] for pattern in grammar['expression']['patterns']
-                          if pattern.get('name') == 'keyword.operator.ooc')
+        operators = [re.compile(pattern['match']) for pattern in grammar['operators']['patterns']
+                     if 'match' in pattern]
+        self.assertIn({'include': '#operators'}, grammar['expression']['patterns'])
         for token in ('+', '-', '+=', '-=', '!', '&', '|', '^', '&&', '||', '==', '<=',
                       '<<', '>>', '<<=', '>>=', '&=', '|=', '^='):
             with self.subTest(token=token):
-                self.assertIsNotNone(operator.fullmatch(token))
-                self.assertIsNotNone(re.fullmatch(expression, token))
+                self.assertTrue(any(operator.fullmatch(token) for operator in operators))
         for token in ('[', ']'):
             self.assertIsNotNone(re.fullmatch(grammar['punctuation']['match'], token))
 

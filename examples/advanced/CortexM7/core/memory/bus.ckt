@@ -1,0 +1,171 @@
+
+ // Cortex-M7 memory subsystem: bus routing, interrupts, MPU, and system control.
+chip M7FirmwareMemory(clk, reset, read_enable, write_enable, address, size_code, write_data,
+                      flash_data, flash_mapped, systick_ack, pendsv_ack, privileged, ipsr, pending_exception, depth,
+                      irq0, irq0_ack, irq0_active, irq0_return, irq0_enabled, irq0_pending, irq0_priority,
+                      raise_fault, set_cfsr, set_hfsr, cfsr, hfsr, bfar, mmfar, cpacr, fpccr, fpdscr,
+                      lazy_active, fpcar, data_privileged,
+                      pc, wide, faultmask, vector_access, fetch_allowed, data_allowed,
+                      bus_data, bus_valid, irq_pending, pendsv_pending, svc_priority, pendsv_priority,
+                      systick_priority, vector_base, sev_on_pend, sleep_on_exit,
+                      word0, word1, word2, word3, word4, word5, word6, word7, word8, word9, word10,
+                      irq1, irq1_ack, irq1_active, irq1_return, irq1_enabled, irq1_pending, irq1_priority,
+                      usagefault_enabled, usagefault_priority, usagefault_active, divzero_trap,
+                      memmanage_enabled, memmanage_priority, memmanage_active,
+                      busfault_enabled, busfault_priority, busfault_active,
+                      nmi_pending, nmi_set, priority_group, platform_status, irq_numbers, audio_trace,
+                      irq_lines, external_ack_lines, external_active_lines, external_return_lines,
+                      external_exception, external_priority, external_active_priority, external_pending_lines,
+                      serial_trace) {
+
+    // Clock, CPU bus controls, and interrupt handshake signals.
+    input controls {
+        clk, reset, read_enable, write_enable, flash_mapped, systick_ack, pendsv_ack, privileged;
+        irq0, irq0_ack, irq0_active, irq0_return;
+        irq1, irq1_ack, irq1_active, irq1_return;
+        usagefault_active, memmanage_active, busfault_active, nmi_pending;
+        irq_lines[240], external_ack_lines[240], external_active_lines[240], external_return_lines[240];
+    }
+
+    // External interrupt arbitration and serial peripheral trace.
+    output external_interrupts {
+        external_exception[9], external_priority[8], external_active_priority[8];
+        external_pending_lines[240], serial_trace[384];
+    }
+
+    // CPU execution state, fault requests, and memory addresses.
+    input processor_state {
+        raise_fault, wide, faultmask, vector_access, lazy_active, data_privileged;
+        address[32], write_data[32], flash_data[32], set_cfsr[32], set_hfsr[32], pc[32], fpcar[32];
+        size_code[2], ipsr[9], pending_exception[9], depth[5];
+    }
+
+    // System registers, memory results, interrupt status, and RAM probes.
+    output system_state {
+        bus_data[32], vector_base[32];
+        cfsr[32], hfsr[32], bfar[32], mmfar[32], cpacr[32], fpccr[32], fpdscr[32];
+        fetch_allowed, data_allowed;
+        for (int i = 0; i < 11; i++) { word*{i}[32]; }
+        svc_priority[8], pendsv_priority[8], systick_priority[8], irq0_priority[8];
+        irq1_enabled, irq1_pending, irq1_priority[8];
+        usagefault_enabled, usagefault_priority[8], divzero_trap;
+        memmanage_enabled, memmanage_priority[8];
+        busfault_enabled, busfault_priority[8];
+        nmi_set, priority_group[3], platform_status[2], irq_numbers[10], audio_trace[162];
+        bus_valid, irq_pending, pendsv_pending, irq0_enabled, irq0_pending, sev_on_pend, sleep_on_exit;
+    }
+
+    const ZERO5[5] = 0;
+
+    wire access_control {
+        aligned, device_write, peripheral_read, access_allowed;
+        fault_priority, unalign_trap, normal_ram;
+    }
+
+    // Identify RAM regions that permit modeled unaligned accesses.
+    normal_ram = (address < 65536 || (address >= 536870912 && address < 537001984) ||
+                  (address >= 603979776 && address < 604504064) ||
+                  (address >= 805306368 && address < 805601280) ||
+                  (address >= 939524096 && address < 939589632) ||
+                  (address >= 947912704 && address < 947916800));
+
+    // Enforce byte/halfword/word alignment and the configurable unaligned trap.
+    aligned = (size_code == 0 || (size_code == 1 && !address[0]) ||
+               (size_code == 2 && address[1:0] == 0) ||
+               (audio_board && !unalign_trap && normal_ram && size_code < 3));
+
+    wire peripheral_bus {
+        device_data[32], reset_base[32], timer_data[32], scb_data[32], nvic_data[32], first_words[352];
+        fault_data[32], fp_data[32], mpu_data[32], cache_data[32];
+        device_mapped, timer_mapped, scb_mapped, nvic_mapped, fault_mapped;
+        fp_mapped, mpu_mapped, cache_mapped, system_mapped;
+    }
+
+    wire interrupt_control {
+        pendsv_set, pendsv_clear, systick_set, systick_clear;
+        sys_read, sys_write, external_pending, combined_irq0, combined_irq1, audio_board;
+        device_irqs[240], combined_lines[240];
+    }
+
+    // Combine external IRQ inputs with platform-generated peripheral interrupts.
+    external_pending = external_pending_lines != 0;
+    combined_lines = irq_lines | device_irqs;
+
+    // Board-specific SRAM, peripheral registers, and optional audio hardware.
+    M7FirmwarePlatform(clk, reset, read_enable, device_write, address, size_code, write_data,
+                       reset_base, device_data, device_mapped, first_words, platform_status,
+                       audio_board, irq_numbers, device_irqs, audio_trace, serial_trace, peripheral_read);
+
+    combined_irq0 = irq0;
+    combined_irq1 = irq1;
+
+    // Core-clock timer and SysTick interrupt generation.
+    M7FirmwareSysTick(clk, reset, sys_read, sys_write, address, size_code, write_data,
+                      systick_ack, systick_set, systick_clear, timer_data, timer_mapped, irq_pending, audio_board);
+
+    // System Control Block: exception priorities, vector base, faults, and sleep control.
+    M7FirmwareSCB(clk, reset, sys_read, sys_write, address, size_code, write_data, ipsr, pending_exception,
+                  pendsv_pending, irq_pending, external_pending, depth, scb_data, scb_mapped, svc_priority, pendsv_priority,
+                  systick_priority, vector_base, pendsv_set, pendsv_clear, systick_set, systick_clear,
+                  sev_on_pend, sleep_on_exit, usagefault_enabled, usagefault_priority, usagefault_active, divzero_trap,
+                  memmanage_enabled, memmanage_priority, memmanage_active, busfault_enabled, busfault_priority, busfault_active,
+                  nmi_pending, nmi_set, priority_group, reset_base, audio_board, unalign_trap);
+
+    // PendSV state is updated by SCB requests and acknowledged by the CPU.
+    M7FirmwarePendSV(clk, reset, pendsv_set, pendsv_clear, pendsv_ack, pendsv_pending);
+
+    // NVIC: IRQ enable/pending state, priorities, acknowledgments, and nesting.
+    M7FirmwareNVIC(clk, reset, sys_read, sys_write, address, size_code, write_data,
+                   combined_irq0, irq0_ack, irq0_active, irq0_return, nvic_data, nvic_mapped,
+                   irq0_enabled, irq0_pending, irq0_priority,
+                   combined_irq1, irq1_ack, irq1_active, irq1_return, irq1_enabled, irq1_pending, irq1_priority,
+                   irq_numbers, audio_board,
+                   combined_lines, external_ack_lines, external_active_lines, external_return_lines,
+                   external_exception, external_priority, external_active_priority, external_pending_lines);
+
+    // Fault registers: CFSR, HFSR, BFAR, and MMFAR.
+    M7FirmwareFaultStatus(clk, reset, sys_read, sys_write, address, size_code, write_data,
+                          raise_fault, set_cfsr, set_hfsr, address, fault_data, fault_mapped, cfsr, hfsr, bfar, mmfar);
+
+    // FPU configuration, access permissions, and lazy context preservation.
+    M7FirmwareFPControl(clk, reset, sys_read, sys_write, address, size_code, write_data,
+                        lazy_active, fpcar, fp_data, fp_mapped, cpacr, fpccr, fpdscr);
+
+    // Cache control registers and memory protection.
+    M7FirmwareCacheControl(clk, reset, audio_board, sys_read, sys_write, address, size_code,
+                           write_data, cache_data, cache_mapped);
+    M7FirmwareMPU(clk, reset, sys_read, sys_write, address, size_code, write_data, privileged,
+                   data_privileged, fault_priority, pc, wide, address, write_enable,
+                   mpu_data, mpu_mapped, fetch_allowed, data_allowed);
+
+    // Privilege and MPU checks gate system register access and device transfers.
+    sys_read = read_enable && data_privileged;
+    sys_write = write_enable && data_privileged;
+    fault_priority = ipsr == 2 || ipsr == 3 || faultmask;
+    access_allowed = vector_access || data_allowed;
+
+    system_mapped = (data_privileged &&
+                     (timer_mapped || scb_mapped || nvic_mapped || fault_mapped ||
+                      fp_mapped || mpu_mapped || cache_mapped));
+
+    // System Control Space peripherals decode disjoint register addresses.
+    system_data[32] = scb_data | nvic_data | timer_data | fault_data | fp_data | mpu_data | cache_data;
+
+    device_write = write_enable && aligned && access_allowed;
+    peripheral_read = read_enable && aligned && access_allowed;
+
+    // Select flash or device data and extract the addressed byte/halfword lane.
+    read_word[32] = flash_mapped ? flash_data : device_data;
+    lane_shift[5] = audio_board && device_mapped && !flash_mapped ? 0 : (ZERO5 + address[1:0]) << 3;
+    lane_mask[32] = size_code == 0 ? 255 : (size_code == 1 ? 65535 : 4294967295);
+
+    // Validate mapped, aligned, permitted reads and writes.
+    bus_valid = (aligned && access_allowed && ((read_enable && (flash_mapped || device_mapped || system_mapped)) ||
+                            (write_enable && (device_mapped || system_mapped))));
+    bus_data = read_enable && bus_valid ? (system_mapped ? system_data : ((read_word >> lane_shift) & lane_mask)) : 0;
+
+    // Expose the first 11 RAM words as independent CPU/viewer probes.
+    for (int i = 0; i < 11; i++) {
+        word*{i} = first_words[32 * i + 31:32 * i];
+    }
+}

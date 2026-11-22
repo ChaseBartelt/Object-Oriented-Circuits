@@ -19,6 +19,7 @@ from circuitlab.language.control_flow import (
 from circuitlab.language.gates import GATE_HELP, gate_accepts, gate_body, gate_call_help, gate_signature
 from circuitlab.model.graph import CircuitError, MethodInstance
 from circuitlab.math.numbers import scalar
+from circuitlab.language.diodes import parse_diode
 from circuitlab.language.syntax import (
     ASSIGNMENT,
     BATTERY_BRACE,
@@ -71,7 +72,7 @@ class Method:
 # Temporarily hide ${...} while recognizing declaration shapes. Braces in
 # an interpolation must not prevent a battery/group header or a formal
 # component placement from being recognized before static evaluation.
-_INTERPOLATION_PLACEHOLDER = re.compile(r"\$\{[^}]*\}")
+_INTERPOLATION_PLACEHOLDER = re.compile(r"[$*]\{[^}]*\}")
 
 
 def _bind_gate_call(name, raw, parent):
@@ -132,7 +133,7 @@ def _bind_arguments(method, raw, parent):
             component = PART_ARGUMENT.fullmatch(value)
             if not component:
                 raise CircuitError(
-                    f'{name}: argument "{parameter}" expects a resistor, capacitor, inductor, AC impedance, potentiometer, or switch such as R(1k), Z(2-j2), P(10k,25%), or S(closed).'
+                    f'{name}: argument "{parameter}" expects a resistor, capacitor, inductor, AC impedance, diode, potentiometer, or switch such as R(1k), Z(2-j2), P(10k,25%), or S(closed).'
                 )
             part_name, part_value = component.groups()
             part_value = part_value or ""
@@ -144,6 +145,8 @@ def _bind_arguments(method, raw, parent):
                     parse_potentiometer(part_value)
                 elif part_name[0].upper() == "S":
                     parse_switch(part_value)
+                elif part_name[0].upper() == "D":
+                    parse_diode(part_name, part_value)
                 elif part_value.strip():
                     scalar(part_value, UNITS[part_name[0].upper()])
             except CircuitError as error:
@@ -483,7 +486,7 @@ def expand_main(rows: list[SourceRow], instances: list[MethodInstance], *, impor
             # pins. Lower them through the existing assignment path, including
             # switch state parsing, mode selection, and source provenance.
             if (group_depth > 0 and key not in definitions and key not in GATE_HELP
-                    and key[0].upper() in {*UNITS, "S"}
+                    and key[0].upper() in {*UNITS, "S", "D"}
                     and not SWITCH_CALL.fullmatch(call[1])):
                 yield f"{call[1]} = {call[2]}", line, parent
                 continue
@@ -607,7 +610,7 @@ def expand_main(rows: list[SourceRow], instances: list[MethodInstance], *, impor
             # Evaluate static loops/branches for this invocation before substituting
             # its typed declarations and recursively expanding calls. The control-flow
             # helper starts fresh compile-time variables but uses the shared budget.
-            child = expand_control_flow(child, budget=budget)
+            child = expand_control_flow(child, budget=budget, allow_wire_counts=True)
             # Rewrite a new per-call list, preserving every row's original line and
             # source binding. Untyped methods can keep the control-flow iterator.
             if targets:

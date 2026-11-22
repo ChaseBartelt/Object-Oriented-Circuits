@@ -10,7 +10,10 @@ from itertools import combinations
 
 from circuitlab.model.graph import CircuitError
 from circuitlab.layout.hierarchy import METHOD_PREFIX, hood_levels
-from circuitlab.layout.geometry import BJT_PIN_OFFSET, Layout, add_wire, package_pins, pin_offset, rotate_point, symbol_pins, wire_axis
+from circuitlab.layout.geometry import (
+    BJT_PIN_OFFSET, Layout, add_wire, package_body_corners, package_contacts, package_pins,
+    pin_offset, quad_package, rotate_point, symbol_pins, wire_axis,
+)
 from circuitlab.layout.checks import segments_intersect
 from circuitlab.math.report import component_labels
 from circuitlab.layout.routing import fast_layout
@@ -23,6 +26,7 @@ from circuitlab.layout.wire_edit import route_anchors, wire_graph
 SYMBOLS = {
     "R": ("res", 16, 16, 96),
     "C": ("cap", 16, 0, 64),
+    "D": ("diode", 16, 0, 64),
     "L": ("ind", 16, 16, 96),
     "V": ("voltage", 0, 16, 96),
     "I": ("current", 0, 0, 80),
@@ -53,7 +57,8 @@ def audio_symbol():
 class Block:
     name: str
     instance: str
-    pins: tuple[tuple[str, str, int, int], ...]
+    pins: tuple[tuple[str, str, int, int, str], ...]
+    centered: bool
 
 
 # Export reusable child sheets and their symbol files together, preserving each package
@@ -86,13 +91,10 @@ def export_hierarchy(circuit, layout, details=None):
             (parts.get(part.name, part), a, b, top) for part, a, b, top in drawing.symbols
         ])
 
-    for name in reversed(levels):
-        if name is None:
+    drawings = {None: native_symbols(layout)}
+    for name, (view, boundary) in levels.items():
+        if name is None or (not view.components and not behaviors[name]):
             continue
-        view, boundary = levels[name]
-        if not view.components and not behaviors[name]:
-            continue
-        package = packages[name]
         drawing = details.get(name)
         if drawing is None or {part.name for part, *_ in drawing.symbols} != {
             part.name for part in view.components
@@ -103,20 +105,34 @@ def export_hierarchy(circuit, layout, details=None):
             drawing = Layout(boundary={net: (0, -2 * row) for row, net in enumerate(boundary)})
             for net, (x, y) in drawing.boundary.items():
                 add_wire(drawing, net, (x, y), (x + 1, y))
-        drawing = native_symbols(drawing)
+        drawings[name] = native_symbols(drawing)
+
+    # The saved parent placement determines whether a large package uses the
+    # original two-sided contacts or the new four-sided contact geometry.
+    placements = {
+        part.name: (a, b, drawing.pin_grid)
+        for drawing in drawings.values() for part, a, b, _ in drawing.symbols
+        if part.name in packages
+    }
+    for name in reversed(drawings):
+        if name is None:
+            continue
+        package = packages[name]
+        drawing = drawings[name]
         names = SpiceNames(*spice.nodes.values())
         # Port names belong to this sheet. Reuse a readable pin name when available.
         used_ports = SpiceNames("0", "gnd")
         ports = {}
         aliases = []
         pins = []
-        for label, net, left, offset in package_pins(package):
+        contacts, body = _block_geometry(package, placements.get(name))
+        for label, net, x, y, side in contacts:
             port = used_ports.claim("ground" if label.casefold() in ("gnd", "0") else label)
             if net in ports:
                 aliases.append((ports[net], port))
             else:
                 ports[net] = port
-            pins.append((net, port, 0 if left else 320, round(-4 * offset) * 16))
+            pins.append((net, port, x, y, side))
         nodes = {
             net: (mapped if net == "0" else names.claim(mapped) if mapped.casefold() in used_ports.used else mapped)
             for net, mapped in spice.nodes.items()
@@ -126,29 +142,55 @@ def export_hierarchy(circuit, layout, details=None):
         sheet, _ = _export_drawing(
             drawing, local, blocks=blocks, ports=ports, aliases=aliases, commands=False
         )
-        symbol = _block_symbol(package.label, pins)
+        symbol = _block_symbol(package.label, pins, body)
         digest = sha256((sheet + symbol).encode("ascii")).hexdigest()[:12]
         label = SpiceNames().claim(package.label)[:32]
         # Keep file references lowercase for cross-platform LTspice projects.
         stem = f"ec_{label.lower()}_{digest}"
-        blocks[name] = Block(stem, instances.claim(package.label, "X"), tuple(pins))
+        blocks[name] = Block(stem, instances.claim(package.label, "X"), tuple(pins), body is not None)
         files[f"{stem}.asc"] = sheet
         files[f"{stem}.asy"] = symbol
 
     top = replace(spice, behavior_lines=math_source_lines(behaviors[None], spice.nodes))
-    sheet, used_labels = _export_drawing(native_symbols(layout), top, blocks=blocks)
+    sheet, used_labels = _export_drawing(drawings[None], top, blocks=blocks)
     return sheet, files, used_labels
 
 
-def _block_symbol(label, pins):
-    top = min(y for _, _, _, y in pins) - 40
-    bottom = max(y for _, _, _, y in pins) + 40
-    lines = ["Version 4", "SymbolType BLOCK", f"RECTANGLE Normal 16 {top} 304 {bottom}",
-             f"TEXT 160 {top - 16} Center 2 {label.encode('ascii', 'replace').decode('ascii')}"]
-    for index, (_, port, x, y) in enumerate(pins, 1):
-        side = "LEFT" if x == 0 else "RIGHT"
-        inside = 16 if x == 0 else 304
-        lines.extend((f"LINE Normal {x} {y} {inside} {y}", f"PIN {x} {y} {side} 24",
+def _block_geometry(package, placement):
+    if placement:
+        a, b, grid = placement
+        if quad_package(package, a, b):
+            center = (a[0] + b[0]) / 2, a[1]
+
+            def native(position):
+                return 16 * round(4 * (position[0] - center[0])), 16 * round(4 * (center[1] - position[1]))
+
+            left_bottom, right_top = package_body_corners(package, a, b, grid)
+            left, bottom = native(left_bottom)
+            right, top = native(right_top)
+            pins = tuple((label, net, *native(at), side.upper())
+                         for label, net, side, at, _ in package_contacts(package, a, b, grid))
+            return pins, (left, top, right, bottom)
+    pins = tuple((label, net, 0 if left else 320, round(-4 * offset) * 16, "LEFT" if left else "RIGHT")
+                 for label, net, left, offset in package_pins(package))
+    return pins, None
+
+
+def _block_symbol(label, pins, body):
+    if body is None:
+        top = min(y for _, _, _, y, _ in pins) - 40
+        bottom = max(y for _, _, _, y, _ in pins) + 40
+        left, right = 16, 304
+        text_x, text_y = 160, top - 16
+    else:
+        left, top, right, bottom = body
+        text_x = text_y = 0
+    lines = ["Version 4", "SymbolType BLOCK", f"RECTANGLE Normal {left} {top} {right} {bottom}",
+             f"TEXT {text_x} {text_y} Center 2 {label.encode('ascii', 'replace').decode('ascii')}"]
+    for index, (_, port, x, y, side) in enumerate(pins, 1):
+        inside_x = left if side == "LEFT" else right if side == "RIGHT" else x
+        inside_y = top if side == "TOP" else bottom if side == "BOTTOM" else y
+        lines.extend((f"LINE Normal {x} {y} {inside_x} {inside_y}", f"PIN {x} {y} {side} 24",
                       f"PINATTR PinName {port}", f"PINATTR SpiceOrder {index}"))
     return "\n".join([*lines, ""])
 
@@ -293,15 +335,20 @@ def _schematic(layout, spice, scale, *, pin_flags=False, blocks, ports, aliases,
         model = spice.parts.get(part.name)
         a, b = point(start), point(end)
         if block:
-            x = snap((start[0] + end[0]) / 2) - 160
-            if x < a[0] or x + 320 > b[0]:
-                raise GridConflict
-            origin = x, a[1]
+            if block.centered:
+                origin = x_center, y_center
+            else:
+                x = x_center - 160
+                if x < a[0] or x + 320 > b[0]:
+                    raise GridConflict
+                origin = x, a[1]
             symbol, rotation = block.name, "R0"
-            for (_, net, left, offset), (_, _, pin_x, pin_y) in zip(package_pins(part, layout.pin_grid), block.pins):
-                anchor = ((start if left else end)[0], start[1] + offset)
-                terminal = x + pin_x, a[1] + pin_y
-                pin(net, terminal, anchor=anchor, bends=((terminal[0], point(anchor)[1]),))
+            contacts = package_contacts(part, start, end, layout.pin_grid)
+            for (_, net, side, anchor, _), (_, _, pin_x, pin_y, _) in zip(contacts, block.pins):
+                terminal = origin[0] + pin_x, origin[1] + pin_y
+                px, py = point(anchor)
+                bend = (terminal[0], py) if side in {"left", "right"} else (px, terminal[1])
+                pin(net, terminal, anchor=anchor, bends=(bend,))
         elif model is None:
             raise CircuitError(f"Cannot export the empty block {part.label}.")
         elif part.kind == "A":
@@ -401,6 +448,8 @@ def _schematic(layout, spice, scale, *, pin_flags=False, blocks, ports, aliases,
                                        "as a SPICE netlist; opamp2 has no separate return contact.")
                 value += "_ASC"
             symbols.append(f"SYMATTR Value {value}")
+            if model.kind == "D":
+                symbols.append("SYMATTR Prefix X")
             if model.kind == "L":
                 symbols.append(f"SYMATTR SpiceLine {model.extra.strip()}")
             elif model.kind in "VI" and model.extra:

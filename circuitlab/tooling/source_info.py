@@ -11,6 +11,7 @@ This tolerant inspection describes source; it does not compile or simulate it.
 import re
 from functools import cached_property
 
+from circuitlab.model.diode import DIODE_NAME
 from circuitlab.language.comments import mask_comments
 from circuitlab.language.control_flow import is_control_block
 from circuitlab.language.wire_counts import COUNT_REFERENCE, is_count_reference
@@ -305,6 +306,14 @@ class SourceInfo:
             return "connector(pin, ...)\nShare these nets by name with files in the same build."
         if INCLUDE.fullmatch(code.strip()):
             return 'include("74HC00")\nLoad a bundled chip by name, or use a relative .ckt or .txt file path.'
+        diode = re.search(rf"\b({DIODE_NAME})(?=\s*(?:\(|between\b))", code, re.I)
+        if (diode and diode.start(1) <= column <= diode.end(1)
+                and ("." in diode[1] or re.match(r"\s*(?:\([^()]*\)\s*)?between\b", code[diode.end(1):], re.I))):
+            return (f"{diode[1]} between(anode, cathode)\n"
+                    "The first wire is the anode; the second is the cathode. Generic room-temperature model. "
+                    "Types: rect, Tun, Schot, Zener, LED, PIN, Varactor, Photo, Avalanche. "
+                    "Optional forward voltage specifies the PN branch at 1 mA; Zener/Avalanche voltage sets breakdown. "
+                    "Overrides: is, n, rs, bv, ibv, cj, vj, m, light, ip, vp.")
         if code.strip().casefold() == "@override":
             return (
                 "Put @override above a built-in gate definition, an analog/digital block, "
@@ -469,7 +478,7 @@ class SourceInfo:
         start = max(code.rfind(mark, 0, column) for mark in ";{}") + 1
         code, column = re.split(r"[;{}]", code[start:], maxsplit=1)[0], column - start
         match = re.fullmatch(
-            r"\s*([A-Za-z][\w]*)\s*(?:(?:\([^()]*\)\s*)?between\s*)?"
+            rf"\s*({DIODE_NAME}|[A-Za-z][\w]*)\s*(?:(?:\([^()]*\)\s*)?between\s*)?"
             r"\(((?:[^()]|\([^()]*\))*)\)\s*", code, re.I,
         )
         if match:

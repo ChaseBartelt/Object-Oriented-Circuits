@@ -3,18 +3,24 @@
 # Combinational branches must assign their outputs completely; clocked state is handled
 # separately so missing assignments do not accidentally infer unsupported storage.
 
-import re
+from dataclasses import dataclass, replace
 from graphlib import CycleError, TopologicalSorter
+import re
 
 from circuitlab.exporters.clocked import Expressions, SELECTOR, selected_bits, compile_clocks
 from circuitlab.language.control_flow import expand_digital_loops
 from circuitlab.language.digital_arrays import lower_digital_arrays
 from circuitlab.language.digital_switch import expand_switches, normalize_switch_labels
-from circuitlab.language.digital_declarations import normalize_wire_declarations
+from circuitlab.language.digital_declarations import normalize_port_blocks, normalize_wire_declarations
+from circuitlab.language.digital_argument_lists import expand_argument_lists
+from circuitlab.language.digital_constants import normalize_integer_constants
+from circuitlab.language.digital_clear import expand_clear_blocks
+from circuitlab.language.linked import includes_files, read_includes
 from circuitlab.language.pin_banks import expand_pin_banks, pin_bank_names
 from circuitlab.language.math_blocks import digital_math_rows
-from circuitlab.model.graph import CircuitError
+from circuitlab.model.graph import CircuitError, MethodInstance
 from circuitlab.language.syntax import CHIP, source_rows
+from circuitlab.language.thumb_rom import lower_thumb_roms
 
 IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 DECIMAL = r"[0-9]+(?:_[0-9]+)*"
@@ -72,6 +78,11 @@ def _unsigned_decimal(raw, line, description):
 def _state(statement, pins, states, line):
     match = STATE.fullmatch(statement)
     if not match:
+        if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*\s*\([^()]*\)", statement):
+            raise CircuitError(
+                "This chip contains child-chip calls. Include its library from an entry "
+                "document with main { ... } to export or simulate it.", line,
+            )
         raise CircuitError("Use name, name[width], or name[width] = initial_value for internal state.", line)
     name, raw_width, raw_value = match.groups()
     _name(name, line)
@@ -237,7 +248,11 @@ class _CombinationalExpressions(Expressions):
 
 
 def _module(name, pins, body, header_line):
+    body = normalize_integer_constants(body)
     body = expand_switches(expand_digital_loops(normalize_switch_labels(body)))
+    body = normalize_port_blocks(body)
+    body = expand_argument_lists(body, pins)
+    body = expand_clear_blocks(body)
     body = normalize_wire_declarations(lower_digital_arrays(body, pins), pins)
     directions, port_widths, wires, states, constants = {}, {}, {}, {}, {}
     declarations_body, clocks = [], []
@@ -398,11 +413,61 @@ def _module(name, pins, body, header_line):
 
 # Compile each definition independently and preserve header port order for callers.
 # Return metadata alongside HDL so simulation and editor tooling share the same validation.
-def compile_chips(source: str, *, instances=None):
+def compile_chips(source: str, *, instances=None, path=None, read_source=None):
     """Return each validated chip's pins, body, and Verilog, with optional assembly instances."""
+    return _compile_digital_source(source, instances, path, read_source)[0]
+
+
+@dataclass(frozen=True)
+class DigitalDesign:
+    modules: tuple
+    instances: tuple[MethodInstance, ...]
+    named_wires: tuple[str, ...]
+
+
+def compile_digital_design(source, *, path=None, read_source=None):
+    """Compile HDL and retain the hierarchy and nets for the schematic."""
+    instances = []
+    modules, named_wires = _compile_digital_source(source, instances, path, read_source)
+    return DigitalDesign(tuple(modules), tuple(instances), named_wires)
+
+
+def _compile_digital_source(source, instances, path, read_source):
     from circuitlab.language.digital_structure import assemble_digital
 
-    assembled = assemble_digital(source, instances=instances)
+    # Compile one assembly from all of its included chip definitions. Retain
+    # the line offsets so diagnostics point back to the responsible source file.
+    origins = []
+    if includes_files(source):
+        files, _ = read_includes(source, path, read_source)
+        offset = 0
+        for filename, text in files.items():
+            origins.append((offset, filename))
+            offset += text.count("\n") + 1
+        source = "\n".join(files.values())
+
+    def location(line):
+        return next(((line - start, filename) for start, filename in reversed(origins)
+                     if line and line > start), (line, None))
+
+    first_instance = len(instances) if instances is not None else 0
+    try:
+        assembled = assemble_digital(source, instances=instances)
+        modules = _compile_chips(source, assembled)
+    except CircuitError as error:
+        if not origins or error.path is not None:
+            raise
+        line, filename = location(error.line)
+        raise CircuitError(error.message, line, error.code, path=filename) from None
+    if instances is not None and origins:
+        for index in range(first_instance, len(instances)):
+            instance = instances[index]
+            line, filename = location(instance.line)
+            instances[index] = replace(instance, line=line, path=filename)
+    return modules, tuple(assembled[1]) if assembled else ()
+
+
+def _compile_chips(source, assembled):
     if assembled is not None:
         name, pins, body, header_line = assembled
         verilog, directions = _module(name, pins, body, header_line)
@@ -428,7 +493,7 @@ def compile_chips(source: str, *, instances=None):
             body.append((statement, body_line))
         else:
             raise CircuitError(f'Close chip "{name}" with }}.', line)
-        body = normalize_wire_declarations(digital_math_rows(body), pins)
+        body = normalize_wire_declarations(lower_thumb_roms(digital_math_rows(body)), pins)
         verilog, directions = _module(name, pins, body, line)
         statements = tuple(text for text, _ in body)
         modules.append((name, directions, statements, verilog))
@@ -437,6 +502,7 @@ def compile_chips(source: str, *, instances=None):
     return modules
 
 
-def export_verilog(source: str) -> str:
+def export_verilog(source: str, *, path=None, read_source=None) -> str:
     """Emit one Verilog module per chip."""
-    return "\n\n".join(verilog for _, _, _, verilog in compile_chips(source)) + "\n"
+    chips = compile_chips(source, path=path, read_source=read_source)
+    return "\n\n".join(verilog for _, _, _, verilog in chips) + "\n"

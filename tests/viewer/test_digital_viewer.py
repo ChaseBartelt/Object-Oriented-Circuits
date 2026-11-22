@@ -15,7 +15,7 @@ from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
 from circuitlab.model.graph import CircuitError
-from circuitlab.viewer.digital import DigitalSimulator, DigitalWaveform
+from circuitlab.viewer.digital import RUN_WORK_SECONDS, DigitalSimulator, DigitalWaveform
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -196,6 +196,39 @@ class DigitalViewerTest(unittest.TestCase):
         self.assertEqual([point[0] for point in wave.history], [0, 999, 1000, 2000])
         self.assertEqual([point[1]['out'] for point in wave.history], [0, 0, 1, 1])
         wave.close()
+
+    def test_many_pins_scroll_and_collapse_without_resetting(self):
+        pins = [f"out{i}" for i in range(85)]
+        source = (
+            f"chip Probes(clk, enable, {', '.join(pins)}) {{ "
+            "clk, enable=input; count[8]; clock(clk, 1kHz) { if (enable) { count += 1; } } "
+            + ", ".join(pin + "[8]" for pin in pins) + "=output; "
+            + " ".join(f"{pin}=count;" for pin in pins) + "}"
+        )
+        self.show_source(source)
+        widget = self.widget
+        sim = widget.simulation
+        scroll = widget.output_scroll.verticalScrollBar()
+        self.assertGreater(scroll.maximum(), 0)
+        scroll.setValue(scroll.maximum())
+        last = widget.output_labels[pins[-1]]
+        viewport = widget.output_scroll.viewport()
+        self.app.processEvents()
+        row = last.mapTo(viewport, last.rect().center()).y()
+        self.assertTrue(0 <= row < viewport.height())
+        widget.input_buttons['enable'].click()
+        widget.input_toggle.click()
+        open_height = widget.port_view.height()
+        widget.ports_toggle.click()
+        self.app.processEvents()
+        self.assertTrue(widget.ports_panel.isHidden())
+        self.assertGreater(widget.port_view.height(), open_height)
+        widget.step_button.click()
+        widget.ports_toggle.click()
+        self.app.processEvents()
+        self.assertIs(widget.simulation, sim)
+        self.assertTrue(widget.input_group.isHidden())
+        self.assertIn("0x1", last.text())
 
     def test_board_profile_exposes_all_ten_switches_with_two_edge_latency(self):
         source = (ROOT / 'tests/fixtures/digital/de10_switch_led.ckt').read_text()
@@ -393,7 +426,7 @@ class DigitalViewerTest(unittest.TestCase):
                 advance.assert_called_once()
                 args, kwargs = advance.call_args
                 self.assertEqual(args[0], 2)
-                self.assertAlmostEqual(kwargs['deadline'], base + .258)
+                self.assertAlmostEqual(kwargs['deadline'], base + .25 + RUN_WORK_SECONDS)
             self.assertEqual(self.widget.simulation.cycles, 0)
             self.assertFalse(self.widget.pace_label.isHidden())
             self.assertEqual(self.widget.pace_label.text(), 'Behind target')

@@ -3,9 +3,10 @@
 # Render/solve results, layout comments, and value edits must follow the same accepted source
 # revision; background refreshes must not steal focus or discard unacknowledged edits.
 
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from PySide6.QtCore import QSettings, QSignalBlocker, Qt, QUrl
+from PySide6.QtCore import QSettings, QSignalBlocker, Qt, QTimer, QUrl
 from PySide6.QtGui import QColor, QDesktopServices, QKeySequence
 from PySide6.QtWidgets import (
     QComboBox, QDialog, QFileDialog, QHBoxLayout, QInputDialog, QLabel,
@@ -17,9 +18,11 @@ from circuitlab.exporters.ltspice import export_hierarchy, export_schematic
 from circuitlab.language.linked import CHIP_LIBRARY
 from circuitlab.language.syntax import has_chip
 from circuitlab.layout.devices import DeviceLayouts
+from circuitlab.layout.hierarchy import hood_levels
 from circuitlab.layout.persistence import (
     read_pin_overrides, read_placement, read_logic_placement, embed_placement,
 )
+from circuitlab.math.digital import DigitalSimulation
 from circuitlab.math.report import pin_rows, result_rows
 from circuitlab.model.graph import CircuitError
 from circuitlab.tooling.session import CircuitSession, includes_files, issue_for
@@ -27,13 +30,31 @@ from circuitlab.tooling.source_edits import SourceEdit
 from circuitlab.viewer.exports import export_file, hierarchy_layouts
 from circuitlab.viewer.device_layouts import DeviceLayoutDialog
 from circuitlab.viewer.digital import DigitalSimulator
-from circuitlab.viewer.schematic import SchematicView
+from circuitlab.viewer.schematic import SchematicView, build_schematic_layout
 from circuitlab.viewer.scope import ScopeSidebar, ScopeToggle
 from circuitlab.viewer.source_editing import SourceTools
 from circuitlab.viewer.widgets import (
     DiagnosticsList, GateLayoutDialog, MODES, Results, STYLESHEET, SchematicHeader,
     button, grid_button, probe_text, search_text,
 )
+
+
+def prepare_digital_preview(source, mode, profile, path=None, read_source=None):
+    """Compile, route, and initialize a digital preview without touching widgets."""
+    session = CircuitSession(source=source, path=path, read_source=read_source)
+    session.compile()
+    if session.drawing is None:
+        error = session.issues[0].message if session.issues else None
+        return session, None, None, error
+    _, view, _, _ = next(hood_levels(session.drawing, set()))
+    layout = build_schematic_layout(view, mode)
+    if session.interface_preview:
+        return session, layout, None, None
+    try:
+        simulation = DigitalSimulation(source, profile=profile, design=session.digital_design)
+    except (CircuitError, ValueError) as error:
+        return session, layout, None, str(error)
+    return session, layout, simulation, None
 
 
 class ViewerWindow(QMainWindow):
@@ -46,6 +67,13 @@ class ViewerWindow(QMainWindow):
     def __init__(self, session=None):
         super().__init__()
         self.session = session or CircuitSession()
+        self._preview_worker = ThreadPoolExecutor(max_workers=1, thread_name_prefix="digital-preview")
+        worker = self._preview_worker
+        self.destroyed.connect(lambda: worker.shutdown(wait=False, cancel_futures=True))
+        self._preview_job = None
+        self._preview_timer = QTimer(self)
+        self._preview_timer.setInterval(30)
+        self._preview_timer.timeout.connect(self._finish_digital_preview)
         self.placement_dirty = False
         self.resize(1100, 780)
         self.setStyleSheet(STYLESHEET)
@@ -262,24 +290,39 @@ class ViewerWindow(QMainWindow):
     # Refresh session results and diagnostics from the current accepted source revision.
     def compile_source(self, *, preserve_scope=False):
         show_logic = self.views.currentWidget() is self.digital
+        self._cancel_digital_preview()
         if getattr(self, "fpga_window", None):
             self.fpga_window.refresh_source()
         if not preserve_scope:
             self.scope_sidebar.set_circuit(None)
         self.schematic.clear(preserve_placement=True)
+        if self._queue_digital_preview(show_logic, preserve_scope):
+            return
         self.session.compile(self.mode.currentData())
+        self._show_compilation(show_logic, preserve_scope)
+
+    def _show_compilation(self, show_logic, preserve_scope, *, layout=None, prepared=None):
         self.update_results()
         if self.session.drawing is not None:
-            self.schematic.draw(self.session.drawing, self.pins)
+            self.schematic.draw(self.session.drawing, self.pins, layout=layout)
             self.scope_sidebar.set_circuit(self.session.drawing, preserve_state=preserve_scope)
         elif preserve_scope:
             self.scope_sidebar.set_circuit(None)
-        self.update_digital()
+        if prepared is None or self.session.interface_preview:
+            self.update_digital()
+        else:
+            self.digital.set_prepared_source(
+                self.session.source, *prepared, design=self.session.digital_design,
+            )
+            self.views.setTabVisible(self.digital_tab, True)
         self.pin_button.setChecked(False)
         self.schematic.set_pin_tool(False)
         self.show_issues(self.session.issues)
         if self.session.issues:
             self.status.setText(self.session.issues[0].message)
+        elif self.session.interface_preview:
+            self.views.setCurrentIndex(0)
+            self.status.setText("Chip interface preview. Include this file in a circuit with main to compile and simulate it.")
         elif self.session.preview_only:
             self.views.setCurrentIndex(self.digital_tab if show_logic and self.views.isTabVisible(self.digital_tab) else 0)
             self.status.setText(
@@ -297,7 +340,73 @@ class ViewerWindow(QMainWindow):
         else:
             self.status.setText("Open a circuit from your IDE or File → Open.")
 
+    def _queue_digital_preview(self, show_logic, preserve_scope):
+        source = self.session.source
+        # Keep small previews immediate. This threshold only schedules work.
+        try:
+            if (len(source) < 64 * 1024 and not includes_files(source)) or not self.session.is_digital():
+                return False
+        except CircuitError:
+            return False
+        mode = self.schematic.layout_mode
+        future = self._preview_worker.submit(
+            prepare_digital_preview, source, mode, self.digital.selected_profile(),
+            self.session.path, self.session.read_source,
+        )
+        self._preview_job = future, self.session.revision, mode, show_logic, preserve_scope
+        self.session.solution = None
+        self.session.drawing = None
+        self.session.issues = []
+        self.session.digital_design = None
+        self.session.interface_preview = False
+        self.update_results()
+        self.show_issues([])
+        self.digital.set_source("")
+        self.digital.profile.setEnabled(False)
+        self.status.setText("Preparing digital schematic and simulation…")
+        self._preview_timer.start()
+        return True
+
+    def _cancel_digital_preview(self):
+        if self._preview_job is not None:
+            self._preview_job[0].cancel()
+            self._preview_job = None
+        self._preview_timer.stop()
+        self.digital.profile.setEnabled(True)
+
+    def _finish_digital_preview(self):
+        if self._preview_job is None:
+            return
+        future, revision, mode, show_logic, preserve_scope = self._preview_job
+        if not future.done():
+            return
+        self._cancel_digital_preview()
+        if revision != self.session.revision:
+            return
+        try:
+            session, layout, sim, error = future.result()
+        except CircuitError as error:
+            self.show_issues([issue_for(error)])
+            self.status.setText(error.message)
+            return
+        self.session.solution = session.solution
+        self.session.drawing = session.drawing
+        self.session.issues = session.issues
+        self.session.preview_only = session.preview_only
+        self.session.interface_preview = session.interface_preview
+        self.session.digital_design = session.digital_design
+        self._show_compilation(
+            show_logic, preserve_scope, layout=layout if mode == self.schematic.layout_mode else None,
+            prepared=(sim, error),
+        )
+
     def render_source(self):
+        self._cancel_digital_preview()
+        if self._queue_digital_preview(False, False):
+            self.schematic.clear(preserve_placement=True)
+            self.scope_sidebar.set_circuit(None)
+            self.views.setCurrentIndex(0)
+            return True
         try:
             circuit = self.session.render(self.mode.currentData())
         except CircuitError as error:
@@ -312,18 +421,22 @@ class ViewerWindow(QMainWindow):
         self.scope_sidebar.set_circuit(circuit)
         self.update_digital()
         self.views.setCurrentIndex(0)
-        self.status.setText("Schematic rendered.")
+        self.status.setText("Chip interface preview. Include this file in a circuit with main to compile and simulate it."
+                            if self.session.interface_preview else "Schematic rendered.")
         return True
 
     # Digital software runtime state is separate from an analog chip's electrical model preview;
     # switching source kinds must clear values that no longer belong to the current circuit.
     def update_digital(self):
         """Keep the digital runtime separate from electrical model previews."""
-        try:
-            digital = has_chip(self.session.source) and not includes_files(self.session.source)
-        except CircuitError:
-            digital = False
-        self.digital.set_source(self.session.source if digital else "")
+        design = self.session.digital_design
+        digital = not self.session.interface_preview and (
+            design is not None or self.session.preview_only and has_chip(self.session.source)
+        )
+        if digital and design is None and self.session.issues:
+            self.digital.set_prepared_source(self.session.source, None, self.session.issues[0].message)
+        else:
+            self.digital.set_source(self.session.source if digital else "", design=design)
         self.views.setTabVisible(self.digital_tab, digital)
 
     def update_logic_colors(self, values):
@@ -582,5 +695,6 @@ class ViewerWindow(QMainWindow):
             event.ignore()
             return
         self.scope.shutdown()
+        self._cancel_digital_preview()
         self.digital.shutdown()
         event.accept()

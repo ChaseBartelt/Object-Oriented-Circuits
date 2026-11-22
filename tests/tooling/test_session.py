@@ -10,6 +10,7 @@ from tempfile import TemporaryDirectory
 import unittest
 
 from circuitlab.language.linked import CHIP_LIBRARY
+from circuitlab.math.digital import DigitalSimulation
 from circuitlab.tooling.session import CircuitSession
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -69,6 +70,36 @@ assert 'circuitlab.viewer.editor' not in sys.modules
         self.assertEqual(session.drawing.instances[0].name, "invert")
         self.assertIn("assign y = !a;", session.verilog())
 
+    def test_structural_module_file_has_an_interface_preview_without_a_fake_simulation(self):
+        boards = ROOT / "examples/advanced/CortexM7/boards"
+        for path in sorted(boards.glob("*_platform.ckt")):
+            with self.subTest(path=path.name):
+                session = CircuitSession(path=path, source=path.read_text(encoding="utf-8"))
+                session.compile()
+                self.assertFalse(session.issues)
+                self.assertTrue(session.preview_only)
+                self.assertTrue(session.interface_preview)
+                self.assertIsNone(session.digital_design)
+                self.assertIsNone(session.solution)
+                self.assertTrue(session.drawing.instances)
+                platform = next(instance for instance in session.drawing.instances
+                                if instance.name == "M7FirmwarePlatform")
+                self.assertIn(("clk", "@M7FirmwarePlatform.clk"), platform.pins)
+                self.assertFalse(platform.model_available)
+                self.assertEqual(platform.body, ())
+
+    def test_changing_away_from_a_structural_module_clears_interface_preview(self):
+        session = CircuitSession(source="chip Parent(a,y) { a=input; y=output; Child(a,y); }")
+        session.compile()
+        self.assertTrue(session.interface_preview)
+        session.set_source("chip Leaf(a,y) { a=input; y=output; y=!a; }")
+        self.assertFalse(session.interface_preview)
+        session.compile()
+        self.assertFalse(session.issues)
+        self.assertFalse(session.interface_preview)
+        self.assertIsNotNone(session.digital_design)
+        self.assertIn("module Leaf", session.verilog())
+
     def test_internal_states_remain_digital_in_preview_and_export(self):
         session = CircuitSession(source="""chip StateBits(a, y, z) {
             a = input;
@@ -92,6 +123,33 @@ assert 'circuitlab.viewer.editor' not in sys.modules
         self.assertIn("assign y = a ^ phase[6];", verilog)
         self.assertIn("assign z = !led_state & flag;", verilog)
         self.assertNotRegex(verilog, r"\b(always|posedge|negedge)\b")
+
+    def test_digital_assembly_resolves_nested_includes_for_viewer_and_simulation(self):
+        entry = ROOT / "main.ckt"
+        source = """include("chips/bundle.ckt");
+include("chips/inverter.ckt");
+main TOP { a = input; y = output; Invert(a, y); }
+"""
+        inverter = entry.parent / "chips" / "inverter.ckt"
+        parts = {
+            entry.parent / "chips" / "bundle.ckt": 'include("inverter.ckt");',
+            inverter: "chip Invert(a, y) { a = input; y = output; y = !a; }",
+        }
+        session = CircuitSession(path=entry, source=source, read_source=parts.__getitem__)
+        session.compile()
+        self.assertFalse(session.issues)
+        instance, = session.drawing.instances
+        self.assertEqual((instance.name, instance.path, instance.line), ("Invert", entry, 3))
+        self.assertIn("module TOP", session.verilog())
+        sim = DigitalSimulation(source, path=entry, read_source=parts.__getitem__)
+        self.assertEqual(sim.values["y"], 1)
+        sim.set_input("a", 1)
+        self.assertEqual(sim.values["y"], 0)
+
+        parts[inverter] = parts[inverter].replace("!a", "missing")
+        session.compile()
+        issue, = session.issues
+        self.assertEqual((issue.path, issue.line), (inverter, 1))
 
     def test_library_alias_and_pinout_file_preview_without_editor(self):
         for relative, expected in (("logic/74HC00.ckt", "SN74HC00"), ("converters/ADS1115.ckt", "ADS1115")):

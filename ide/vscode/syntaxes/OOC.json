@@ -4,9 +4,11 @@
   "fileTypes": ["ckt"],
   "patterns": [
     { "include": "#comments" },
+    { "include": "#arm-rom" },
     { "include": "#strings" },
     { "include": "#interpolation" },
     { "include": "#model-properties" },
+    { "include": "#port-groups" },
     { "include": "#declarations" },
     { "include": "#control" },
     { "include": "#properties" },
@@ -22,8 +24,96 @@
     { "include": "#punctuation" }
   ],
   "repository": {
+    "port-groups": {
+      "patterns": [{ "include": "#input-ports" }, { "include": "#output-ports" }, { "include": "#wire-ports" }]
+    },
+    "port-group-body": {
+      "begin": "\\{", "end": "\\}",
+      "patterns": [{ "include": "#port-group-content" }]
+    },
+    "port-group-content": {
+      "patterns": [
+        { "include": "#comments" }, { "include": "#strings" },
+        { "include": "#interpolation" }, { "include": "#control" },
+        { "include": "#port-group-body" }, { "include": "#selectors" },
+        { "include": "#numbers" },
+        { "include": "#port-member-name" },
+        { "include": "#punctuation" }
+      ]
+    },
+    "port-member-name": {"match": "\\b([A-Za-z_][A-Za-z0-9_]*)\\b", "captures": {"1": {"name": "variable.other.readwrite.port.ooc", "patterns": [{"include": "#identifiers"}]}}},
+    "port-declaration-members": {
+      "patterns": [{ "include": "#interpolation" }, { "include": "#selectors" },
+                    { "include": "#port-member-name" },
+                   { "include": "#punctuation" }]
+    },
+    "input-ports": {
+      "name": "meta.declaration.input.ooc", "begin": "(?i)\\b(input)(?:\\s+([A-Za-z_][A-Za-z0-9_]*))?\\s*(\\{)",
+      "beginCaptures": {
+        "1": { "name": "storage.modifier.pin-direction.ooc" },
+        "2": { "name": "entity.name.section.ooc entity.name.section.port-group.ooc" },
+        "3": { "name": "punctuation.section.block.begin.ooc" }
+      },
+      "end": "\\}", "endCaptures": { "0": { "name": "punctuation.section.block.end.ooc" } },
+      "patterns": [{ "include": "#port-group-content" }]
+    },
+    "output-ports": {
+      "name": "meta.declaration.output.ooc", "begin": "(?i)\\b(output)(?:\\s+([A-Za-z_][A-Za-z0-9_]*))?\\s*(\\{)",
+      "beginCaptures": {
+        "1": { "name": "storage.modifier.pin-direction.ooc" },
+        "2": { "name": "entity.name.section.ooc entity.name.section.port-group.ooc" },
+        "3": { "name": "punctuation.section.block.begin.ooc" }
+      },
+      "end": "\\}", "endCaptures": { "0": { "name": "punctuation.section.block.end.ooc" } },
+      "patterns": [{ "include": "#port-group-content" }]
+    },
+    "wire-ports": {
+      "name": "meta.declaration.wire.ooc", "begin": "(?i)\\b(wire)(?:\\s+([A-Za-z_][A-Za-z0-9_]*))?\\s*(\\{)",
+      "beginCaptures": {
+        "1": { "name": "storage.modifier.pin-direction.ooc" },
+        "2": { "name": "entity.name.section.ooc entity.name.section.port-group.ooc" },
+        "3": { "name": "punctuation.section.block.begin.ooc" }
+      },
+      "end": "\\}", "endCaptures": { "0": { "name": "punctuation.section.block.end.ooc" } },
+      "patterns": [{ "include": "#port-group-content" }]
+    },
+    "arm-rom": {
+      "name": "meta.embedded.block.arm.ooc",
+      "begin": "(?i)\\b(arm)\\s*\\(\\s*[A-Za-z_]\\w*\\s*,\\s*[A-Za-z_]\\w*(?:\\s*,\\s*[A-Za-z_]\\w*)?\\s*\\)\\s*\\{",
+      "beginCaptures": {
+        "1": { "name": "storage.type.ooc" }
+      },
+      "end": "\\}",
+      "patterns": [
+        { "name": "comment.line.double-slash.ooc", "match": "//.*$" },
+        { "name": "comment.line.at-sign.arm.ooc", "match": "@.*$" },
+        { "name": "comment.block.ooc", "begin": "/\\*", "end": "\\*/" },
+        {
+          "name": "meta.group.registers.arm.ooc",
+          "begin": "\\{",
+          "end": "\\}",
+          "patterns": [{ "include": "#arm-register" }]
+        },
+        { "name": "entity.name.label.ooc", "match": "[A-Za-z_.]\\w*\\s*(?=:)" },
+        { "name": "keyword.control.directive.arm.ooc", "match": "(?i)\\.(?:byte|hword|short|word|align|balign|org)\\b" },
+        {
+          "name": "keyword.operator.instruction.arm.ooc",
+          "match": "(?i)(?:^|(?<=[;:]))[ \\t]*([a-z][a-z0-9]*(?:\\.[a-z0-9]+)?)(?=[ \\t;}]|$)"
+        },
+        { "include": "#arm-register" },
+        {
+          "name": "constant.numeric.arm.ooc",
+          "match": "(?:#\\s*)?[+-]?\\b(?:0[xX][0-9a-fA-F_]+|0[bB][01_]+|[0-9][0-9_]*)\\b"
+        },
+        { "name": "entity.name.label.reference.arm.ooc", "match": "\\b[A-Za-z_][A-Za-z0-9_]*\\b" }
+      ]
+    },
+    "arm-register": {
+      "name": "variable.language.register.arm.ooc",
+      "match": "(?i)\\b(?:r(?:1[0-5]|[0-9])|s(?:[12][0-9]|3[01]|[0-9])|sp|lr|pc|fpscr)\\b"
+    },
     "wire-count-arguments": {
-      "begin": "(?i)(?:\\b(between)\\s*|(?:^|(?<=[;{}]))\\s*([A-Za-z][A-Za-z0-9_]*)\\s*(?=\\((?:[^();{}#\\r\\n]|\\([^()#\\r\\n]*\\)|\\$\\{[^{}]*\\})*\\)\\s*(?:;|$)))(\\()",
+      "begin": "(?i)(?:\\b(between)\\s*|(?:^|(?<=[;{}]))\\s*([A-Za-z][A-Za-z0-9_]*)\\s*(?=\\((?:[^();{}#\\r\\n]|\\([^()#\\r\\n]*\\)|[$*]\\{[^{}]*\\})*\\)\\s*(?:;|$)))(\\()",
       "beginCaptures": {
         "1": { "name": "keyword.other.placement.ooc" },
         "2": {
@@ -140,7 +230,7 @@
       "beginCaptures": {
         "0": { "name": "punctuation.definition.string.begin.ooc" }
       },
-      "end": "\"|$",
+      "end": "\"",
       "endCaptures": {
         "0": { "name": "punctuation.definition.string.end.ooc" }
       },
@@ -150,7 +240,7 @@
     },
     "interpolation": {
       "name": "meta.interpolation.ooc",
-      "begin": "\\$\\{",
+      "begin": "[$*]\\{",
       "beginCaptures": {
         "0": { "name": "punctuation.section.interpolation.begin.ooc" }
       },
@@ -263,7 +353,7 @@
           }
         },
         {
-          "match": "(?i)\\b(battery|transistor|opamp)\\b\\s+([A-Za-z][A-Za-z0-9_]*)(?=\\s*[(\\{;]|\\$\\{)",
+          "match": "(?i)\\b(battery|transistor|opamp)\\b\\s+([A-Za-z][A-Za-z0-9_]*)(?=\\s*[(\\{;]|[$*]\\{)",
           "captures": {
             "1": { "name": "storage.type.ooc" },
             "2": { "name": "entity.name.function.component.ooc" }
@@ -292,6 +382,7 @@
     },
     "control": {
       "patterns": [
+        { "name": "keyword.control.clear.ooc", "match": "(?i)\\bclear(?=\\s*\\{)" },
         {
           "name": "storage.type.ooc",
           "match": "\\bconst\\b"
@@ -382,10 +473,7 @@
         { "include": "#property-names" },
         { "include": "#constants" },
         { "include": "#identifiers" },
-        {
-          "name": "keyword.operator.ooc",
-          "match": "<<=?|>>=?|\\+\\+|--|&&|\\|\\||==|!=|<=|>=|[+*/%&|^\\-]=|[+*/%=!?&|^<>-]"
-        },
+        { "include": "#operators" },
         {
           "name": "punctuation.separator.ooc",
           "match": "[;,:\\[\\]]"
@@ -395,7 +483,34 @@
     "properties": {
       "patterns": [
         {
-          "match": "(?i)(?:^|(?<=[;{]))\\s*((?:[A-Za-z_][A-Za-z0-9_]*(?:\\$\\{[^}#\\r\\n]+\\}[A-Za-z0-9_]*)*(?:\\s*\\[\\s*[0-9_]+(?:\\s*:\\s*[0-9_]+)?\\s*\\])?\\s*,\\s*)*[A-Za-z_][A-Za-z0-9_]*(?:\\$\\{[^}#\\r\\n]+\\}[A-Za-z0-9_]*)*(?:\\s*\\[\\s*[0-9_]+(?:\\s*:\\s*[0-9_]+)?\\s*\\])?)\\s*(=)\\s*(input|output|wire)(?=\\s*(?:[;}#]|$))",
+          "name": "meta.declaration.wire.ooc",
+          "match": "(?i)(?:^|(?<=[;{]))\\s*((?:[A-Za-z_][A-Za-z0-9_]*(?:[$*]\\{[^}#\\r\\n]+\\}[A-Za-z0-9_]*)*(?:\\s*\\[\\s*[0-9_]+(?:\\s*:\\s*[0-9_]+)?\\s*\\])?\\s*,\\s*)*[A-Za-z_][A-Za-z0-9_]*(?:[$*]\\{[^}#\\r\\n]+\\}[A-Za-z0-9_]*)*(?:\\s*\\[\\s*[0-9_]+(?:\\s*:\\s*[0-9_]+)?\\s*\\])?)\\s*(=)\\s*(wire)(?=\\s*(?:[;}#]|$))",
+          "captures": {
+            "1": { "patterns": [{ "include": "#port-declaration-members" }] },
+            "2": { "name": "keyword.operator.assignment.ooc" },
+            "3": { "name": "storage.modifier.pin-direction.ooc" }
+          }
+        },
+        {
+          "name": "meta.declaration.input.ooc",
+          "match": "(?i)(?:^|(?<=[;{]))\\s*((?:[A-Za-z_][A-Za-z0-9_]*(?:[$*]\\{[^}#\\r\\n]+\\}[A-Za-z0-9_]*)*(?:\\s*\\[\\s*[0-9_]+(?:\\s*:\\s*[0-9_]+)?\\s*\\])?\\s*,\\s*)*[A-Za-z_][A-Za-z0-9_]*(?:[$*]\\{[^}#\\r\\n]+\\}[A-Za-z0-9_]*)*(?:\\s*\\[\\s*[0-9_]+(?:\\s*:\\s*[0-9_]+)?\\s*\\])?)\\s*(=)\\s*(input)(?=\\s*(?:[;}#]|$))",
+          "captures": {
+            "1": { "patterns": [{ "include": "#port-declaration-members" }] },
+            "2": { "name": "keyword.operator.assignment.ooc" },
+            "3": { "name": "storage.modifier.pin-direction.ooc" }
+          }
+        },
+        {
+          "name": "meta.declaration.output.ooc",
+          "match": "(?i)(?:^|(?<=[;{]))\\s*((?:[A-Za-z_][A-Za-z0-9_]*(?:[$*]\\{[^}#\\r\\n]+\\}[A-Za-z0-9_]*)*(?:\\s*\\[\\s*[0-9_]+(?:\\s*:\\s*[0-9_]+)?\\s*\\])?\\s*,\\s*)*[A-Za-z_][A-Za-z0-9_]*(?:[$*]\\{[^}#\\r\\n]+\\}[A-Za-z0-9_]*)*(?:\\s*\\[\\s*[0-9_]+(?:\\s*:\\s*[0-9_]+)?\\s*\\])?)\\s*(=)\\s*(output)(?=\\s*(?:[;}#]|$))",
+          "captures": {
+            "1": { "patterns": [{ "include": "#port-declaration-members" }] },
+            "2": { "name": "keyword.operator.assignment.ooc" },
+            "3": { "name": "storage.modifier.pin-direction.ooc" }
+          }
+        },
+        {
+          "match": "(?i)(?:^|(?<=[;{]))\\s*((?:[A-Za-z_][A-Za-z0-9_]*(?:[$*]\\{[^}#\\r\\n]+\\}[A-Za-z0-9_]*)*(?:\\s*\\[\\s*[0-9_]+(?:\\s*:\\s*[0-9_]+)?\\s*\\])?\\s*,\\s*)*[A-Za-z_][A-Za-z0-9_]*(?:[$*]\\{[^}#\\r\\n]+\\}[A-Za-z0-9_]*)*(?:\\s*\\[\\s*[0-9_]+(?:\\s*:\\s*[0-9_]+)?\\s*\\])?)\\s*(=)\\s*(input|output|wire)(?=\\s*(?:[;}#]|$))",
           "captures": {
             "1": {
               "patterns": [
@@ -435,8 +550,9 @@
       "patterns": [
         {
           "name": "entity.name.function.component.ooc",
-          "match": "(?i)\\b[RCLZVIPS][A-Za-z0-9_]*(?=(?:\\$\\{[^}\\r\\n]*\\}[A-Za-z0-9_]*)*(?:\\s*\\([^;#\\r\\n]*\\)\\s+|\\s+)between\\s*\\()"
+          "match": "(?i)\\b[RCLZVIPS][A-Za-z0-9_]*(?=(?:[$*]\\{[^}\\r\\n]*\\}[A-Za-z0-9_]*)*(?:\\s*\\([^;#\\r\\n]*\\)\\s+|\\s+)between\\s*\\()"
         },
+        {"name": "entity.name.function.component.ooc", "match": "(?i)\\bD(?:[A-Za-z0-9_]*|\\.[A-Za-z][A-Za-z0-9_]*)(?=\\s*(?:\\(|between\\b|=))"},
         {
           "match": "(?i)(?:^|(?<=[;{]))\\s*(S[A-Za-z0-9_]*)(?=\\s*=\\s*(?:open|closed|on|off|[01])\\b)",
           "captures": {
@@ -514,12 +630,28 @@
         "2": { "name": "constant.other.unit.ooc" }
       }
     },
+    "ternary-operator": {
+      "name": "meta.conditional.ooc", "begin": "\\?", "end": "(:)|(?=[;}\\]\\)])",
+      "beginCaptures": { "0": { "name": "keyword.operator.ooc", "patterns": [{ "name": "keyword.operator.ternary.ooc", "match": "\\?" }] } },
+      "endCaptures": { "0": { "name": "keyword.operator.ooc", "patterns": [{ "name": "keyword.operator.ternary.ooc", "match": ":" }] } },
+      "patterns": [{ "include": "#expression" }]
+    },
     "operators": {
       "patterns": [
-        {
-          "name": "keyword.operator.ooc",
-          "match": "<<=?|>>=?|==|!=|<=|>=|&&|\\|\\||\\+\\+|--|[+*/%&|^\\-]=|[=!?&|^<>∠+*/%\\-]"
-        }
+        { "include": "#ternary-operator" },
+        { "name": "keyword.operator.ooc", "match": "<<=|>>=|[+\\-*/%&|^]=|(?<![=!<>])=(?!=)",
+          "captures": { "0": { "name": "keyword.operator.assignment.ooc" } } },
+        { "name": "keyword.operator.ooc", "match": "==|!=|<=|>=|(?<![<>])[<>](?![<>=])",
+          "captures": { "0": { "name": "keyword.operator.comparison.ooc" } } },
+        { "name": "keyword.operator.ooc", "match": "&&|\\|\\||!(?!=)",
+          "captures": { "0": { "name": "keyword.operator.logical.ooc" } } },
+        { "name": "keyword.operator.ooc", "match": "<<|>>",
+          "captures": { "0": { "name": "keyword.operator.shift.ooc" } } },
+        { "name": "keyword.operator.ooc", "match": "(?<![&|])[&|^~](?![&|=])",
+          "captures": { "0": { "name": "keyword.operator.bitwise.ooc" } } },
+        { "name": "keyword.operator.ooc", "match": "\\+\\+|--|[+\\-*/%](?!=)",
+          "captures": { "0": { "name": "keyword.operator.arithmetic.ooc" } } },
+        { "name": "keyword.operator.ooc", "match": "[.∠]" }
       ]
     },
     "punctuation": {

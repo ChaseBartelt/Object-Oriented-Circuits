@@ -10,6 +10,7 @@ from pathlib import Path
 import subprocess
 import sys
 from tempfile import TemporaryDirectory
+from threading import Event
 from time import perf_counter
 import unittest
 from unittest.mock import patch
@@ -18,13 +19,14 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication, QPlainTextEdit, QMessageBox
 from PySide6.QtCore import QTimer, Qt
+from PySide6.QtTest import QTest
 
 from circuitlab.exporters.ltspice import export_hierarchy
 from circuitlab.layout.checks import preserves_nets
 from circuitlab.layout.persistence import (pack_layout, placement_path, layout_payload,
                                          strip_placement, read_placement, write_placement)
 from circuitlab.tooling.source_edits import edit_value
-from circuitlab.viewer.window import ViewerWindow
+from circuitlab.viewer.window import ViewerWindow, prepare_digital_preview
 
 ROOT = Path(__file__).resolve().parents[2]
 DIVIDER = "V1(5) between(supply, 0);\nR1(1k) between(supply, out);\nR2(1k) between(out, 0);\n"
@@ -502,6 +504,43 @@ window.close()
         self.assertTrue(self.window.views.isTabVisible(self.window.digital_tab))
         return source
 
+    def test_large_digital_preview_keeps_events_running_and_discards_old_results(self):
+        source = "chip invert(a,y) { a = input; y = output; y = !a; }\n"
+        self.path.write_text(source + "/*" + (" " * 65536) + "*/", encoding="utf-8")
+        window = self.window
+        started, release = Event(), Event()
+
+        def delayed(*args):
+            started.set()
+            release.wait(5)
+            return prepare_digital_preview(*args)
+
+        with patch('circuitlab.viewer.window.prepare_digital_preview', side_effect=delayed):
+            try:
+                self.assertTrue(window.open_path(self.path))
+                self.assertTrue(started.wait(2))
+                future = window._preview_job[0]
+                heartbeat = []
+                QTimer.singleShot(0, lambda: heartbeat.append(True))
+                self.app.processEvents()
+                self.assertEqual(heartbeat, [True])
+                self.assertIsNone(window.digital.simulation)
+                other = self.path.with_name('analog.ckt')
+                other.write_text(DIVIDER, encoding='utf-8')
+                self.assertTrue(window.open_path(other))
+            finally:
+                release.set()
+            future.result(timeout=5)
+            self.app.processEvents()
+            self.assertEqual(window.path, other)
+            self.assertFalse(window.views.isTabVisible(window.digital_tab))
+        self.assertTrue(window.open_path(self.path))
+        deadline = perf_counter() + 5
+        while window._preview_job is not None and perf_counter() < deadline:
+            QTest.qWait(10)
+        self.assertIsNotNone(window.schematic.layout)
+        self.assertEqual(window.digital.simulation.values["y"], 1)
+
     def test_digital_inputs_color_wires_and_probe_without_an_editor(self):
         from circuitlab.viewer.schematic import ACCENT, LOGIC_HIGH, LOGIC_LOW
 
@@ -620,6 +659,63 @@ window.close()
                     self.assertIsNotNone(self.window.solution)
                 else:
                     self.assertTrue(self.window.session.issues)
+
+    def test_structural_module_preview_draws_package_and_stops_old_simulation(self):
+        self.open_logic_playground()
+        self.window.digital.toggle()
+        self.assertTrue(self.window.digital.timer.isActive())
+        self.path.write_text("chip Parent(a,y) { a=input; y=output; Child(a,y); }", encoding="utf-8")
+        self.assertTrue(self.window.open_path(self.path))
+        self.assertFalse(self.window.session.issues)
+        self.assertTrue(self.window.session.interface_preview)
+        self.assertTrue(self.window.schematic.layout.symbols)
+        self.assertIsNone(self.window.digital.simulation)
+        self.assertFalse(self.window.digital.timer.isActive())
+        self.assertFalse(self.window.views.isTabVisible(self.window.digital_tab))
+        self.assertIn("interface preview", self.window.status.text())
+        self.assertIn("main", self.window.status.text())
+
+    def test_included_structural_module_worker_keeps_interface_only_state(self):
+        source = 'include("external.ckt");\nchip Parent(a,y) { a=input; y=output; Child(a,y); }'
+        self.path.write_text(source, encoding="utf-8")
+        session, layout, sim, error = prepare_digital_preview(source, "auto", "auto", self.path)
+        self.assertFalse(session.issues)
+        self.assertTrue(session.interface_preview)
+        self.assertIsNotNone(layout)
+        self.assertIsNone(sim)
+        self.assertIsNone(error)
+        self.assertTrue(self.window.open_path(self.path))
+        deadline = perf_counter() + 5
+        while self.window._preview_job is not None and perf_counter() < deadline:
+            QTest.qWait(10)
+        self.assertIsNone(self.window._preview_job)
+        self.assertTrue(self.window.session.interface_preview)
+        self.assertFalse(self.window.session.issues)
+        self.assertFalse(self.window.views.isTabVisible(self.window.digital_tab))
+        self.assertTrue(self.window.schematic.layout.symbols)
+        self.assertIn("interface preview", self.window.status.text())
+
+    def test_include_only_entry_restores_simulation_after_a_library_preview(self):
+        self.path.write_text("chip Parent(a,y) { a=input; y=output; Child(a,y); }", encoding="utf-8")
+        self.window.open_path(self.path)
+        self.assertTrue(self.window.session.interface_preview)
+        entry = self.path.with_name("runnable.ckt")
+        entry.write_text("chip Leaf(a,y) { a=input; y=output; y=!a; }\n"
+                         "main TOP { a=input; y=output; Leaf(a,y); }", encoding="utf-8")
+        self.path.write_text('include("runnable.ckt");', encoding="utf-8")
+        self.window.open_path(self.path)
+        deadline = perf_counter() + 5
+        while self.window._preview_job is not None and perf_counter() < deadline:
+            QTest.qWait(10)
+        self.assertIsNone(self.window._preview_job)
+        self.assertFalse(self.window.session.issues)
+        self.assertFalse(self.window.session.interface_preview)
+        self.assertTrue(self.window.views.isTabVisible(self.window.digital_tab))
+        sim = self.window.digital.simulation
+        self.assertIsNotNone(sim)
+        self.assertEqual(sim.values["y"], 1)
+        self.window.digital.set_input("a", 1)
+        self.assertEqual(sim.values["y"], 0)
 
     def test_closing_viewer_stops_digital_clock(self):
         self.open_logic_playground()

@@ -1,0 +1,157 @@
+
+ // Cortex-M7 special-register instruction decoding and processor state.
+
+// Decode Thumb MRS, MSR, and CPS instructions.
+// The first Thumb halfword occupies ir[15:0].
+chip M7SystemDecode(ir, system_op, sys_selector, sys_register, sys_mask) {
+    input instruction {
+        ir[32];
+    }
+    output decoded {
+        system_op[3], sys_selector[8], sys_register[4], sys_mask[2];
+    }
+    wire instructions {
+        mrs, msr, cps, bad_register;
+    }
+
+    // Identify special-register transfers and interrupt-mask instructions.
+    mrs = ir[15:0] == 62447 && ir[31:28] == 8; // F3EF 8dss
+    msr = ir[15:4] == 3896 && ir[31:28] == 8 && ir[25:24] == 0;
+    cps = ir[15:5] == 1459 && ir[3:2] == 0; // B66x / B67x
+
+    // Extract the selected system register and destination/source register.
+    sys_selector = mrs || msr ? ir[23:16] : 0;
+    sys_register = mrs ? ir[27:24] : (msr ? ir[3:0] : 0);
+    sys_mask = msr ? ir[27:26] : (cps ? ir[1:0] : 0);
+
+    // SP and PC are invalid operands for these decoded transfers.
+    bad_register = sys_register == 13 || sys_register == 15;
+    system_op = (mrs ? (bad_register ? 5 : 1) :
+                 (msr ? (bad_register ? 5 : 2) :
+                 (cps ? (sys_mask == 0 ? 5 : (ir[4] ? 4 : 3)) : 0)));
+}
+
+// Implements special-register access, privilege state, and interrupt masks.
+// MSP, PSP, and APSR storage belongs to the CPU core; writes use output strobes.
+chip M7SystemRegisters(clk, reset, execute, system_op, sys_selector, sys_mask, operand,
+                       in_handler, clear_faultmask, exception_return, return_uses_psp,
+                       ipsr, apsr, msp, psp, read_data, access_valid, write_msp, write_psp,
+                       write_apsr, privileged, thread_psp, primask, basepri, faultmask, control,
+                       fp_context, write_fpca) {
+    input execution {
+        clk, reset, execute, in_handler, clear_faultmask, exception_return, return_uses_psp;
+        fp_context;
+        system_op[3], sys_selector[8], sys_mask[2];
+    }
+    input registers {
+        operand[32], msp[32], psp[32], ipsr[9], apsr[9];
+    }
+    output registers {
+        read_data[32], basepri[8], control[3];
+        access_valid, write_msp, write_psp, write_apsr, privileged, thread_psp;
+        primask, faultmask, write_fpca;
+    }
+
+    // Persistent CPU privilege, interrupt-mask, and stack-selection state.
+    primask_state = 0;
+    basepri_state[8] = 0;
+    faultmask_state = 0;
+    control_state[2] = 0;
+
+    wire access {
+        valid_selector, valid_msr_mask, read_register, write_register, write_privileged;
+        change_masks, cps_disable, can_raise_faultmask;
+    }
+
+    // Validate system register selectors and supported MSR write masks.
+    valid_selector = (sys_selector <= 3 || (sys_selector >= 5 && sys_selector <= 9) ||
+                      (sys_selector >= 16 && sys_selector <= 20));
+    valid_msr_mask = sys_mask == 2 || (sys_selector <= 3 && sys_mask != 0);
+    access_valid = ((system_op == 1 && valid_selector) ||
+                    (system_op == 2 && valid_selector && valid_msr_mask) ||
+                    ((system_op == 3 || system_op == 4) && sys_mask != 0));
+
+    // Handler mode is privileged and always uses MSP.
+    // CONTROL retains the thread's selected stack and privilege state.
+    privileged = in_handler || !control_state[0];
+    thread_psp = control_state[1];
+    control[1:0] = in_handler ? (control_state & 1) : control_state;
+    control[2] = fp_context;
+    primask = primask_state;
+    basepri = basepri_state;
+    faultmask = faultmask_state;
+
+    // MRS reads system registers; MSR generates authorized write strobes.
+    read_register = system_op == 1 && access_valid;
+    write_register = execute && !reset && system_op == 2 && access_valid;
+    write_privileged = write_register && privileged;
+    write_msp = write_privileged && sys_selector == 8;
+    write_psp = write_privileged && sys_selector == 9;
+    write_apsr = write_register && sys_selector <= 3;
+    write_fpca = write_privileged && sys_selector == 20;
+
+    // CPSID/CPSIE modify interrupt masks only in privileged execution.
+    change_masks = execute && !reset && privileged && access_valid && (system_op == 3 || system_op == 4);
+    cps_disable = system_op == 4;
+    can_raise_faultmask = !faultmask_state && ipsr != 2 && ipsr != 3;
+
+    // Assemble the program-status register for MRS reads.
+    // APSR input order is NZCVQ followed by GE; EPSR fields read as zero.
+    wire status {
+        psr_value[32];
+    }
+    psr_value[31:27] = sys_selector <= 3 ? apsr[8:4] : 0;
+    psr_value[26:20] = 0;
+    psr_value[19:16] = sys_selector <= 3 ? apsr[3:0] : 0;
+    psr_value[15:9] = 0;
+    psr_value[8:0] = privileged && sys_selector[0] ? ipsr : 0;
+
+    // Unprivileged reads cannot expose protected system registers.
+    privileged_read[32] = (sys_selector == 8 ? msp : (sys_selector == 9 ? psp :
+                          (sys_selector == 16 ? primask_state :
+                          ((sys_selector == 17 || sys_selector == 18) ? basepri_state : faultmask_state))));
+    read_data = (read_register ? (sys_selector <= 7 ? psr_value :
+                (sys_selector == 20 ? control : (privileged ? privileged_read : 0))) : 0);
+
+    // Only BASEPRI[7:4] is implemented; lower priority bits are masked.
+    priority_value[8] = operand[7:0] & 240;
+
+    clock(clk, 10kHz) {
+        if (reset) {
+            clear { primask_state, basepri_state, faultmask_state, control_state };
+        } else {
+            // PRIMASK controls configurable interrupt masking.
+            if (write_privileged && sys_selector == 16) {
+                primask_state = operand[0];
+            } else if (change_masks && sys_mask[1]) {
+                primask_state = cps_disable;
+            }
+
+            // BASEPRI_MAX only accepts a stronger nonzero priority threshold.
+            if (write_privileged && (sys_selector == 17 ||
+                (sys_selector == 18 && priority_value != 0 &&
+                 (basepri_state == 0 || priority_value < basepri_state)))) {
+                basepri_state = priority_value;
+            }
+
+            // FAULTMASK cannot be raised from NMI or HardFault handlers.
+            if (clear_faultmask) {
+                faultmask_state = 0;
+            } else if (write_privileged && sys_selector == 19 && can_raise_faultmask) {
+                faultmask_state = operand[0];
+            } else if (change_masks && sys_mask[0] && (!cps_disable || can_raise_faultmask)) {
+                faultmask_state = cps_disable;
+            }
+
+            // CONTROL[0] selects thread privilege; CONTROL[1] selects PSP.
+            if (write_privileged && sys_selector == 20) {
+                control_state[0] = operand[0];
+            }
+            if (exception_return) {
+                control_state[1] = return_uses_psp;
+            } else if (write_privileged && sys_selector == 20 && !in_handler) {
+                control_state[1] = operand[1];
+            }
+        }
+    }
+}

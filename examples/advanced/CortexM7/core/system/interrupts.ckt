@@ -1,0 +1,495 @@
+chip M7FirmwareSysTick(clk, reset, read_enable, write_enable, address, size_code,
+                      write_data, irq_ack, set_pending, clear_pending, data, mapped, irq_pending, accelerated) {
+    input timer_bus {
+        clk, reset, read_enable, write_enable, irq_ack, set_pending, clear_pending, accelerated;
+        address[32], write_data[32];
+        size_code[2];
+    }
+    output timer_state {
+        data[32];
+        mapped, irq_pending;
+    }
+
+    // Memory-mapped SysTick CTRL, LOAD, VAL, and CALIB registers.
+    const CONTROL_ADDRESS[32] = 3758153744;
+    const RELOAD_ADDRESS[32] = 3758153748;
+    const CURRENT_ADDRESS[32] = 3758153752;
+    const CALIB_ADDRESS[32] = 3758153756;
+    // CALIB.NOREF is set. No TENMS calibration is supplied.
+    const CALIB_VALUE[32] = 2147483648;
+
+    // Persistent timer state and latched interrupt request.
+    counter_enabled = 0;
+    interrupt_enabled = 0;
+    count_flag = 0;
+    request_pending = 0;
+    reload_value[24] = 0;
+    current_value[24] = 0;
+
+    wire decode {
+        word_access, control_selected, reload_selected, current_selected, calib_selected;
+        write_control, write_reload, write_current, read_control, expired;
+    }
+    word_access = size_code == 2;
+    control_selected = word_access && address == CONTROL_ADDRESS;
+    reload_selected = word_access && address == RELOAD_ADDRESS;
+    current_selected = word_access && address == CURRENT_ADDRESS;
+    calib_selected = word_access && address == CALIB_ADDRESS;
+    mapped = (control_selected || reload_selected || current_selected ||
+              (calib_selected && !write_enable));
+    write_control = write_enable && control_selected;
+    write_reload = write_enable && reload_selected;
+    write_current = write_enable && current_selected;
+    read_control = read_enable && control_selected;
+    // Board firmware can retain its real reload registers while progressing
+    // through millisecond startup delays on the viewer's slower clock.
+    decrement[24] = accelerated && reload_value >= 128 ? reload_value >> 7 : 1;
+    expired = counter_enabled && current_value != 0 && current_value <= decrement && !write_current;
+
+    // With NOREF, CTRL.CLKSOURCE always reads as the processor clock.
+    control_value[32] = ((count_flag ? 65536 : 0) | 4 |
+                         (interrupt_enabled ? 2 : 0) | (counter_enabled ? 1 : 0));
+    data = (read_enable && mapped ? (control_selected ? control_value :
+            (reload_selected ? reload_value : (current_selected ? current_value : CALIB_VALUE))) : 0);
+    irq_pending = request_pending;
+
+    // Clocked register writes and expiration update; pending requests persist until cleared.
+    clock(clk, 10kHz) {
+        if (reset) {
+            clear {
+                counter_enabled, interrupt_enabled, count_flag, request_pending, reload_value, current_value
+            };
+        } else {
+            if (write_control) {
+                counter_enabled = write_data[0];
+                interrupt_enabled = write_data[1];
+            }
+            if (write_reload) {
+                reload_value = write_data[23:0];
+            }
+            if (write_current) {
+                clear { current_value, count_flag };
+            } else {
+                if (counter_enabled) {
+                    current_value = current_value == 0 ? reload_value : (expired ? 0 : current_value - decrement);
+                }
+                // Preserve a new expiry when software reads the previous flag on the same edge.
+                if (expired) {
+                    count_flag = 1;
+                } else if (read_control) {
+                    count_flag = 0;
+                }
+            }
+            if (set_pending || (expired && interrupt_enabled)) {
+                request_pending = 1;
+            } else if (irq_ack || clear_pending) {
+                request_pending = 0;
+            }
+        }
+    }
+}
+
+chip M7FirmwarePendSV(clk, reset, request, clear_pending, acknowledge, pending) {
+    input requests {
+        clk, reset, request, clear_pending, acknowledge;
+    }
+    output state {
+        pending;
+    }
+    // PendSV remains pending until software clears it or the CPU acknowledges it.
+    latched = 0;
+    pending = latched;
+    clock(clk, 10kHz) {
+        if (reset) { latched = 0; }
+        else if (request) { latched = 1; }
+        else if (clear_pending || acknowledge) { latched = 0; }
+    }
+}
+
+// Cortex-M7 system control registers used by the SVC, PendSV, and SysTick demo.
+// The bus supplies privileged transactions and owns the pending exception latches.
+chip M7FirmwareSCB(clk, reset, read_enable, write_enable, address, size_code, write_data,
+                   ipsr, pending_exception, pendsv_pending, systick_pending, external_pending, depth,
+                   data, mapped, svc_priority,
+                   pendsv_priority, systick_priority, vector_base,
+                   pendsv_set, pendsv_clear, systick_set, systick_clear, sev_on_pend, sleep_on_exit,
+                   usagefault_enabled, usagefault_priority, usagefault_active, divzero_trap,
+                   memmanage_enabled, memmanage_priority, memmanage_active,
+                   busfault_enabled, busfault_priority, busfault_active,
+                   nmi_pending, nmi_set, priority_group, reset_base, cache_present, unalign_trap) {
+    input system_bus {
+        clk, reset, read_enable, write_enable, pendsv_pending, systick_pending, external_pending, usagefault_active;
+        memmanage_active, busfault_active, nmi_pending, cache_present;
+        address[32], write_data[32], reset_base[32], size_code[2], ipsr[9], pending_exception[9], depth[5];
+    }
+    output system_state {
+        data[32], vector_base[32], svc_priority[8], pendsv_priority[8], systick_priority[8];
+        usagefault_enabled, usagefault_priority[8], divzero_trap, unalign_trap;
+        memmanage_enabled, memmanage_priority[8], busfault_enabled, busfault_priority[8];
+        nmi_set, priority_group[3];
+        mapped, pendsv_set, pendsv_clear, systick_set, systick_clear, sev_on_pend, sleep_on_exit;
+    }
+
+    // SCB register addresses in the System Control Space.
+    const ICSR[32] = 3758157060;
+    const VTOR[32] = 3758157064;
+    const AIRCR[32] = 3758157068;
+    const SCR[32] = 3758157072;
+    const CCR[32] = 3758157076;
+    const SHPR1[32] = 3758157080;
+    const SHPR2[32] = 3758157084;
+    const SHPR3[32] = 3758157088;
+    const SHCSR[32] = 3758157092;
+    const WORD_MASK[32] = 4294967292;
+    const BYTE_MASK[32] = 255;
+    const VECTOR_MASK[32] = 4294967168;
+    const AIRCR_WRITE_KEY[16] = 1530;
+    const AIRCR_READ_KEY[16] = 64005;
+    const ZERO5[5] = 0;
+
+    // Three SHPR words share one lane-aware write path. Only the upper
+    // four bits of each implemented exception-priority byte are writable.
+    // Resettable exception priorities, fault enables, vector base, and sleep controls.
+    priority_registers[3][32] = 0;
+    usagefault_enable_state = 0;
+    memmanage_enable_state = 0;
+    busfault_enable_state = 0;
+    divzero_trap_state = 0;
+    unalign_trap_state = 0;
+    cache_enable[2] = 0;
+    vector_base_state[32] = 0;
+    vector_base_written = 0;
+    sleep_control[5] = 0;
+    priority_group_state[3] = 0;
+
+    wire register_decode {
+        word_access, byte_access, icsr_selected, vtor_selected, aircr_selected;
+        scr_selected, ccr_selected, shcsr_selected;
+        shpr1_selected, shpr2_selected, shpr3_selected;
+    }
+    word_access = size_code == 2 && address[1:0] == 0;
+    byte_access = size_code == 0;
+    register_address[32] = address & WORD_MASK;
+    icsr_selected = word_access && register_address == ICSR;
+    vtor_selected = word_access && register_address == VTOR;
+    aircr_selected = word_access && register_address == AIRCR;
+    scr_selected = word_access && register_address == SCR;
+    ccr_selected = word_access && register_address == CCR;
+    shcsr_selected = word_access && register_address == SHCSR;
+    shpr1_selected = (word_access || byte_access) && register_address == SHPR1;
+    shpr2_selected = (word_access || byte_access) && register_address == SHPR2;
+    shpr3_selected = (word_access || byte_access) && register_address == SHPR3;
+    mapped = (icsr_selected || vtor_selected || aircr_selected || scr_selected || ccr_selected || shcsr_selected ||
+              shpr1_selected || shpr2_selected || shpr3_selected);
+    sev_on_pend = sleep_control[4];
+    sleep_on_exit = sleep_control[1];
+
+    svc_priority = priority_registers[1] >> 24;
+    pendsv_priority = priority_registers[2] >> 16;
+    systick_priority = priority_registers[2] >> 24;
+    usagefault_priority = priority_registers[0] >> 16;
+    memmanage_priority = priority_registers[0];
+    busfault_priority = priority_registers[0] >> 8;
+    usagefault_enabled = usagefault_enable_state;
+    memmanage_enabled = memmanage_enable_state;
+    busfault_enabled = busfault_enable_state;
+    divzero_trap = divzero_trap_state;
+    unalign_trap = unalign_trap_state;
+    vector_base = vector_base_written ? vector_base_state : reset_base;
+    priority_group = priority_group_state;
+    wire priority_select {
+        priority_selected;
+    }
+    priority_selected = shpr1_selected || shpr2_selected || shpr3_selected;
+    priority_index[2] = (register_address - SHPR1) >> 2;
+    byte_shift[5] = (ZERO5 + address[1:0]) << 3;
+    priority_word[32] = priority_registers[priority_index];
+    priority_lane[32] = word_access ? 4294967295 : BYTE_MASK << byte_shift;
+    writable_priority_bits[32] = (shpr1_selected ? 15790320 :
+                                  shpr2_selected ? 4026531840 : 4042260480);
+    // Word/byte writes modify only implemented priority bits in the chosen lane.
+    priority_mask[32] = priority_lane & writable_priority_bits;
+    priority_value[32] = word_access ? write_data : write_data << byte_shift;
+
+    // STKALIGN reads as one on Cortex-M7. SHCSR exposes enable and active bits for the configurable faults.
+    ccr_word[32] = (512 | (divzero_trap ? 16 : 0) | (unalign_trap ? 8 : 0) | (cache_enable[0] ? 65536 : 0) |
+                    (cache_enable[1] ? 131072 : 0));
+    wire fault_status_word {
+        shcsr_word[32];
+    }
+    shcsr_word[31:19] = 0;
+    shcsr_word[18] = usagefault_enabled;
+    shcsr_word[17] = busfault_enabled;
+    shcsr_word[16] = memmanage_enabled;
+    shcsr_word[15:4] = 0;
+    shcsr_word[3] = usagefault_active;
+    shcsr_word[2] = 0;
+    shcsr_word[1] = busfault_active;
+    shcsr_word[0] = memmanage_active;
+    wire aircr_status_word {
+        aircr_word[32];
+    }
+    aircr_word[31:16] = AIRCR_READ_KEY;
+    aircr_word[15:11] = 0;
+    aircr_word[10:8] = priority_group_state;
+    aircr_word[7:0] = 0;
+    wire interrupt_status_word {
+        icsr_word[32];
+    }
+    icsr_word[31] = nmi_pending;
+    icsr_word[30:29] = 0;
+    icsr_word[28] = pendsv_pending;
+    icsr_word[27] = 0;
+    icsr_word[26] = systick_pending;
+    icsr_word[25:23] = 0;
+    icsr_word[22] = external_pending;
+    icsr_word[21] = 0;
+    icsr_word[20:12] = pending_exception;
+    icsr_word[11] = depth <= 1;
+    icsr_word[10:9] = 0;
+    icsr_word[8:0] = ipsr;
+    // Readback combines control registers and the selected priority byte or word.
+    data = (read_enable && mapped ? (icsr_selected ? icsr_word : vtor_selected ? vector_base :
+            aircr_selected ? aircr_word : scr_selected ? sleep_control : ccr_selected ? ccr_word : shcsr_selected ? shcsr_word :
+            (byte_access ? ((priority_word >> byte_shift) & 255) : priority_word)) : 0);
+
+    // A same-exception set/clear conflict has no effect in this model.
+    wire register_writes {
+        icsr_write, register_write;
+    }
+    register_write = write_enable && !reset;
+    icsr_write = register_write && icsr_selected;
+    nmi_set = icsr_write && write_data[31];
+    pendsv_set = icsr_write && write_data[28] && !write_data[27];
+    pendsv_clear = icsr_write && write_data[27] && !write_data[28];
+    systick_set = icsr_write && write_data[26] && !write_data[25];
+    systick_clear = icsr_write && write_data[25] && !write_data[26];
+
+    clock(clk, 10kHz) {
+        if (reset) {
+            clear {
+                priority_registers, usagefault_enable_state, memmanage_enable_state, busfault_enable_state,
+                divzero_trap_state, unalign_trap_state, cache_enable, vector_base_state, vector_base_written,
+                sleep_control, priority_group_state
+            };
+        } else if (register_write) {
+            if (vtor_selected) {
+                vector_base_state = write_data & VECTOR_MASK;
+                vector_base_written = 1;
+            }
+            if (aircr_selected && write_data[31:16] == AIRCR_WRITE_KEY) {
+                priority_group_state = write_data[10:8];
+            }
+            if (scr_selected) {
+                sleep_control = write_data[4:0] & 22;
+            }
+            if (ccr_selected) {
+                divzero_trap_state = write_data[4];
+                unalign_trap_state = write_data[3];
+                cache_enable = cache_present ? write_data[17:16] : 0;
+            }
+            if (shcsr_selected) {
+                usagefault_enable_state = write_data[18];
+                busfault_enable_state = write_data[17];
+                memmanage_enable_state = write_data[16];
+            }
+            if (priority_selected) {
+                priority_registers[priority_index] = ((priority_word & (4294967295 ^ priority_mask)) |
+                                                       (priority_value & priority_mask));
+            }
+        }
+    }
+}
+
+// Resolve one sixteen-line group. A lower IRQ number wins a priority tie.
+chip M7NVICPriorityGroup(pending_lines, active_lines, priority_bytes, irq_base,
+                         selected_exception, selected_priority, active_priority) {
+    input irq_group {
+        pending_lines[16], active_lines[16], priority_bytes[128], irq_base[8];
+    }
+    output selected_irq {
+        selected_exception[9], selected_priority[8], active_priority[8];
+    }
+    const ZERO9[9] = 0;
+    wire initial_state {
+        candidate0[9], pending_priority0[8], active_priority0[8];
+    }
+    candidate0 = 0; pending_priority0 = 255; active_priority0 = 255;
+    // Choose the lowest priority number; equal priorities keep the first IRQ.
+    for (int i = 0; i < 16; i++) {
+        wire candidates {
+            priority*{i}[8], candidate*{i + 1}[9], pending_priority*{i + 1}[8], active_priority*{i + 1}[8];
+            choose*{i};
+        }
+        priority*{i} = priority_bytes[8 * i + 7:8 * i];
+        choose*{i} = pending_lines[i] && (candidate*{i} == 0 || priority*{i} < pending_priority*{i});
+        candidate*{i + 1} = choose*{i} ? ZERO9 + irq_base + i + 16 : candidate*{i};
+        pending_priority*{i + 1} = choose*{i} ? priority*{i} : pending_priority*{i};
+        active_priority*{i + 1} = active_lines[i] && priority*{i} < active_priority*{i} ? priority*{i} : active_priority*{i};
+    }
+    selected_exception = candidate16;
+    selected_priority = pending_priority16;
+    active_priority = active_priority16;
+}
+
+// Keep arbitration independent of CPU cycles. Fifteen sixteen-line encoders
+// limit the propagation depth when one pending line or priority byte changes.
+chip M7NVICPrioritySelect(pending_lines, active_lines, priority_bytes,
+                          selected_exception, selected_priority, active_priority) {
+    input irq_bank {
+        pending_lines[240], active_lines[240], priority_bytes[1920];
+    }
+    output selection {
+        selected_exception[9], selected_priority[8], active_priority[8];
+    }
+    wire initial_state {
+        candidate0[9], pending_priority0[8], active_priority0[8];
+    }
+    candidate0 = 0; pending_priority0 = 255; active_priority0 = 255;
+    // Compare winners from fifteen 16-line groups without changing IRQ numbering.
+    for (int i = 0; i < 15; i++) {
+        const base*{i}[8] = *{i * 16};
+        wire groups {
+            pending*{i}[16], active*{i}[16], priorities*{i}[128];
+            exception*{i}[9], priority*{i}[8], active_min*{i}[8];
+            candidate*{i + 1}[9], pending_priority*{i + 1}[8], active_priority*{i + 1}[8];
+            choose*{i};
+        }
+        pending*{i} = pending_lines[i * 16 + 15:i * 16];
+        active*{i} = active_lines[i * 16 + 15:i * 16];
+        priorities*{i} = priority_bytes[i * 128 + 127:i * 128];
+        M7NVICPriorityGroup(pending*{i}, active*{i}, priorities*{i}, base*{i},
+                            exception*{i}, priority*{i}, active_min*{i});
+        choose*{i} = exception*{i} != 0 && (candidate*{i} == 0 || priority*{i} < pending_priority*{i});
+        candidate*{i + 1} = choose*{i} ? exception*{i} : candidate*{i};
+        pending_priority*{i + 1} = choose*{i} ? priority*{i} : pending_priority*{i};
+        active_priority*{i + 1} = active_min*{i} < active_priority*{i} ? active_min*{i} : active_priority*{i};
+    }
+    selected_exception = candidate15;
+    selected_priority = pending_priority15;
+    active_priority = active_priority15;
+}
+
+// All 240 external IRQs have enable, pending, active and four-bit priority
+// state. IRQ0/IRQ1 remain convenient aliases for the board-selected two lines.
+chip M7FirmwareNVIC(clk, reset, read_enable, write_enable, address, size_code, write_data,
+                    irq0, irq0_ack, irq0_active, irq0_return, data, mapped,
+                    irq0_enabled, irq0_pending, irq0_priority,
+                    irq1, irq1_ack, irq1_active, irq1_return, irq1_enabled, irq1_pending, irq1_priority,
+                    irq_numbers, expanded_bank,
+                    irq_lines, external_ack_lines, external_active_lines, external_return_lines,
+                    external_exception, external_priority, external_active_priority, external_pending_lines) {
+    input interrupt_bus {
+        clk, reset, read_enable, write_enable, irq0, irq0_ack, irq0_active, irq0_return;
+        irq1, irq1_ack, irq1_active, irq1_return;
+        address[32], write_data[32], size_code[2], irq_numbers[10], expanded_bank;
+        irq_lines[240], external_ack_lines[240], external_active_lines[240], external_return_lines[240];
+    }
+    output irq_state {
+        data[32], irq0_priority[8], irq1_priority[8];
+        mapped, irq0_enabled, irq0_pending, irq1_enabled, irq1_pending;
+        external_exception[9], external_priority[8], external_active_priority[8], external_pending_lines[240];
+    }
+
+    const ICTR[32] = 3758153732;
+    const ISER0[32] = 3758153984;
+    const ICER0[32] = 3758154112;
+    const ISPR0[32] = 3758154240;
+    const ICPR0[32] = 3758154368;
+    const IABR0[32] = 3758154496;
+    const IPR0[32] = 3758154752;
+    const STIR[32] = 3758157568;
+    const ONE240[240] = 1;
+    const ZERO240[240] = 0;
+    const ALL240[240] = 1766847064778384329583297500742918515827483896875618958121606201292619775;
+    const ALL32[32] = 4294967295;
+    const ZERO8[8] = 0;
+    const ZERO5[5] = 0;
+    const PRIORITY_BITS[32] = 4042322160;
+    const PRIORITY_BYTE[32] = 240;
+    const LANE_BYTE[32] = 255;
+    irq0_number[5] = irq_numbers[4:0];
+    irq1_number[5] = irq_numbers[9:5];
+    irq0_mask[240] = ONE240 << irq0_number;
+    irq1_mask[240] = ONE240 << irq1_number;
+    // Independent enable, pending, edge-history, and priority state for 240 IRQs.
+    enabled[240] = 0;
+    pending[240] = 0;
+    previous_levels[240] = 0;
+    priorities[60][32] = 0;
+
+    wire register_decode {
+        word_access, type_selected, set_enable, clear_enable, set_pending, clear_pending, active_selected, priority_selected, software_trigger;
+    }
+    // Decode NVIC enable, pending, active, priority, and software-trigger registers.
+    word_access = size_code == 2 && address[1:0] == 0;
+    type_selected = word_access && address == ICTR;
+    set_enable = word_access && address >= ISER0 && address < ISER0 + 32;
+    clear_enable = word_access && address >= ICER0 && address < ICER0 + 32;
+    set_pending = word_access && address >= ISPR0 && address < ISPR0 + 32;
+    clear_pending = word_access && address >= ICPR0 && address < ICPR0 + 32;
+    active_selected = word_access && address >= IABR0 && address < IABR0 + 32;
+    priority_selected = ((word_access || size_code == 0) && address >= IPR0 && address < IPR0 + 240);
+    software_trigger = word_access && address == STIR;
+    mapped = type_selected || set_enable || clear_enable || set_pending || clear_pending || active_selected || priority_selected || software_trigger;
+    bank_shift[8] = (ZERO8 + address[4:2]) << 5;
+    bank_write[240] = (ZERO240 + write_data) << bank_shift;
+    // Merge the external IRQ bus with the two board-facing IRQ aliases.
+    external_levels[240] = irq_lines | (irq0 ? irq0_mask : 0) | (irq1 ? irq1_mask : 0);
+    returned[240] = external_return_lines | (irq0_return ? irq0_mask : 0) | (irq1_return ? irq1_mask : 0);
+    // Capture rising levels, including retriggers after an exception returns.
+    latched[240] = external_levels & ((ALL240 ^ previous_levels) | returned);
+    acknowledged[240] = external_ack_lines | (irq0_ack ? irq0_mask : 0) | (irq1_ack ? irq1_mask : 0);
+    active[240] = external_active_lines | (irq0_active ? irq0_mask : 0) | (irq1_active ? irq1_mask : 0);
+    trigger_bits[240] = software_trigger && write_data[8:0] < 240 ? ONE240 << write_data[8:0] : 0;
+    software_set[240] = write_enable ? ((set_pending ? bank_write : 0) | trigger_bits) : 0;
+    software_clear[240] = write_enable && clear_pending ? bank_write & (ALL240 ^ external_levels) : 0;
+    irq0_enabled = (enabled & irq0_mask) != 0;
+    irq1_enabled = (enabled & irq1_mask) != 0;
+    irq0_pending = (pending & irq0_mask) != 0;
+    irq1_pending = (pending & irq1_mask) != 0;
+    external_pending_lines = pending;
+    // Only enabled pending lines enter priority selection.
+    eligible[240] = enabled & pending;
+    wire priority_view {
+        priority_bytes[1920];
+    }
+    for (int i = 0; i < 60; i++) {
+        priority_bytes[i * 32 + 31:i * 32] = priorities[i];
+    }
+    M7NVICPrioritySelect(eligible, active, priority_bytes,
+                         external_exception, external_priority, external_active_priority);
+
+    irq0_shift[5] = (ZERO5 + irq0_number[1:0]) << 3;
+    irq1_shift[5] = (ZERO5 + irq1_number[1:0]) << 3;
+    irq0_priority = priorities[irq0_number[4:2]] >> irq0_shift;
+    irq1_priority = priorities[irq1_number[4:2]] >> irq1_shift;
+    priority_index[6] = (address - IPR0) >> 2;
+    priority_shift[5] = word_access ? 0 : (ZERO5 + address[1:0]) << 3;
+    lane_mask[32] = word_access ? ALL32 : (LANE_BYTE << priority_shift);
+    priority_mask[32] = lane_mask & PRIORITY_BITS;
+    priority_word[32] = priorities[priority_index];
+    bank_data[240] = (set_enable || clear_enable) ? enabled : ((set_pending || clear_pending) ? pending : active);
+    // ICTR reports eight 32-line banks; the final bank has 16 implemented lines.
+    data = (read_enable && mapped ? (type_selected ? 7 : software_trigger ? 0 : priority_selected ?
+            ((priority_word & lane_mask) >> priority_shift) : (bank_data >> bank_shift)) : 0);
+
+    // Apply enable/pending writes, IRQ acknowledgments, and priority changes.
+    clock(clk, 10kHz) {
+        if (reset) {
+            clear { enabled, pending, previous_levels, priorities };
+        } else {
+            previous_levels = external_levels;
+            if (write_enable && set_enable) {
+                enabled = enabled | bank_write;
+            } else if (write_enable && clear_enable) {
+                enabled = enabled & (ALL240 ^ bank_write);
+            }
+            pending = ((pending | latched) & (ALL240 ^ (acknowledged | software_clear))) | software_set;
+            if (write_enable && priority_selected) {
+                priorities[priority_index] = ((priority_word & (ALL32 ^ priority_mask)) |
+                                               ((write_data << priority_shift) & priority_mask));
+            }
+        }
+    }
+}

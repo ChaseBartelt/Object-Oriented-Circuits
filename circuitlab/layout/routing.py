@@ -14,7 +14,6 @@ from circuitlab.layout.geometry import (
     BJT_PIN_OFFSET,
     POT_PIN_OFFSET,
     Layout,
-    PACKAGE_WIDTH,
     PACKAGE_WIRE_CLEARANCE,
     add_wire,
     component_pins,
@@ -25,7 +24,10 @@ from circuitlab.layout.geometry import (
     inline_grounded_voltage,
     input_source_indices,
     package_half_height,
+    package_width,
     place_symbol,
+    quad_package,
+    quad_routing_pins,
 )
 from circuitlab.layout.automatic import compact, series_runs, source_cells
 from circuitlab.layout.bjt_stages import multivibrator_layout
@@ -196,6 +198,8 @@ def _inline_grounded_parts(circuit, pins, boundary, *, shunts=True):
             continue
         target, _, _, offset = next(pin for pin in members[live] if pin[0] != index)
         part = circuit.components[target]
+        if quad_package(part) and abs(offset) > package_width(part) / 2:
+            continue
         if part.kind in {"H", "P", "Q", "S"} or (part.kind in {"O", "A"} and abs(offset) < 1):
             attached[live] = index, ground
     return attached
@@ -320,7 +324,8 @@ def _channel_layout(
             first, second = indices
             part, _, left, offset = pins[first]
             other, _, other_left, other_offset = pins[second]
-            if (part == other and parts[part].kind == "H" and left == other_left
+            if (part == other and parts[part].kind == "H" and not quad_package(parts[part])
+                    and left == other_left
                     and abs(offset - other_offset) == 1):
                 package_loops[net] = first, second
     # Reserve a horizontal track at the source terminal. Pins on the rest
@@ -429,7 +434,7 @@ def _channel_layout(
         if not part.is_source:
             widths[col] = max(widths[col], 0.35 * label_width + (0.55 if tight else 0.8))
         if part.kind == "H":
-            widths[col] = max(widths[col], PACKAGE_WIDTH + 0.4)
+            widths[col] = max(widths[col], package_width(part) + 0.4)
 
     channels, target_rows = defaultdict(list), {}
     for net, indices in groups.items():
@@ -508,10 +513,14 @@ def _channel_layout(
     row_y, track_y = [0.0], {}
     source_rows = {cells[i][0] for i in cells if parts[i].is_source}
     package_rows = defaultdict(float)
+    pin_extent = defaultdict(float)
+    for i, _, _, offset in pins:
+        if quad_package(parts[i]):
+            pin_extent[i] = max(pin_extent[i], abs(offset))
     for i, (row, _) in cells.items():
         if parts[i].kind == "H":
             # Keep room for the visible gap after both parts and tracks snap.
-            height = package_half_height(parts[i]) + 2 * PACKAGE_WIRE_CLEARANCE
+            height = (pin_extent.get(i) or package_half_height(parts[i])) + 2 * PACKAGE_WIRE_CLEARANCE
             package_rows[row] = max(package_rows[row], height)
     for row in range(max(row for row, _ in cells.values()) + 1):
         tracks = sorted(
@@ -551,7 +560,7 @@ def _channel_layout(
         row, col = cells[i]
         symbol = grid_symbol(
             part,
-            centers[col] - (PACKAGE_WIDTH if part.kind == "H" else SYMBOL_WIDTH) / 2,
+            centers[col] - (package_width(part) if part.kind == "H" else SYMBOL_WIDTH) / 2,
             row_y[row],
             grounds,
             top="-" if i in flipped else "+",
@@ -572,9 +581,22 @@ def _channel_layout(
         drawing.positions[part.name] = symbol[1]
         drawing.symbols.append(symbol)
         symbols[i] = symbol
-    terminals = []
-    for i, _, left, offset in pins:
+    quad_terminals = {
+        i: {(left, round(offset, 8)): (tip, approach)
+            for _, left, offset, tip, approach in quad_routing_pins(part, a, b)}
+        for i, (part, a, b, _) in symbols.items() if quad_package(part, a, b)
+    }
+    terminals, vertical_tips = [], {}
+    for index, (i, net, left, offset) in enumerate(pins):
         part, a, b, _ = symbols[i]
+        if i in quad_terminals:
+            tip, approach = quad_terminals[i][left, round(offset, 8)]
+            terminals.append(approach)
+            if tip != approach:
+                vertical_tips[index] = tip
+                if net not in grounds and (len(groups[net]) > 1 or net in boundary):
+                    add_wire(drawing, net, tip, approach)
+            continue
         terminals.append(
             (a if (left != (i in reversed_parts)) else b)
             if part.is_source or i in rotated
@@ -624,7 +646,9 @@ def _channel_layout(
                 # Only the paired amplifier inputs are exactly 0.7 apart.
                 # Package pins need their own ground connections.
                 if parts[part].kind == "H":
-                    ground_lead(drawing, a, net, turns=1 if left else 3, length=.75)
+                    tip = vertical_tips.get(i)
+                    turns = (2 if offset > 0 else 0) if tip else (1 if left else 3)
+                    ground_lead(drawing, tip or a, net, turns=turns, length=.75)
                     continue
                 b = (a[0] + (-0.6 if left else 0.6), a[1])
                 add_wire(drawing, net, a, b)
@@ -635,9 +659,12 @@ def _channel_layout(
             continue
         if len(indices) == 1 and net not in boundary:
             for i in indices:
-                a = terminals[i]
+                a = vertical_tips.get(i, terminals[i])
                 left = pins[i][2] and not parts[pins[i][0]].is_source
-                b = (a[0] + (-0.72 if left else 0.72), a[1])
+                if i in vertical_tips:
+                    b = (a[0], a[1] + (0.72 if pins[i][3] > 0 else -0.72))
+                else:
+                    b = (a[0] + (-0.72 if left else 0.72), a[1])
                 add_wire(drawing, net, a, b)
                 drawing.connectors.append(
                     (net, b, names[net], left, pins[i][3] < 0)

@@ -1,0 +1,970 @@
+// Cortex-M7 execution core: Thumb-2 decoding, integer/DSP/FP datapaths,
+// bus transfers, interrupt arbitration, and architectural exception frames.
+chip M7FirmwareCore(clk, reset, ir, wide, fetch_ok, fetch_allowed, data_allowed, bus_data, bus_valid, vector_access,
+                    irq_pending, pendsv_pending, svc_priority, pendsv_priority, systick_priority, vector_base,
+                    sev_on_pend, sleep_on_exit,
+                    irq0_enabled, irq0_pending, irq0_priority, irq0_ack, irq0_active, irq0_return,
+                    systick_ack, pendsv_ack, irq_active, pending_exception, depth, sleeping, event_latch,
+                    raise_fault, set_cfsr, set_hfsr,
+                    usagefault_enabled, usagefault_priority, usagefault_active, divzero_trap,
+                    memmanage_enabled, memmanage_priority, memmanage_active,
+                    busfault_enabled, busfault_priority, busfault_active,
+                    pc, msp, psp, sp, lr, nzcv, booted, fault, fault_code, last_pc, last_ir, retired,
+                    control, ipsr, primask, basepri, faultmask, privileged, itstate,
+                    bus_addr, bus_write_data, bus_read, bus_write, bus_size,
+                    r0, r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12,
+                    cpacr, fpccr, fpdscr, fpscr, s0, s15, s16, s31, fp_active_frame,
+                    fp_lazy_active, fpcar, data_privileged,
+                    irq1_pending, irq1_enabled, irq1_priority, irq1_ack, irq1_active, irq1_return,
+                    nmi, nmi_set, nmi_pending, nmi_active, priority_group, irq_numbers,
+                    external_exception, external_priority, external_active_priority, external_pending_lines,
+                    external_ack_lines, external_active_lines, external_return_lines) {
+    input clock_reset {
+        clk, reset;
+    }
+    input execution_state {
+        wide, ir[32];
+    }
+    input memory_bus {
+        fetch_ok, fetch_allowed, data_allowed, bus_valid, bus_data[32];
+    }
+    input interrupts {
+        irq_pending, pendsv_pending, irq0_enabled, irq0_pending, sev_on_pend, sleep_on_exit, vector_base[32];
+        svc_priority[8], pendsv_priority[8], systick_priority[8], irq0_priority[8], irq1_pending;
+        irq1_enabled, irq1_priority[8], nmi, nmi_set, priority_group[3], irq_numbers[10];
+        external_exception[9], external_priority[8], external_active_priority[8];
+        external_pending_lines[240];
+    }
+    input system_control {
+        cpacr[32], fpccr[32], fpdscr[32];
+    }
+    input fault_handling {
+        usagefault_enabled, usagefault_priority[8], divzero_trap, memmanage_enabled, memmanage_priority[8];
+        busfault_enabled, busfault_priority[8];
+    }
+    output execution_state {
+        pc[32], msp[32], psp[32], sp[32], lr[32], last_pc[32], last_ir[32], retired[32], nzcv[4], booted;
+        itstate[8];
+    }
+    output memory_bus {
+        bus_addr[32], bus_write_data[32], bus_size[2], bus_read, bus_write, vector_access;
+    }
+    output fault_handling {
+        fault_code[3], fault, raise_fault, set_cfsr[32], set_hfsr[32], usagefault_active, memmanage_active;
+        busfault_active;
+    }
+    output system_control {
+        control[3], ipsr[9], basepri[8], primask, faultmask, privileged, data_privileged;
+    }
+    output interrupts {
+        pending_exception[9], depth[5], systick_ack, pendsv_ack, irq_active, irq0_ack, irq0_active;
+        irq0_return, sleeping, event_latch, irq1_ack, irq1_active, irq1_return, nmi_pending, nmi_active;
+        external_ack_lines[240], external_active_lines[240], external_return_lines[240];
+    }
+    output registers {
+        for (int i = 0; i < 13; i++) { r*{i}[32]; }
+    }
+    output floating_point {
+        fpscr[32], s0[32], s15[32], s16[32], s31[32], fp_active_frame, fp_lazy_active, fpcar[32];
+    }
+
+    // ARM address masks, EXC_RETURN encodings, frame sizes, and exception IDs.
+    const WORD_ADDRESS[32] = 4294967292;
+    const THUMB_ADDRESS[32] = 4294967294;
+    const FRAME_ALIGN[32] = 4294967288;
+    const RETURN_HANDLER_MSP[32] = 4294967281;
+    const RETURN_THREAD_MSP[32] = 4294967289;
+    const RETURN_THREAD_PSP[32] = 4294967293;
+    const BASIC_FRAME[32] = 32;
+    const FP_FRAME[32] = 104;
+    const EXC_RETURN_BASIC[32] = 16;
+    const EXC_RETURN_FP_MASK[32] = 4294967279;
+    const FP_DEFAULTS[32] = 130023424;
+    const NMI_EXCEPTION[9] = 2;
+    const MEMMANAGE[9] = 4;
+    const BUSFAULT[9] = 5;
+    const USAGEFAULT[9] = 6;
+    const LAST_CORE_WORD[5] = 7;
+    const FPSCR_WORD[5] = 24;
+    const T_BIT[32] = 16777216;
+    const ONE4[4] = 1;
+    const ONE16[16] = 1;
+    const ONE256[256] = 1;
+    const ONE240[240] = 1;
+    const ALL_EXCEPTIONS[256] = 115792089237316195423570985008687907853269984665640564039457584007913129639935;
+    const ALL_REGISTERS[16] = 65535;
+    const ZERO32[32] = 0;
+    // Stored CPU state; initial values are separate from the clocked reset path.
+    phase[2] = 0;
+    current_pc[32] = 0;
+    main_stack[32] = 0;
+    process_stack[32] = 0;
+    link[32] = 4294967295;
+    flags[4] = 0;
+    saturation = 0;
+    ge_flags[4] = 0;
+    failure[3] = 0;
+    retired_pc[32] = 0;
+    retired_ir[32] = 0;
+    retire_count[32] = 0;
+
+    // Keep PC on the stack instruction until all selected words are transferred.
+    pending[16] = 0;
+    stack_cursor[32] = 0;
+    transfer_end[32] = 0;
+
+    fp_context = 0;
+    fp_pending[6] = 0;
+    fp_transfer_index[5] = 0;
+    dual_pending = 0;
+    exclusive_valid = 0;
+    exclusive_addr[32] = 0;
+    exclusive_size[2] = 0;
+
+    // Both frame formats start with eight core words. FP state follows at offset 32.
+    // Thread mode can stack on MSP or PSP. The handler executes on MSP.
+    exception_phase[3] = 0;
+    exception_index[5] = 0;
+    frame_address[32] = 0;
+    frame_psp = 0;
+    frame_has_fp = 0;
+    frame_lazy = 0;
+    lazy_pending = 0;
+    lazy_address[32] = 0;
+    lazy_privileged = 0;
+    return_handler = 0;
+    return_pc[32] = 0;
+    saved_return_status[32] = 0;
+    entry_exception[9] = 0;
+    active_exception[9] = 0;
+    active_set[256] = 0;
+    active_depth[5] = 0;
+    // Preserve each suspended handler while higher-priority exceptions run.
+    suspended[32][9] = 0;
+    previous_nmi = 0;
+    pending_nmi = 0;
+    fault_cause[3] = 0;
+    fault_frame_stacked = 0;
+    it_state[8] = 0;
+    // Internal signals are grouped for schematic inspection and editor folding.
+    wire instruction_decode {
+        op[6], rd[4], rn[4], rm[4], condition[4], size_code[2], reg_list[16];
+        imm[32], gpr_a[32], gpr_b[32], gpr_store[32], gpr_high[32], result[32];
+        use_reg, condition_met, transfer_wb;
+        in_it, skip_instruction, test_carry, instruction_ok;
+        load, store_data, multi_store, multi_load, decrement_before, stack_active, active, execute;
+        transfer_last, base_write, stack_lr;
+        alu_write, flag_write, stack_pc, commit_data, write_gpr;
+        entering, vector_read, returning, exception_busy, exception_bus;
+        probing_fault, vector_fault, execution_fault, unaligned_data, frame_bus_error;
+        divide_fault, take_configurable_fault, configurable_enabled;
+        restore_gpr;
+        next_nzcv[4];
+    }
+    wire system_exceptions {
+        system_op[3], sys_selector[8], sys_register[4], sys_mask[2];
+        system_read[32];
+        system_valid, write_msp, write_psp, write_apsr, thread_psp;
+        in_handler, supported, read_system, using_psp, return_complete;
+        systick_eligible, pendsv_eligible, svc_eligible, take_pending, take_svc;
+        fixed_priority_active, nmi_accepted, clear_faultmask;
+        return_from_pop, return_from_bx, returns_to_thread, priority_pass, valid_stacked_mode;
+    }
+    wire floating_point {
+        fp_op[5], fp_core_reg[4], fp_dest[5], fp_source[5], fp_other[5], fp_count[6];
+        fp_read_index[5], fp_write_index[5], frame_fp_index[5];
+        fp_data[32], fp_second[32], fp_accumulator[32], fp_write_data[32], fp_status_data[32];
+        fp_add_result[32], fp_add_status[32];
+        fp_sqrt_result[32], fp_sqrt_status[32], fp_fused_result[32], fp_fused_status[32];
+        fp_muldiv_result[32], fp_muldiv_status[32], fp_cmp_status[32], fp_cvt_result[32], fp_cvt_status[32];
+        fp_store, fp_load, fp_transfer, fp_allowed, fp_denied, fp_use, fp_to_core;
+        fp_write, fpscr_write, fp_restore, fp_restore_reg, fp_transfer_last, write_fpca;
+        fp_divide, fp_muldiv, fp_to_int, fp_int_signed, fp_memory, fp_read_word, fp_write_word, fp_math, fp_write_apsr;
+        fp_compare_zero, fp_signal_nan, fp_round_zero, fp_select_first;
+        fp_negate_product, fp_negate_accumulator, fp_accumulate;
+        saving_lazy, defer_fp, discard_lazy, fp_first_use;
+    }
+    wire integer_datapath {
+        expanded_imm[32], multiply_product[32], thumb_value[32], thumb_result[32], dsp_result[32], dsp_high[32];
+        thumb_kind[5], thumb_rd[4], thumb_rn[4], thumb_rm[4], thumb_ra[4], thumb_shift[5], thumb_shift_type[2];
+        dsp_op[4], dsp_rd[4], dsp_rn[4], dsp_rm[4], dsp_ra[4], dsp_aux[13], dsp_next_ge[4], thumb_next_nzcv[4];
+        thumb_reg_shift, thumb_immediate, thumb_immediate_carry, thumb_flags, thumb_active;
+        dsp_active, dsp_long, dsp_commit_high, dsp_saturated, dsp_ge_write;
+    }
+    wire memory_transfers {
+        memory_kind[2], memory_rn[4], memory_rm[4], memory_rt[4], memory_rt2[4], memory_size[2], memory_shift[2];
+        memory_offset[12];
+        memory_indexed, memory_negate, memory_preindex, memory_writeback, memory_signed;
+        memory_dual, memory_unprivileged;
+        memory_exclusive_load, memory_exclusive_store, exclusive_pass, clear_exclusive;
+        exclusive_status_reg[4];
+        memory_active, memory_read, memory_write, memory_load, memory_pc, memory_base_write, return_from_memory;
+        compare_branch, wide_conditional, branch_taken, direct_load, direct_store;
+    }
+    // Parallel decoders select the active instruction family.
+    M7FirmwareDecode(ir, op, rd, rn, rm, imm, use_reg, condition, size_code, reg_list, transfer_wb, expanded_imm);
+    wire arithmetic_flags {
+        saturation_hit;
+    }
+    M7FirmwareALU(op, operand, rhs, instruction_condition, nzcv, test_carry,
+                  result, next_nzcv, condition_met, saturation_hit, multiply_product);
+    M7ThumbDataDecode(ir, expanded_imm, thumb_kind, thumb_rd, thumb_rn, thumb_rm, thumb_ra, thumb_value,
+                      thumb_shift_type, thumb_shift, thumb_reg_shift, thumb_immediate, thumb_immediate_carry, thumb_flags);
+    M7ThumbData(thumb_kind, thumb_operand, reg_b, reg_c, multiply_product, thumb_value, thumb_shift_type,
+                thumb_shift, thumb_reg_shift, thumb_immediate, thumb_immediate_carry, nzcv, thumb_result, thumb_next_nzcv);
+    M7DSPDecode(ir, dsp_op, dsp_rd, dsp_rn, dsp_rm, dsp_ra, dsp_aux);
+    M7DSPExecute(dsp_op, dsp_operand, dsp_rhs, dsp_accumulate, dsp_accumulate_high, dsp_aux, ge_flags,
+                 dsp_result, dsp_high, dsp_saturated, dsp_ge_write, dsp_next_ge);
+    M7ThumbMemoryDecode(ir, memory_kind, memory_rn, memory_rm, memory_rt, memory_rt2, memory_size, memory_offset,
+                        memory_shift, memory_indexed, memory_negate, memory_preindex, memory_writeback,
+                        memory_signed, memory_dual, memory_unprivileged, memory_exclusive_load, memory_exclusive_store,
+                        exclusive_status_reg);
+    M7SystemDecode(ir, system_op, sys_selector, sys_register, sys_mask);
+    M7SystemRegisters(clk, reset, execute, system_op, sys_selector, sys_mask, operand,
+                      in_handler, clear_faultmask, returns_to_thread, frame_psp,
+                      ipsr, apsr, msp, psp, system_read, system_valid, write_msp, write_psp,
+                      write_apsr, privileged, thread_psp, primask, basepri, faultmask, control,
+                      fp_context, write_fpca);
+    M7FirmwareRegisters(clk, reset, write_gpr, write_index, write_data,
+                        base_write, transfer_base_reg, updated_base,
+                        read_index, read_b_index, read_store_index, read_high_index,
+                        gpr_a, gpr_b, gpr_store, gpr_high,
+                        r0, r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12);
+    // Floating-point registers and arithmetic retain bit-level FPSCR behavior.
+    M7FPDecode(ir, fp_op, fp_core_reg, fp_dest, fp_source, fp_other, fp_count);
+    M7FPRegisters(clk, reset, fp_read_index, fp_other, fp_accumulator_index, fp_write, fp_write_index, fp_write_data,
+                  fpscr_write, fp_status_data, fp_data, fp_second, fp_accumulator, fpscr, s0, s15, s16, s31);
+    M7FPAdd(fp_add_lhs, fp_add_rhs, fp_add_input_status, fp_add_result, fp_add_status);
+    M7FPMulDiv(fp_muldiv_left, fp_muldiv_right, fp_effective_status, fp_divide, fp_muldiv_result, fp_muldiv_status);
+    M7FPCompare(fp_data, fp_second, fp_effective_status, fp_compare_zero, fp_signal_nan, fp_cmp_status);
+    M7FPConvert(fp_second, fp_effective_status, fp_to_int, fp_int_signed, fp_round_zero, fp_cvt_result, fp_cvt_status);
+    M7FPSqrt(fp_sqrt_operand, fp_effective_status, fp_sqrt_result, fp_sqrt_status);
+    M7FPFused(fp_fused_left, fp_fused_right, fp_fused_addend, fp_effective_status,
+              fp_negate_product, fp_negate_accumulator, fp_fused_result, fp_fused_status);
+
+    // Publish architectural registers and the instruction-retirement trace.
+    pc = current_pc;
+    msp = main_stack;
+    psp = process_stack;
+    sp = using_psp ? psp : msp;
+    using_psp = !in_handler && thread_psp;
+    lr = link;
+    nzcv = flags;
+    itstate = it_state;
+    in_it = it_state[3:0] != 0;
+    instruction_condition[4] = in_it ? it_state[7:4] : (wide_conditional ? ir[9:6] : condition);
+    instruction_ok = fetch_ok && fetch_allowed;
+    skip_instruction = in_it && !condition_met && instruction_ok && !sleeping;
+    it_advance[8] = it_state[2:0] == 0 ? 0 : ((it_state & 224) | ((it_state << 1) & 31));
+    test_carry = ir[10] || ir[30] ? imm[31] : nzcv[1];
+    ipsr = active_exception;
+    depth = active_depth;
+    in_handler = active_exception != 0;
+    wire processor_status {
+        apsr[9];
+    }
+    apsr[8:5] = flags;
+    apsr[4] = saturation;
+    apsr[3:0] = ge_flags;
+    booted = phase == 2;
+    fault_code = failure;
+    fault = failure != 0;
+    last_pc = retired_pc;
+    last_ir = retired_ir;
+    retired = retire_count;
+    irq_active = in_handler;
+    entering = exception_phase == 1;
+    vector_read = exception_phase == 2;
+    returning = exception_phase == 3;
+    probing_fault = exception_phase == 4;
+    saving_lazy = exception_phase == 5;
+    vector_access = !booted || vector_read || probing_fault;
+    exception_busy = exception_phase != 0;
+    exception_bus = !reset && !fault && exception_busy;
+    // Group comparisons ignore priority bits [PRIGROUP:0]. Pending arbitration
+    // still compares the full priority byte, so subpriority breaks a group tie.
+    // Apply PRIGROUP and masking before comparing pending exception priorities.
+    group_shift[4] = ONE4 + priority_group;
+    group_mask[8] = 255 << group_shift;
+    base_group_priority[8] = basepri & group_mask;
+    systick_eligible = irq_pending && !faultmask && (basepri == 0 || (systick_priority & group_mask) < base_group_priority);
+    pendsv_eligible = pendsv_pending && !faultmask && (basepri == 0 || (pendsv_priority & group_mask) < base_group_priority);
+    // The lower exception number wins when group priority and subpriority tie.
+    tick_candidate[9] = (pendsv_eligible && (!systick_eligible || pendsv_priority <= systick_priority) ? 14 :
+                        (systick_eligible ? 15 : 0));
+    tick_priority[8] = tick_candidate == 14 ? pendsv_priority : systick_priority;
+    const ZERO9[9] = 0;
+    irq0_exception[9] = ZERO9 + irq_numbers[4:0] + 16;
+    irq1_exception[9] = ZERO9 + irq_numbers[9:5] + 16;
+    // NVIC has already selected the lowest-priority code and IRQ-number tie.
+    external_candidate[9] = (external_exception != 0 && !faultmask &&
+                             (basepri == 0 || (external_priority & group_mask) < base_group_priority) ?
+                             external_exception : 0);
+    external_pending_priority[8] = external_priority;
+    pending_exception = (pending_nmi ? NMI_EXCEPTION :
+                         external_candidate != 0 && (tick_candidate == 0 || external_pending_priority < tick_priority) ?
+                         external_candidate : tick_candidate);
+    pending_priority[8] = pending_exception >= 16 ? external_pending_priority : tick_priority;
+    // The execution priority includes suspended handlers, whose priorities can
+    // change while a nested handler is running. Find the lowest active code.
+    wire active_priority_tree {
+        active_priorities[64], pair_priority[32], quad_priority[16];
+    }
+    active_priorities[7:0] = active_set[4] ? memmanage_priority : 255;
+    active_priorities[15:8] = active_set[5] ? busfault_priority : 255;
+    active_priorities[23:16] = active_set[6] ? usagefault_priority : 255;
+    active_priorities[31:24] = active_set[11] ? svc_priority : 255;
+    active_priorities[39:32] = active_set[14] ? pendsv_priority : 255;
+    active_priorities[47:40] = active_set[15] ? systick_priority : 255;
+    wire nested_irq_state {
+        irq0_stacked, irq1_stacked;
+    }
+    irq0_stacked = ((active_set >> irq0_exception) & 1) != 0;
+    irq1_stacked = ((active_set >> irq1_exception) & 1) != 0;
+    active_priorities[55:48] = external_active_priority;
+    active_priorities[63:56] = 255;
+    for (int i = 0; i < 4; i++) {
+        pair_priority[i * 8 + 7 : i * 8] =
+            (active_priorities[i * 16 + 7 : i * 16] < active_priorities[i * 16 + 15 : i * 16 + 8] ?
+             active_priorities[i * 16 + 7 : i * 16] : active_priorities[i * 16 + 15 : i * 16 + 8]);
+    }
+    for (int i = 0; i < 2; i++) {
+        quad_priority[i * 8 + 7 : i * 8] =
+            (pair_priority[i * 16 + 7 : i * 16] < pair_priority[i * 16 + 15 : i * 16 + 8] ?
+             pair_priority[i * 16 + 7 : i * 16] : pair_priority[i * 16 + 15 : i * 16 + 8]);
+    }
+    active_priority[8] = quad_priority[7:0] < quad_priority[15:8] ? quad_priority[7:0] : quad_priority[15:8];
+    active_group_priority[8] = active_priority & group_mask;
+    fixed_priority_active = active_set[2] || active_set[3];
+    priority_pass = (pending_exception == NMI_EXCEPTION || !in_handler ||
+                     (!fixed_priority_active && (pending_priority & group_mask) < active_group_priority));
+    wire interrupt_wakeup {
+        interrupt_ready, hint_recognized;
+    }
+    interrupt_ready = (!reset && booted && !fault && pending_exception != 0 &&
+                       priority_pass && !exception_busy && !stack_active && !dual_pending &&
+                       ((active_set >> pending_exception) & 1) == 0);
+    // PRIMASK masks configurable exceptions and permits them to wake WFI.
+    take_pending = interrupt_ready && (!primask || pending_exception == NMI_EXCEPTION);
+    wire pending_event_lines {
+        pending_lines[243];
+    }
+    pending_lines[0] = irq_pending;
+    pending_lines[1] = pendsv_pending;
+    pending_lines[2] = pending_nmi;
+    pending_lines[242:3] = external_pending_lines;
+    // The low-power hint controller can stall execution while interrupts continue.
+    M7ThumbHints(clk, reset, ir, wide, execute, interrupt_ready, take_pending, pending_lines,
+                 return_complete, returns_to_thread, sev_on_pend, sleep_on_exit,
+                 hint_recognized, sleeping, event_latch);
+    systick_ack = take_pending && pending_exception == 15;
+    pendsv_ack = take_pending && pending_exception == 14;
+    irq0_ack = take_pending && pending_exception == irq0_exception;
+    irq0_active = irq0_stacked || ((entering || vector_read) && entry_exception == irq0_exception);
+    irq0_return = return_complete && ipsr == irq0_exception;
+    irq1_ack = take_pending && pending_exception == irq1_exception;
+    irq1_active = irq1_stacked || ((entering || vector_read) && entry_exception == irq1_exception);
+    irq1_return = return_complete && ipsr == irq1_exception;
+    pending_irq_index[8] = pending_exception - 16;
+    entering_irq_index[8] = entry_exception - 16;
+    returning_irq_index[8] = ipsr - 16;
+    external_ack_lines = take_pending && pending_exception >= 16 ? ONE240 << pending_irq_index : 0;
+    external_active_lines = (active_set >> 16) | ((entering || vector_read) && entry_exception >= 16 ?
+                             ONE240 << entering_irq_index : 0);
+    external_return_lines = return_complete && ipsr >= 16 ? ONE240 << returning_irq_index : 0;
+    nmi_accepted = take_pending && pending_exception == NMI_EXCEPTION;
+    nmi_pending = pending_nmi;
+    nmi_active = active_set[2] || ((entering || vector_read) && entry_exception == NMI_EXCEPTION);
+    svc_group_priority[8] = svc_priority & group_mask;
+    svc_eligible = ((!in_handler || (!fixed_priority_active && svc_group_priority < active_group_priority && !active_set[11])) &&
+                    !primask && !faultmask && (basepri == 0 || svc_group_priority < base_group_priority));
+    resume_index[5] = active_depth >= 2 ? active_depth - 2 : 0;
+    expected_resume[9] = suspended[resume_index];
+    return_status[32] = exception_index == LAST_CORE_WORD ? bus_data : saved_return_status;
+    valid_stacked_mode = (return_handler ? (active_depth >= 2 && return_status[8:0] == expected_resume) :
+                          (active_depth == 1 && return_status[8:0] == 0));
+    return_complete = (returning && !reset && !fault && bus_valid &&
+                       exception_index == (fp_restore ? FPSCR_WORD : LAST_CORE_WORD) &&
+                       return_status[24] && valid_stacked_mode);
+    returns_to_thread = return_complete && !return_handler;
+    clear_faultmask = return_complete && ipsr != NMI_EXCEPTION;
+    pop_return_kind[32] = bus_data | EXC_RETURN_BASIC;
+    bx_return_kind[32] = operand | EXC_RETURN_BASIC;
+    wire exception_return_check {
+        loaded_return;
+    }
+    loaded_return = (in_handler && (pop_return_kind == RETURN_THREAD_MSP ||
+                     pop_return_kind == RETURN_THREAD_PSP || pop_return_kind == RETURN_HANDLER_MSP));
+    return_from_pop = stack_pc && loaded_return;
+    return_from_memory = memory_pc && loaded_return;
+    return_from_bx = (op == 11 && in_handler && (bx_return_kind == RETURN_THREAD_MSP ||
+                      bx_return_kind == RETURN_THREAD_PSP || bx_return_kind == RETURN_HANDLER_MSP));
+    // Thumb PC-relative addressing, conditional branches, and sequential fetch.
+    pc_ahead[32] = pc + 4;
+    sequential[32] = pc + (wide ? 4 : 2);
+    compare_branch = (ir[15:0] & 62720) == 45312;
+    wide_conditional = ir[15:11] == 30 && (ir[31:16] & 53248) == 32768 && ir[9:6] < 14;
+    wire wide_branch_offset {
+        wide_displacement[32];
+    }
+    wide_displacement[31:20] = ir[10] ? 4095 : 0;
+    wide_displacement[19] = ir[27];
+    wide_displacement[18] = ir[29];
+    wide_displacement[17:12] = ir[5:0];
+    wide_displacement[11:1] = ir[26:16];
+    wide_displacement[0] = 0;
+    wire compare_branch_offset {
+        compare_displacement[7];
+    }
+    compare_displacement[6] = ir[9];
+    compare_displacement[5:1] = ir[7:3];
+    compare_displacement[0] = 0;
+    branch_target[32] = pc_ahead + (wide_conditional ? wide_displacement : compare_branch ? compare_displacement : imm);
+    branch_taken = (op == 9 || op == 10 || ((op == 8 || wide_conditional) && condition_met) ||
+                    (compare_branch && ((operand != 0) == ir[11])));
+    // Select direct loads/stores, register-list transfers, and FP instruction access.
+    load = !memory_active && (op == 5 || op == 6 || op == 39);
+    store_data = !memory_active && op == 7;
+    direct_load = load || memory_load;
+    direct_store = store_data || (memory_kind == 2 && (!memory_exclusive_store || exclusive_pass));
+    multi_store = op == 12 || op == 21 || op == 23;
+    multi_load = op == 13 || op == 22 || op == 44;
+    decrement_before = op == 12 || op == 23 || op == 44;
+    stack_active = pending != 0 || fp_transfer;
+    fp_allowed = cpacr[23:20] == 15 || (cpacr[23:20] == 5 && privileged);
+    fp_denied = fp_op != 0 && !fp_allowed;
+    supported = ((op != 0 || system_valid || thumb_active || dsp_active || memory_active || hint_recognized ||
+                 wide_conditional || compare_branch || (fp_op != 0 && fp_allowed)) &&
+                 !((op == 41 || compare_branch || wide_conditional || fp_op == 21) && in_it));
+    active = (!reset && booted && !fault && !sleeping && instruction_ok && supported && !skip_instruction &&
+              !exception_busy && !take_pending);
+    defer_fp = active && !stack_active && fp_op != 0 && fp_allowed && lazy_pending;
+    execute = active && !stack_active && !defer_fp;
+    take_svc = execute && op == 20 && svc_eligible;
+    // Keep the faulting PC on precise execution faults so a handler can retry
+    // the instruction or advance the stacked return address.
+    wire execution_fault_checks {
+        invalid_branch;
+    }
+    invalid_branch = ((op == 11 || op == 29) && !operand[0]) || (memory_pc && bus_valid && !bus_data[0]);
+    divide_fault = divzero_trap && thumb_active && (thumb_kind == 24 || thumb_kind == 25) && reg_b == 0;
+    // Precise failures retain the faulting instruction for architectural recovery.
+    runtime_fault[3] = (!instruction_ok ? 2 : (skip_instruction ? 0 : (!supported || divide_fault ? 3 : (op == 20 ? 7 :
+                       (stack_active ? (!bus_valid ? 4 : (stack_pc && !bus_data[0] ? 5 : 0)) :
+                       (!bus_valid && (direct_load || direct_store || memory_kind == 3 || fp_memory) ?
+                       4 : (invalid_branch ? 5 : 0)))))));
+    execution_fault = (!reset && booted && !fault && !sleeping && !exception_busy && !take_pending && !take_svc &&
+                       runtime_fault != 0);
+    vector_fault = exception_bus && vector_read && (!bus_valid || !bus_data[0]);
+    frame_bus_error = exception_bus && (entering || returning || saving_lazy) && !bus_valid;
+    raise_fault = execution_fault || vector_fault || frame_bus_error;
+    unaligned_data = (bus_size == 1 && bus_addr[0]) || (bus_size == 2 && bus_addr[1:0] != 0);
+    memmanage_active = active_set[4];
+    busfault_active = active_set[5];
+    usagefault_active = active_set[6];
+    // Failed fetches and aligned data transfers select MPU or bus status from the access checks.
+    // UsageFault handles instruction errors and unaligned transfers.
+    configurable_exception[9] = (runtime_fault == 2 ? (fetch_allowed ? BUSFAULT : MEMMANAGE) :
+                                runtime_fault == 4 ? (unaligned_data ? USAGEFAULT : (data_allowed ? BUSFAULT : MEMMANAGE)) :
+                                runtime_fault == 3 || runtime_fault == 5 ? USAGEFAULT : 0);
+    configurable_priority[8] = (configurable_exception == MEMMANAGE ? memmanage_priority :
+                               configurable_exception == BUSFAULT ? busfault_priority : usagefault_priority);
+    configurable_group_priority[8] = configurable_priority & group_mask;
+    configurable_enabled = (configurable_exception == MEMMANAGE ? memmanage_enabled :
+                            configurable_exception == BUSFAULT ? busfault_enabled : usagefault_enabled);
+    take_configurable_fault = (execution_fault && configurable_exception != 0 && configurable_enabled &&
+                              ((active_set >> configurable_exception) & 1) == 0 && !primask && !faultmask &&
+                              (basepri == 0 || configurable_group_priority < base_group_priority) &&
+                              (!in_handler || (!fixed_priority_active && configurable_group_priority < active_group_priority)));
+    set_hfsr = take_configurable_fault ? 0 : (vector_fault && !bus_valid ? 2 : 1073741824);
+    set_cfsr = (frame_bus_error ? (saving_lazy ? (data_allowed ? 8192 : 32) :
+               (data_allowed ? (entering ? 4096 : 2048) : (entering ? 16 : 8))) :
+               (vector_fault ? (bus_valid ? 131072 : 0) :
+               (runtime_fault == 2 ? (configurable_exception == MEMMANAGE ? 1 : 256) :
+               (runtime_fault == 3 ? (divide_fault ? 33554432 : (fp_denied ? 524288 : 65536)) : (runtime_fault == 4 ?
+               (unaligned_data ? 16777216 : (configurable_exception == MEMMANAGE ? 130 : 33280)) :
+               (runtime_fault == 5 ? 131072 : 0))))));
+    alu_write = (!memory_active && (dsp_active || (thumb_active ? thumb_rd != 15 :
+                 (op == 1 || op == 2 || op == 3 || (op >= 15 && op <= 19) ||
+                  (op >= 24 && op <= 28) || (op >= 30 && op <= 38) || op == 42 || op == 43))));
+    flag_write = (op == 4 || op == 40 || (!in_it && ((op >= 1 && op <= 3) || op == 19 ||
+                  (!wide && op >= 24 && op <= 28) || (op >= 30 && op <= 34))));
+
+    // Transfer regs in ascending order, including the architectural LR and PC slots.
+    stack_first0[4] = 15;
+    stack_words0[5] = 0;
+    for (int i = 0; i < 16; i++) {
+        stack_first*{i + 1}[4] = stack_first*{i} == 15 && i != 13 && pending[i] ? i : stack_first*{i};
+        stack_words*{i + 1}[5] = stack_words*{i} + (i == 13 ? 0 : reg_list[i]);
+    }
+    stack_index[4] = stack_first16;
+    remaining[16] = pending & (ALL_REGISTERS ^ (ONE16 << stack_index));
+    frame_register[4] = exception_index == 4 ? 12 : exception_index[3:0];
+    dsp_active = dsp_op != 0;
+    dsp_long = dsp_op >= 12;
+    dsp_commit_high = execute && dsp_long;
+    thumb_active = thumb_kind != 0 && !dsp_active;
+    memory_register[4] = dual_pending ? memory_rt2 : memory_rt;
+    exec_rd[4] = (memory_active ? (memory_exclusive_store ? exclusive_status_reg : memory_register) :
+                  dsp_active ? dsp_rd : thumb_active ? thumb_rd : rd);
+    // Register multiplexers serve both normal execution and exception stacking.
+    read_index[4] = (entering ? frame_register : pending != 0 ? stack_index :
+                    fp_op != 0 ? fp_core_reg : system_op == 2 ? sys_register :
+                    memory_active ? memory_rn : compare_branch ? ir[2:0] :
+                    dsp_active ? dsp_rn : thumb_active ? thumb_rn : rn);
+    read_b_index[4] = memory_active ? memory_rm : dsp_active ? dsp_rm : thumb_active ? thumb_rm : rm;
+    read_store_index[4] = (memory_active ? memory_register : dsp_long ? dsp_rd :
+                          dsp_active ? dsp_ra : thumb_active ? thumb_ra : rd);
+    read_high_index[4] = dsp_long ? dsp_ra : 0;
+    operand[32] = read_index == 13 ? sp : (read_index == 14 ? lr :
+                  (read_index == 15 ? pc_ahead : gpr_a));
+    reg_b[32] = read_b_index == 13 ? sp : (read_b_index == 14 ? lr : (read_b_index == 15 ? pc_ahead : gpr_b));
+    reg_c[32] = read_store_index == 14 ? lr : read_store_index == 15 ? 0 : gpr_store;
+    dsp_operand[32] = dsp_active && dsp_rn != 15 ? operand : 0;
+    dsp_rhs[32] = dsp_active ? reg_b : 0;
+    dsp_accumulate[32] = dsp_active ? reg_c : 0;
+    dsp_accumulate_high[32] = dsp_long ? (read_high_index == 14 ? lr : gpr_high) : 0;
+    thumb_operand[32] = (thumb_rn != 15 ? operand :
+                        thumb_kind <= 2 ? (pc_ahead & WORD_ADDRESS) : 0);
+    rhs[32] = use_reg || (thumb_active && thumb_kind >= 21 && thumb_kind <= 23) ? reg_b : imm;
+    effective[32] = (op == 5 ? (pc_ahead & WORD_ADDRESS) : operand) + ((load || store_data) && use_reg ? reg_b : imm);
+    // Effective addresses, exclusive monitor, and dualword transfer state.
+    memory_active = memory_kind != 0;
+    memory_load = memory_kind == 1;
+    memory_pc = memory_load && memory_rt == 15;
+    memory_read = execute && (memory_load || memory_kind == 3);
+    memory_write = execute && memory_kind == 2 && (!memory_exclusive_store || exclusive_pass);
+    displacement[32] = memory_indexed ? (reg_b << memory_shift) : memory_offset;
+    memory_base[32] = memory_rn == 15 && memory_kind != 3 ? (pc_ahead & WORD_ADDRESS) : operand;
+    memory_next[32] = memory_base + (memory_negate ? ZERO32 - displacement : displacement);
+    memory_address[32] = dual_pending ? stack_cursor : memory_preindex ? memory_next : memory_base;
+    memory_base_write = (execute && memory_active && memory_writeback && (!memory_dual || dual_pending) &&
+                         bus_valid && !invalid_branch);
+    exclusive_pass = exclusive_valid && memory_address == exclusive_addr && memory_size == exclusive_size;
+    clear_exclusive = ir == 2402284479;
+    fp_offset[32] = (ZERO32 + ir[23:16]) << 2;
+    fp_address[32] = ((fp_core_reg == 15 ? (pc_ahead & WORD_ADDRESS) : operand) +
+                     (ir[7] ? fp_offset : ZERO32 - fp_offset));
+
+    stack_bytes[32] = (ZERO32 + stack_words16) << 2;
+    stack_base[32] = decrement_before ? operand - stack_bytes : operand;
+    stack_pc = multi_load && stack_index == 15;
+    stack_lr = multi_load && stack_index == 14;
+    transfer_last = active && pending != 0 && remaining == 0 && bus_valid && (!stack_pc || bus_data[0]);
+    transfer_base_reg[4] = dsp_long ? dsp_ra : memory_active ? memory_rn : fp_transfer ? fp_core_reg : rn;
+    updated_base[32] = dsp_long ? dsp_high : memory_active && !dual_pending ? memory_next : transfer_end;
+    base_write = (((transfer_last && transfer_wb) || fp_transfer_last || memory_base_write || dsp_commit_high) &&
+                  transfer_base_reg < 13);
+    msp_after_transfer[32] = transfer_wb && rn == 13 ? transfer_end : msp;
+    stacked_status[32] = (((ZERO32 + apsr[8:4]) << 27) | ((ZERO32 + apsr[3:0]) << 16) |
+                         ((ZERO32 + it_state[1:0]) << 25) | ((ZERO32 + it_state[7:2]) << 10) |
+                         T_BIT | ((ZERO32 + sp[2]) << 9) | ipsr);
+    frame_data[32] = (exception_index > LAST_CORE_WORD ? (exception_index == FPSCR_WORD ? fpscr : fp_data) :
+                     (exception_index < 5 ? gpr_a : (exception_index == 5 ? lr :
+                      (exception_index == 6 ? pc : stacked_status))));
+    frame_word[32] = frame_address + ((ZERO32 + exception_index) << 2);
+    lazy_word[32] = lazy_address + ((ZERO32 + frame_fp_index) << 2);
+    entry_stack[32] = (sp & FRAME_ALIGN) - (fp_context ? FP_FRAME : BASIC_FRAME);
+    returned_stack[32] = frame_address + (frame_has_fp ? FP_FRAME : BASIC_FRAME) + (return_status[9] ? 4 : 0);
+    vector_address[32] = vector_base + (probing_fault ? 12 : ((ZERO32 + entry_exception) << 2));
+    // One shared bus services reset vectors, exceptions, stack transfers, and data.
+    bus_addr = phase == 0 ? vector_base : (phase == 1 ? vector_base + 4 :
+               (exception_busy ? ((vector_read || probing_fault) ? vector_address :
+                                 (saving_lazy ? lazy_word : frame_word)) :
+               (stack_active ? stack_cursor : (fp_memory ? fp_address : memory_active ? memory_address : effective))));
+    direct_size[2] = memory_active ? memory_size : size_code;
+    bus_size = (!booted || stack_active || exception_busy || fp_memory) ? 2 : direct_size;
+    bus_read = ((!reset && !fault && (!booted || (active && (fp_transfer ? fp_load :
+                (stack_active ? multi_load : load))))) ||
+                fp_read_word || memory_read || (exception_bus && (vector_read || returning || probing_fault)));
+    bus_write = (exception_bus && (entering || saving_lazy)) || (active && (fp_transfer ? fp_store :
+                 (stack_active ? multi_store : store_data))) || fp_write_word || memory_write;
+    store_register[32] = read_store_index == 13 ? sp : (read_store_index == 14 ? lr : gpr_store);
+    bus_write_data = ((entering || saving_lazy) ? frame_data :
+                     ((fp_transfer || fp_write_word) ? fp_data : (stack_active ? operand : store_register)));
+    commit_data = (execute && !divide_fault && (alu_write || (direct_load && bus_valid) ||
+                  (memory_exclusive_store && (!exclusive_pass || bus_valid))));
+    read_system = execute && system_valid && system_op == 1;
+    restore_gpr = exception_bus && returning && bus_valid && exception_index < 5;
+    write_gpr = ((commit_data && exec_rd < 13) || (read_system && sys_register < 13) ||
+                 (fp_to_core && fp_core_reg < 13) ||
+                 (active && stack_active && multi_load && stack_index < 13 && bus_valid) || restore_gpr);
+    write_index[4] = returning ? frame_register : (stack_active ? stack_index :
+                     (fp_to_core ? fp_core_reg : (read_system ? sys_register : exec_rd)));
+    signed_mask[32] = direct_size == 0 ? (bus_data[7] ? 4294967040 : 0) : (bus_data[15] ? 4294901760 : 0);
+    load_data[32] = op == 39 || (memory_active && memory_signed) ? (bus_data | signed_mask) : bus_data;
+    write_data[32] = (returning || stack_active ? bus_data : (direct_load ? load_data :
+                     (fp_to_core ? (fp_op == 4 ? fp_effective_status : fp_data) :
+                      (read_system ? system_read : memory_exclusive_store ? (exclusive_pass ? 0 : 1) :
+                       dsp_active ? dsp_result : thumb_active ? thumb_result : result))));
+
+    // Decode FP transfers and arithmetic, then select writeback and FPSCR updates.
+    fp_store = fp_op == 5;
+    fp_load = fp_op == 6;
+    fp_read_word = execute && fp_op == 14;
+    fp_write_word = execute && fp_op == 15;
+    fp_memory = fp_read_word || fp_write_word;
+    fp_divide = fp_op == 10;
+    fp_accumulate = fp_op == 22;
+    fp_muldiv = fp_op == 9 || fp_divide || fp_accumulate;
+    fp_muldiv_left[32] = fp_muldiv ? fp_data : 0;
+    fp_muldiv_right[32] = fp_muldiv ? fp_second : 0;
+    fp_to_int = ir[2];
+    fp_int_signed = fp_to_int ? ir[0] : ir[23];
+    fp_compare_zero = ir[0];
+    fp_signal_nan = ir[23];
+    fp_round_zero = ir[23];
+    fp_math = (fp_op >= 7 && fp_op <= 12) || fp_op == 19 || fp_op == 20 || fp_accumulate;
+    fp_sqrt_operand[32] = fp_op == 19 ? fp_second : 0;
+    fp_fused_left[32] = fp_op == 20 ? fp_data : 0;
+    fp_fused_right[32] = fp_op == 20 ? fp_second : 0;
+    fp_fused_addend[32] = fp_op == 20 ? fp_accumulator : 0;
+    // Both multiply-accumulate forms read the old destination as the third operand.
+    fp_accumulator_index[5] = fp_op == 20 || fp_accumulate ? fp_dest : 0;
+    fp_negate_product = fp_op == 20 && ir[22];
+    fp_negate_accumulator = fp_op == 20 && ir[4];
+    // Condition field 00=EQ, 01=VS, 10=GE, 11=GT. VSEL leaves the flags unchanged.
+    fp_select_first = (ir[5] ? (nzcv[3] == nzcv[0] && (!ir[4] || !nzcv[2])) :
+                       (ir[4] ? nzcv[0] : nzcv[2]));
+    fp_write_apsr = fp_use && fp_op == 16;
+    wire fp_sign_control {
+        fp_flip_sub;
+    }
+    fp_flip_sub = fp_op == 8 && !(fp_second[30:23] == 255 && fp_second[22:0] != 0);
+    // VMLS, VNMLA and VNMUL negate the already rounded product. The addition
+    // rounds separately and inherits the cumulative exceptions from multiplication.
+    fp_muldiv_signed[32] = fp_muldiv_result ^ (!fp_divide && ir[22] ? 2147483648 : 0);
+    fp_add_lhs[32] = fp_accumulate ? (fp_accumulator ^ (ir[4] ? 2147483648 : 0)) : fp_data;
+    fp_add_rhs[32] = fp_accumulate ? fp_muldiv_signed : (fp_second ^ (fp_flip_sub ? 2147483648 : 0));
+    fp_add_input_status[32] = fp_accumulate ? fp_muldiv_status : fp_effective_status;
+    wire fp_immediates {
+        fp_literal[32];
+    }
+    fp_literal[31] = ir[3];
+    fp_literal[30] = !ir[2];
+    fp_literal[29:25] = ir[2] ? 31 : 0;
+    fp_literal[24:23] = ir[1:0];
+    fp_literal[22:19] = ir[19:16];
+    fp_literal[18:0] = 0;
+    fp_transfer = fp_pending != 0;
+    fp_transfer_last = active && fp_pending == 1 && bus_valid;
+    fp_transfer_bytes[32] = (ZERO32 + fp_count) << 2;
+    fp_use = execute && fp_op != 0 && fp_allowed;
+    fp_to_core = fp_use && (fp_op == 2 || fp_op == 4);
+    fp_active_frame = (frame_has_fp && exception_busy) || saving_lazy;
+    fp_lazy_active = lazy_pending;
+    fpcar = lazy_address;
+    data_privileged = saving_lazy ? lazy_privileged : privileged && !(memory_active && memory_unprivileged && execute);
+    // An extended return can discard its own unwritten FP area. A nested basic return
+    // leaves an older deferred frame pending.
+    discard_lazy = frame_has_fp && lazy_pending && lazy_address == frame_address + BASIC_FRAME;
+    fp_restore = frame_has_fp && !discard_lazy;
+    // Skip the reserved word at the top of the extended frame.
+    frame_fp_index = exception_index[4:0] - 8;
+    fp_read_index = (saving_lazy || (entering && exception_index > LAST_CORE_WORD) ? frame_fp_index :
+                    (fp_transfer ? fp_transfer_index : (fp_write_word ? fp_dest : fp_source)));
+    fp_restore_reg = (exception_bus && returning && fp_restore && bus_valid &&
+                     exception_index > LAST_CORE_WORD && exception_index < FPSCR_WORD);
+    fp_write = (fp_restore_reg || ((active && fp_transfer && fp_load || fp_read_word) && bus_valid) ||
+               (fp_use && (fp_op == 1 || (fp_math && fp_op != 11) || fp_op == 13 ||
+                           fp_op == 17 || fp_op == 18 || fp_op == 21)));
+    fp_write_index = fp_restore_reg ? frame_fp_index : (fp_transfer ? fp_transfer_index : fp_dest);
+    fp_value[32] = (fp_op == 7 || fp_op == 8 || fp_accumulate ? fp_add_result :
+                    fp_op == 9 || fp_op == 10 ? fp_muldiv_signed : fp_op == 12 ? fp_cvt_result :
+                    fp_op == 19 ? fp_sqrt_result : fp_op == 20 ? fp_fused_result :
+                    fp_op == 21 ? (fp_select_first ? fp_data : fp_second) :
+                    fp_op == 13 ? (ir[22] ? fp_second : fp_literal) :
+                    fp_op == 17 ? (fp_second ^ 2147483648) :
+                    fp_op == 18 ? (fp_second & 2147483647) : operand);
+    fp_write_data = (fp_restore_reg || fp_transfer || fp_read_word) ? bus_data : fp_value;
+    fp_first_use = fp_use && !fp_context && fpccr[31];
+    fp_effective_status[32] = fp_first_use ? ((fpscr & (4294967295 ^ FP_DEFAULTS)) | fpdscr) : fpscr;
+    fpscr_write = (return_complete && fp_restore) || fp_first_use || (fp_use && (fp_op == 3 || fp_math));
+    fp_math_status[32] = (fp_op <= 8 || fp_accumulate ? fp_add_status : fp_op <= 10 ? fp_muldiv_status :
+                         fp_op == 11 ? fp_cmp_status : fp_op == 12 ? fp_cvt_status :
+                         fp_op == 19 ? fp_sqrt_status : fp_fused_status);
+    fp_status_data = (return_complete && fp_restore ? bus_data :
+                     (fp_math ? fp_math_status : (fp_op == 3 ? operand : fp_effective_status)));
+    table_target[32] = pc_ahead + (bus_data << 1);
+    exception_return_value[32] = return_from_memory ? bus_data : operand;
+
+    wire exception_frame_control {
+        start_frame;
+    }
+    start_frame = (take_pending || take_svc || take_configurable_fault ||
+                   (execution_fault && !fixed_priority_active && !faultmask));
+
+    // Sequential CPU lifecycle: reset, vector boot, exceptions, instruction retire.
+    clock(clk, 10kHz) {
+        if (reset) {
+            clear { phase, current_pc, main_stack, process_stack };
+            link = 4294967295;
+            clear {
+                flags, saturation, ge_flags, failure, retired_pc, retired_ir, retire_count, pending,
+                fp_context, fp_pending, dual_pending, exclusive_valid, exclusive_addr, exclusive_size,
+                fp_transfer_index, stack_cursor, transfer_end, exception_phase, exception_index,
+                frame_address, frame_psp, frame_has_fp, frame_lazy, lazy_pending, lazy_address,
+                lazy_privileged, return_handler, return_pc, saved_return_status, entry_exception,
+                active_exception, active_set, active_depth, previous_nmi, pending_nmi, fault_cause,
+                fault_frame_stacked, it_state
+            };
+        } else if (!fault) {
+            // Sample one assertion per low-to-high pin transition. A fresh
+            // request can queue again on the cycle that consumes the old one.
+            previous_nmi = nmi;
+            pending_nmi = (pending_nmi && !nmi_accepted) || nmi_set || (nmi && !previous_nmi);
+            // Fresh interrupt and fault frames capture the same pre-entry stack state.
+            if (start_frame) {
+                exception_index = 0;
+                frame_address = entry_stack;
+                frame_psp = using_psp;
+                frame_has_fp = fp_context;
+                frame_lazy = fp_context && fpccr[30];
+            }
+            // The one-core model reserves one SRAM access. An exception or STREX clears it.
+            if (take_pending || take_svc || execution_fault || vector_fault ||
+                (execute && (memory_exclusive_store || clear_exclusive))) {
+                exclusive_valid = 0;
+            } else if (execute && memory_exclusive_load && bus_valid) {
+                exclusive_valid = memory_address[31:12] == 131072;
+                exclusive_addr = memory_address;
+                exclusive_size = memory_size;
+            }
+            if (phase == 0) {
+                if (bus_valid) {
+                    main_stack = bus_data & WORD_ADDRESS;
+                    phase = 1;
+                } else { failure = 1; }
+            } else if (phase == 1) {
+                if (bus_valid && bus_data[0] && active_depth < 31) {
+                    current_pc = bus_data & THUMB_ADDRESS;
+                    phase = 2;
+                } else { failure = 1; }
+            } else if (take_pending || take_svc || take_configurable_fault) {
+                exception_phase = 1;
+                entry_exception = take_svc ? 11 : take_configurable_fault ? configurable_exception : pending_exception;
+                if (take_configurable_fault) {
+                    clear { pending, fp_pending, dual_pending };
+                }
+                if (take_svc) {
+                    // The SVC frame saves the address of the following instruction.
+                    retired_pc = current_pc;
+                    retired_ir = ir;
+                    retire_count += 1;
+                    current_pc = sequential;
+                    it_state = it_advance;
+                }
+            } else if (execution_fault || vector_fault) {
+                // Probe before stacking on escalation. A demo without a HardFault
+                // handler retains its diagnostic and leaves the stack untouched.
+                if (fixed_priority_active || faultmask || (vector_fault && entry_exception == NMI_EXCEPTION)) {
+                    failure = vector_fault ? 6 : runtime_fault;
+                } else {
+                    fault_cause = vector_fault ? 6 : runtime_fault;
+                    fault_frame_stacked = vector_fault;
+                    exception_phase = 4;
+                    clear { pending, fp_pending, dual_pending };
+                }
+            } else if (probing_fault) {
+                if (bus_valid && bus_data[0]) {
+                    entry_exception = 3;
+                    exception_phase = fault_frame_stacked ? 2 : 1;
+                    if (fault_cause == 7) {
+                        current_pc = sequential;
+                        it_state = it_advance;
+                    }
+                } else { failure = fault_cause; }
+            } else if (entering) {
+                // Stack core registers and, when eager, floating-point state.
+                if (!bus_valid) {
+                    failure = 4;
+                } else if (exception_index == (frame_has_fp && !frame_lazy ? FPSCR_WORD : LAST_CORE_WORD)) {
+                    if (frame_lazy) {
+                        lazy_pending = 1;
+                        lazy_address = frame_address + BASIC_FRAME;
+                        lazy_privileged = privileged;
+                    }
+                    exception_phase = 2;
+                } else {
+                    exception_index += 1;
+                }
+            } else if (vector_read) {
+                if (bus_valid && bus_data[0]) {
+                    current_pc = bus_data & THUMB_ADDRESS;
+                    if (frame_psp) { process_stack = frame_address; }
+                    else { main_stack = frame_address; }
+                    link = ((in_handler ? RETURN_HANDLER_MSP : (frame_psp ? RETURN_THREAD_PSP : RETURN_THREAD_MSP)) &
+                           (frame_has_fp ? EXC_RETURN_FP_MASK : 4294967295));
+                    fp_context = 0;
+                    if (in_handler) { suspended[active_depth - 1] = ipsr; }
+                    active_exception = entry_exception;
+                    active_set = active_set | (ONE256 << entry_exception);
+                    active_depth += 1;
+                    clear { it_state, exception_phase };
+                } else { failure = 6; }
+            } else if (returning) {
+                // Restore the saved context and unwind the active exception stack.
+                if (!bus_valid) {
+                    failure = 4;
+                } else if (exception_index < LAST_CORE_WORD) {
+                    if (exception_index == 5) { link = bus_data; }
+                    if (exception_index == 6) { return_pc = bus_data & THUMB_ADDRESS; }
+                    exception_index += 1;
+                } else if (exception_index == LAST_CORE_WORD && !(return_status[24] && valid_stacked_mode)) {
+                    failure = 6;
+                } else if (return_complete) {
+                    current_pc = return_pc;
+                    flags = return_status[31:28];
+                    saturation = return_status[27];
+                    ge_flags = return_status[19:16];
+                    it_state[7:2] = return_status[15:10];
+                    it_state[1:0] = return_status[26:25];
+                    if (frame_psp) { process_stack = returned_stack; }
+                    else { main_stack = returned_stack; }
+                    fp_context = frame_has_fp;
+                    if (discard_lazy) { lazy_pending = 0; }
+                    active_exception = return_handler ? expected_resume : 0;
+                    active_set = active_set & (ALL_EXCEPTIONS ^ (ONE256 << ipsr));
+                    active_depth -= 1;
+                    exception_phase = 0;
+                    retired_pc = current_pc;
+                    retired_ir = ir;
+                    retire_count += 1;
+                } else {
+                    if (exception_index == LAST_CORE_WORD) { saved_return_status = bus_data; }
+                    exception_index += 1;
+                }
+            } else if (saving_lazy) {
+                // The faulting instruction stays at PC until the deferred writes finish.
+                if (!bus_valid) {
+                    failure = 4;
+                } else if (exception_index == FPSCR_WORD) {
+                    clear { lazy_pending, exception_phase };
+                } else {
+                    exception_index += 1;
+                }
+            } else if (sleeping) {
+                // The timer and NVIC can wake the core without advancing PC here.
+            } else if (defer_fp) {
+                exception_phase = 5;
+                exception_index = 8;
+            } else if (skip_instruction) {
+                retired_pc = current_pc;
+                retired_ir = ir;
+                retire_count += 1;
+                current_pc = sequential;
+                it_state = it_advance;
+            } else if (fp_transfer) {
+                // Multiword FP transfers keep PC stationary until the last word.
+                fp_pending -= 1;
+                fp_transfer_index += 1;
+                stack_cursor += 4;
+                if (fp_transfer_last) {
+                    if (fp_core_reg == 13) {
+                        if (using_psp) { process_stack = transfer_end; }
+                        else { main_stack = transfer_end; }
+                    } else if (fp_core_reg == 14) {
+                        link = transfer_end;
+                    }
+                    current_pc = sequential;
+                    retired_pc = current_pc;
+                    retired_ir = ir;
+                    retire_count += 1;
+                    it_state = it_advance;
+                }
+            } else if (pending != 0) {
+                pending = remaining;
+                stack_cursor = stack_cursor + 4;
+                if (stack_lr) { link = bus_data; }
+                if (remaining == 0) {
+                    if (transfer_wb && rn == 13) {
+                        if (using_psp) { process_stack = transfer_end; }
+                        else { main_stack = transfer_end; }
+                    }
+                    if (transfer_wb && rn == 14) { link = transfer_end; }
+                    if (return_from_pop) {
+                        exception_phase = 3;
+                        exception_index = 0;
+                        frame_psp = bus_data[2];
+                        frame_has_fp = !bus_data[4];
+                        return_handler = !bus_data[3];
+                        frame_address = bus_data[2] ? psp : msp_after_transfer;
+                    } else {
+                        current_pc = stack_pc ? (bus_data & THUMB_ADDRESS) : sequential;
+                        retired_pc = current_pc;
+                        retired_ir = ir;
+                        retire_count += 1;
+                        it_state = it_advance;
+                    }
+                }
+            } else if (multi_store || multi_load) {
+                pending = reg_list;
+                stack_cursor = stack_base;
+                transfer_end = decrement_before ? stack_base : operand + stack_bytes;
+            } else if (fp_store || fp_load) {
+                fp_pending = fp_count;
+                fp_transfer_index = fp_source;
+                stack_cursor = fp_store ? operand - fp_transfer_bytes : operand;
+                transfer_end = fp_store ? operand - fp_transfer_bytes : operand + fp_transfer_bytes;
+                if (fpccr[31]) { fp_context = 1; }
+            } else if (return_from_bx || return_from_memory) {
+                exception_phase = 3;
+                exception_index = 0;
+                frame_psp = exception_return_value[2];
+                frame_has_fp = !exception_return_value[4];
+                return_handler = !exception_return_value[3];
+                frame_address = (exception_return_value[2] ? psp :
+                                 memory_base_write && memory_rn == 13 ? memory_next : msp);
+                if (memory_base_write && memory_rn == 13) { main_stack = memory_next; }
+            } else if (memory_dual && !dual_pending) {
+                // Complete the first transfer now and hold PC until the second word is ready.
+                // Latch its address before a loaded register can change the base.
+                dual_pending = 1;
+                stack_cursor = memory_address + 4;
+                transfer_end = memory_next;
+            } else {
+                if (dual_pending) { dual_pending = 0; }
+                retired_pc = current_pc;
+                retired_ir = ir;
+                retire_count += 1;
+                it_state = op == 41 ? ir[7:0] : it_advance;
+                current_pc = (op == 11 || op == 29 ? (operand & THUMB_ADDRESS) :
+                              memory_pc ? (bus_data & THUMB_ADDRESS) : memory_kind == 3 ? table_target :
+                              branch_taken ? branch_target : sequential);
+                if (op == 10 || op == 29) { link = sequential | 1; }
+                else if ((commit_data && exec_rd == 14) || (read_system && sys_register == 14) ||
+                         (fp_to_core && fp_core_reg == 14)) { link = write_data; }
+                else if (dsp_commit_high && dsp_ra == 14) { link = dsp_high; }
+                if (write_fpca && fp_allowed) { fp_context = operand[2]; }
+                else if (fp_use && fpccr[31]) { fp_context = 1; }
+                if (write_msp) { main_stack = operand & WORD_ADDRESS; }
+                if (write_psp) { process_stack = operand & WORD_ADDRESS; }
+                if (memory_base_write && memory_rn == 13) {
+                    if (using_psp) { process_stack = updated_base & WORD_ADDRESS; }
+                    else { main_stack = updated_base & WORD_ADDRESS; }
+                } else if (memory_base_write && memory_rn == 14) {
+                    link = updated_base;
+                }
+                if (commit_data && exec_rd == 13) {
+                    if (using_psp) { process_stack = write_data & WORD_ADDRESS; }
+                    else { main_stack = write_data & WORD_ADDRESS; }
+                }
+                if (write_apsr) {
+                    if (sys_mask[1]) {
+                        flags = operand[31:28];
+                        saturation = operand[27];
+                    }
+                    if (sys_mask[0]) { ge_flags = operand[19:16]; }
+                } else {
+                    if (fp_write_apsr) { flags = fp_effective_status[31:28]; }
+                    else if (thumb_active) {
+                        if (thumb_flags && (wide || !in_it || exec_rd == 15)) { flags = thumb_next_nzcv; }
+                    } else if (!dsp_active && flag_write) { flags = next_nzcv; }
+                    if (dsp_active && dsp_ge_write) { ge_flags = dsp_next_ge; }
+                    if (dsp_active ? dsp_saturated : saturation_hit) { saturation = 1; }
+                }
+            }
+        }
+    }
+}
+

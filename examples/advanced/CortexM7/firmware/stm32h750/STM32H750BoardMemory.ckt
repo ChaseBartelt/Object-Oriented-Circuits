@@ -1,0 +1,410 @@
+// STM32H750 Daisy Seed board initialization registers.
+// QUADSPI uses the IS25LP064A status and configuration commands exercised by
+// libDaisy. A memory-mapped read presents blank NOR contents.
+/* Sources: ST RM0433, libDaisy v8.0.0 src/per/qspi.cpp and
+   src/dev/flash_IS25LP064A.h. */
+chip STM32H750QSPI(clk, reset, address, size_code, write_data, write_enable, enabled, peripheral_reset,
+                  data, mapped, qspi_ready) {
+    input {
+        clk, reset, write_enable, enabled, peripheral_reset;
+        address[32], write_data[32], size_code[2];
+    }
+    output {
+        data[32], mapped, qspi_ready;
+    }
+
+    const REGISTER_BLOCK[26] = 21496128; // QUADSPI 0x52005000
+    const CR[4] = 0;
+    const DCR[4] = 1;
+    const SR[4] = 2;
+    const FCR[4] = 3;
+    const DLR[4] = 4;
+    const CCR[4] = 5;
+    const AR[4] = 6;
+    const ABR[4] = 7;
+    const DR[4] = 8;
+    const PSMKR[4] = 9;
+    const PSMAR[4] = 10;
+    const PIR[4] = 11;
+    const LPTR[4] = 12;
+    const RESET_ENABLE[8] = 102;
+    const RESET_MEMORY[8] = 153;
+    const WRITE_ENABLE[8] = 6;
+    const WRITE_DISABLE[8] = 4;
+    const READ_STATUS[8] = 5;
+    const WRITE_STATUS[8] = 1;
+    const READ_PARAMETERS[8] = 97;
+    const WRITE_PARAMETERS[8] = 192;
+    const QUAD_READ[8] = 235;
+
+    // Ordinary controller words share one address-indexed register file.
+    registers[13][32] = 0;
+    control[32] = registers[CR];
+    data_length[32] = registers[DLR];
+    communication[32] = registers[CCR];
+    polling_mask[32] = registers[PSMKR];
+    polling_match[32] = registers[PSMAR];
+    transfer_count[32] = 0;
+    transfer_complete = 0;
+    polling_active = 0;
+    status_match = 0;
+    reset_armed = 0;
+    write_latch = 0;
+    flash_status[8] = 0;
+    read_parameters[8] = 0;
+    index[4] = address[5:2];
+    instruction[8] = communication[7:0];
+    flash_read_status[32] = (flash_status & 252) | (write_latch ? 2 : 0);
+    read_byte[8] = (instruction == READ_STATUS ? flash_read_status :
+                    instruction == READ_PARAMETERS ? read_parameters : 255);
+    matches[32] = (4294967295 ^ (flash_read_status ^ polling_match)) & polling_mask;
+    transfer_bytes[3] = size_code == 0 ? 1 : size_code == 1 ? 2 : 4;
+    wire {
+        flash_window, register_selected, register_write, poll_matches, transmitting, receiving;
+    }
+    poll_matches = (instruction == READ_STATUS &&
+                    (control[23] ? matches != 0 : matches == polling_mask));
+    transmitting = transfer_count != 0 && communication[27:26] == 0;
+    receiving = communication[27:26] == 1 && communication[25:24] != 0 && transfer_complete;
+    qspi_ready = (enabled && control[0] && flash_status[6] &&
+                  communication[27:26] == 3 && instruction == QUAD_READ);
+    flash_window = (qspi_ready && !write_enable &&
+                    address >= 2415919104 && address < 2424307712); // 0x90000000 + 8 MiB
+    register_selected = (address[31:6] == REGISTER_BLOCK && index <= LPTR &&
+                         address[1:0] == 0 && (size_code == 2 || (index == DR && size_code < 2)));
+    register_write = register_selected && write_enable && enabled;
+    mapped = flash_window || register_selected;
+
+    if (flash_window) { data = 4294967295; }
+    else if (register_selected && enabled) {
+        switch (index) {
+            case SR:
+                data = ((transfer_complete ? 2 : 0) | (transmitting || receiving ? 4 : 0) |
+                        (status_match ? 8 : 0) | (transmitting || polling_active ? 32 : 0) |
+                        (receiving ? 256 : 0));
+                break;
+            case DR: data = read_byte; break;
+            case FCR: data = 0; break; // Clear flags are write-only.
+            default: data = registers[index]; break;
+        }
+    } else { data = 0; }
+
+    clock(clk, 10kHz) {
+        // An RCC reset resets the controller, while the external NOR keeps its state.
+        if (reset || peripheral_reset) {
+            clear {
+                registers, transfer_count, transfer_complete, polling_active, status_match
+            };
+            if (reset) {
+                clear { reset_armed, write_latch, flash_status, read_parameters };
+            }
+        } else if (enabled) {
+            if (polling_active && poll_matches) {
+                status_match = 1;
+                if (control[22]) { polling_active = 0; }
+            }
+            if (register_write) {
+                if (index == DCR || index == DLR || index == ABR || index >= PSMKR) {
+                    registers[index] = write_data & (index >= PIR ? 65535 : 4294967295);
+                }
+                switch (index) {
+                    case CR:
+                        registers[CR] = write_data & 4294967293;
+                        if (write_data[1] || !write_data[0]) {
+                            clear { transfer_count, polling_active };
+                            registers[CCR] = communication & 4093640703;
+                            if (write_data[1]) { transfer_complete = 1; }
+                        }
+                        break;
+                    case FCR:
+                        if (write_data[1]) { transfer_complete = 0; }
+                        if (write_data[3]) { status_match = 0; }
+                        break;
+                    case CCR:
+                        registers[CCR] = write_data;
+                        polling_active = control[0] && write_data[27:26] == 2;
+                        transfer_count = ((control[0] && write_data[27:26] == 0 &&
+                                           write_data[25:24] != 0) ? data_length + 1 : 0);
+                        transfer_complete = (control[0] && write_data[27:26] == 0 &&
+                                             write_data[25:24] == 0 && write_data[9:8] != 0);
+                        if (control[0] && write_data[27:26] == 0 && write_data[25:24] == 0) {
+                            switch (write_data[7:0]) {
+                                case RESET_ENABLE: reset_armed = 1; break;
+                                case RESET_MEMORY:
+                                    if (reset_armed) {
+                                        clear { reset_armed, write_latch, read_parameters };
+                                    }
+                                    break;
+                                case WRITE_ENABLE: write_latch = 1; break;
+                                case WRITE_DISABLE: write_latch = 0; break;
+                                default: break;
+                            }
+                        }
+                        break;
+                    case AR:
+                        registers[AR] = write_data;
+                        if (control[0] && communication[27:26] == 1 &&
+                           communication[25:24] != 0) { transfer_complete = 1; }
+                        break;
+                    case DR:
+                        if (transmitting) {
+                            transfer_count = transfer_count <= transfer_bytes ? 0 : transfer_count - transfer_bytes;
+                            if (transfer_count <= transfer_bytes) {
+                                transfer_complete = 1;
+                                if (instruction == WRITE_STATUS && write_latch) {
+                                    flash_status = write_data[7:0] & 252;
+                                    write_latch = 0;
+                                }
+                                if (instruction == WRITE_PARAMETERS) {
+                                    read_parameters = write_data[7:0];
+                                    write_latch = 0;
+                                }
+                            }
+                        }
+                        break;
+                    default: break;
+                }
+            }
+        }
+    }
+}
+
+// FMC SDRAM bank 1 initialization. The RAM window itself belongs to the
+// platform memory map. Commands take one logical cycle in this model.
+chip STM32H750SDRAM(clk, reset, address, size_code, write_data, write_enable, enabled, peripheral_reset,
+                   data, mapped, sdram_ready) {
+    input {
+        clk, reset, write_enable, enabled, peripheral_reset;
+        address[32], write_data[32], size_code[2];
+    }
+    output {
+        data[32], mapped, sdram_ready;
+    }
+    const REGISTER_BLOCK[27] = 42992138; // FMC SDRAM at 0x52004140
+    const SDCR1[3] = 0;
+    const SDCR2[3] = 1;
+    const SDTR1[3] = 2;
+    const SDTR2[3] = 3;
+    const SDCMR[3] = 4;
+    const SDRTR[3] = 5;
+    const SDSR[3] = 6;
+    const CLOCK_ENABLE[3] = 1;
+    const PRECHARGE_ALL[3] = 2;
+    const AUTO_REFRESH[3] = 3;
+    const MODE_REGISTER[3] = 4;
+    const SELF_REFRESH[3] = 5;
+    const POWER_DOWN[3] = 6;
+
+    control1[32] = 720;
+    control2[32] = 720;
+    timing1[32] = 268435455;
+    timing2[32] = 268435455;
+    command[32] = 0;
+    refresh[32] = 0;
+    sequence[3] = 0;
+    mode[2] = 0;
+    busy = 0;
+    index[3] = address[4:2];
+    mapped = address[31:5] == REGISTER_BLOCK && address[1:0] == 0 && size_code == 2 && index <= SDSR;
+    sdram_ready = enabled && sequence == 4 && refresh[13:1] != 0 && mode == 0 && !busy;
+
+    if (mapped && enabled) {
+        switch (index) {
+            case SDCR1: data = control1; break;
+            case SDCR2: data = control2; break;
+            case SDTR1: data = timing1; break;
+            case SDTR2: data = timing2; break;
+            case SDCMR: data = command; break;
+            case SDRTR: data = refresh; break;
+            case SDSR: data = (busy ? 32 : 0) | (mode == 1 ? 2 : mode == 2 ? 4 : 0); break;
+            default: data = 0; break;
+        }
+    } else { data = 0; }
+
+    clock(clk, 10kHz) {
+        if (reset || peripheral_reset) {
+            control1 = 720;
+            control2 = 720;
+            timing1 = 268435455;
+            timing2 = 268435455;
+            clear { command, refresh, sequence, mode, busy };
+        } else if (enabled) {
+            busy = 0;
+            if (mapped && write_enable) {
+                switch (index) {
+                    case SDCR1: control1 = write_data & 32767; break;
+                    case SDCR2: control2 = write_data & 32767; break;
+                    case SDTR1: timing1 = write_data & 268435455; break;
+                    case SDTR2: timing2 = write_data & 268435455; break;
+                    case SDCMR:
+                        command = write_data & 4194303;
+                        if (write_data[4]) {
+                            busy = 1;
+                            switch (write_data[2:0]) {
+                                case 0: mode = 0; break;
+                                case CLOCK_ENABLE:
+                                    sequence = control1[11:10] >= 2 ? 1 : 0;
+                                    mode = 0;
+                                    break;
+                                case PRECHARGE_ALL: if (sequence == 1) { sequence = 2; } break;
+                                case AUTO_REFRESH: if (sequence == 2) { sequence = 3; } break;
+                                case MODE_REGISTER:
+                                    if (sequence == 3) { sequence = 4; }
+                                    break;
+                                case SELF_REFRESH: mode = 1; break;
+                                case POWER_DOWN: mode = 2; break;
+                                default: break;
+                            }
+                        }
+                        break;
+                    case SDRTR: refresh = write_data & 32766; break;
+                    default: break;
+                }
+            }
+        }
+    }
+}
+
+// TIM2 provides the monotonic timer read by libDaisy System. Count at the
+// simulated core step and honor the prescaler and update/rollover registers.
+chip STM32H750TIM2(clk, reset, address, size_code, write_data, write_enable, enabled, data, mapped) {
+    input {
+        clk, reset, write_enable, enabled;
+        address[32], write_data[32], size_code[2];
+    }
+    output {
+        data[32], mapped;
+    }
+    const REGISTER_BLOCK[25] = 8388608; // TIM2 at 0x40000000
+    const CR1[5] = 0;
+    const CR2[5] = 1;
+    const SMCR[5] = 2;
+    const DIER[5] = 3;
+    const SR[5] = 4;
+    const EGR[5] = 5;
+    const CCMR1[5] = 6;
+    const CCMR2[5] = 7;
+    const CCER[5] = 8;
+    const CNT[5] = 9;
+    const PSC[5] = 10;
+    const ARR[5] = 11;
+
+    timer_registers[12][32] = 0;
+    count[32] = 0;
+    period[32] = 4294967295;
+    prescaler[16] = 0;
+    prescaler_count[16] = 0;
+    update_flag = 0;
+    index[5] = address[6:2];
+    control[32] = timer_registers[0];
+    wire {
+        rollover, count_up, count_tick;
+    }
+    count_up = !control[4];
+    count_tick = prescaler_count == prescaler;
+    rollover = count_up ? count >= period : count == 0;
+    mapped = address[31:7] == REGISTER_BLOCK && address[1:0] == 0 && size_code == 2 && index <= ARR;
+
+    if (mapped && enabled) {
+        switch (index) {
+            case SR: data = update_flag ? 1 : 0; break;
+            case EGR: data = 0; break;
+            case CNT: data = count; break;
+            case PSC: data = prescaler; break;
+            case ARR: data = period; break;
+            default: data = timer_registers[index]; break;
+        }
+    } else { data = 0; }
+
+    clock(clk, 10kHz) {
+        if (reset) {
+            clear { timer_registers };
+            count = 0;
+            period = 4294967295;
+            clear { prescaler, prescaler_count, update_flag };
+        } else if (enabled) {
+            if (control[0]) {
+                prescaler_count = count_tick ? 0 : prescaler_count + 1;
+                if (count_tick) {
+                    count = rollover ? (count_up ? 0 : period) : (count_up ? count + 1 : count - 1);
+                    if (rollover) { update_flag = 1; }
+                }
+            }
+            if (mapped && write_enable) {
+                switch (index) {
+                    case SR: if (!write_data[0]) { update_flag = 0; } break;
+                    case EGR:
+                        if (write_data[0]) {
+                            count = count_up ? 0 : period;
+                            prescaler_count = 0;
+                            update_flag = 1;
+                        }
+                        break;
+                    case CNT: count = write_data; break;
+                    case PSC: prescaler = write_data[15:0]; break;
+                    case ARR: period = write_data; break;
+                    default: timer_registers[index] = write_data; break;
+                }
+            }
+        }
+    }
+}
+
+// RNG exposes clock-dependent ready/readback for the board initialization.
+// Its repeatable output comes from a simulation-only shift register.
+chip STM32H750RNG(clk, reset, address, size_code, write_data, write_enable, enabled, data, mapped) {
+    input {
+        clk, reset, write_enable, enabled;
+        address[32], write_data[32], size_code[2];
+    }
+    output {
+        data[32], mapped;
+    }
+    const CR[32] = 1208096768;
+    const SR[32] = 1208096772;
+    const DR[32] = 1208096776;
+    control[32] = 0;
+    lfsr[32] = 1;
+    wire {
+        active;
+    }
+    active = enabled && control[2];
+    mapped = size_code == 2 && (address == CR || address == SR || address == DR);
+    data = (!mapped || !enabled ? 0 : address == CR ? control :
+            address == SR ? (active ? 1 : 0) : active ? lfsr : 0);
+
+    clock(clk, 10kHz) {
+        if (reset) {
+            control = 0;
+            lfsr = 1;
+        } else if (enabled) {
+            if (active) { lfsr = (lfsr >> 1) ^ (lfsr[0] ? 2149580803 : 0); }
+            if (address == CR && mapped && write_enable) { control = write_data; }
+        }
+    }
+}
+
+chip STM32H750BoardMemory(clk, reset, address, size_code, write_data, write_enable,
+                          qspi_clock, fmc_clock, tim2_clock, rng_clock, qspi_reset, fmc_reset,
+                          data, mapped, qspi_ready, sdram_ready) {
+    input {
+        clk, reset, write_enable, qspi_clock, fmc_clock, tim2_clock, rng_clock, qspi_reset, fmc_reset;
+        address[32], write_data[32], size_code[2];
+    }
+    output {
+        data[32], mapped, qspi_ready, sdram_ready;
+    }
+    wire {
+        qspi_word[32], fmc_word[32], tim2_word[32], rng_word[32];
+        qspi_mapped, fmc_mapped, tim2_mapped, rng_mapped;
+    }
+    STM32H750QSPI(clk, reset, address, size_code, write_data, write_enable, qspi_clock,
+                  qspi_reset, qspi_word, qspi_mapped, qspi_ready);
+    STM32H750SDRAM(clk, reset, address, size_code, write_data, write_enable, fmc_clock,
+                   fmc_reset, fmc_word, fmc_mapped, sdram_ready);
+    STM32H750TIM2(clk, reset, address, size_code, write_data, write_enable, tim2_clock, tim2_word, tim2_mapped);
+    STM32H750RNG(clk, reset, address, size_code, write_data, write_enable, rng_clock, rng_word, rng_mapped);
+    data = qspi_word | fmc_word | tim2_word | rng_word;
+    mapped = qspi_mapped || fmc_mapped || tim2_mapped || rng_mapped;
+}
+

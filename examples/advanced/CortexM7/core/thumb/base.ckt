@@ -1,0 +1,376 @@
+// Thumb-2 instruction decoding, ALU evaluation, condition codes, and register storage.
+// The first Thumb halfword is in ir[15:0], with the second in ir[31:16].
+chip M7FirmwareDecode(ir, op, rd, rn, rm, imm, use_reg, condition, size_code, reg_list, transfer_wb, expanded_imm) {
+    input instruction {
+        ir[32];
+    }
+    output decoded {
+        op[6], rd[4], rn[4], rm[4];
+        imm[32], condition[4], size_code[2], reg_list[16], expanded_imm[32];
+        use_reg, transfer_wb;
+    }
+
+    const ZERO32[32] = 0;
+    const ZERO4[4] = 0;
+    const ONE16[16] = 1;
+    const SIGN9[32] = 4294966784;
+    const SIGN12[32] = 4294963200;
+    wire instruction_classes {
+        wide, wide_branch, move_wide, high_register, high_general, branch_exchange, compare_low;
+        base_transfer, sp_transfer, register_transfer, stack_push, stack_pop;
+        compare_wide, compare_encoding, modify_orr, valid_immediate, barrier, logic_register;
+        extend_register, signed_load, test_wide, literal_wide, it_instruction, saturating_arithmetic;
+        wide_ia, wide_db, narrow_ia, multiple_ok, base_in_list, multiple_load;
+    }
+
+    // Register selectors and Thumb instruction-family fields.
+    family[5] = ir[15:11];
+    low_rd[4] = ir[2:0];
+    low_rn[4] = ir[5:3];
+    short_rd[4] = ir[10:8];
+    high_rd[4] = (ZERO4 + low_rd) | (ir[7] ? 8 : 0);
+    high_rm[4] = ir[6:3];
+    wide_rd[4] = ir[27:24];
+    high_op[2] = ir[9:8];
+    logic_op[4] = ir[9:6];
+
+    // Recognize supported wide instructions and reject invalid register encodings.
+    wide = family >= 29;
+    wide_branch = family == 30 && ir[31] && ir[28];
+    move_wide = family == 30 && ir[9:4] == 36 && !ir[31] && wide_rd != 13 && wide_rd != 15;
+    compare_encoding = family == 30 && ir[9:4] == 27 && !ir[31] && wide_rd == 15 && ir[3:0] != 15;
+    valid_immediate = modified_imm[11:10] != 0 || modified_imm[9:8] == 0 || ir[23:16] != 0;
+    compare_wide = compare_encoding && valid_immediate;
+    test_wide = (family == 30 && ir[9:4] == 1 && !ir[31] && wide_rd == 15 &&
+                 ir[3:0] != 13 && ir[3:0] != 15 && valid_immediate);
+    literal_wide = (ir[15:0] & 65407) == 63583 && ir[31:28] != 15;
+    it_instruction = ir[15:8] == 191 && ir[7:4] < 14 && ir[3:0] != 0;
+    saturation_left[4] = ir[19:16];
+    saturation_right[4] = ir[3:0];
+    saturating_arithmetic = (ir[15:4] == 4008 && ir[31:28] == 15 && (ir[23:20] & 13) == 8 &&
+        wide_rd != 13 && wide_rd != 15 && saturation_left != 13 && saturation_left != 15 &&
+        saturation_right != 13 && saturation_right != 15);
+    modify_orr = (family == 30 && ir[9:4] == 4 && !ir[31] && ir[3:0] != 13 &&
+                  wide_rd != 13 && wide_rd != 15 && valid_immediate);
+    // With in-order fetch and a synchronous single bus, these barriers retire without a stall.
+    barrier = (ir[15:0] == 62399 && (ir[31:16] == 36655 || (ir[31:16] & 65520) == 36672 ||
+                (ir[31:16] & 65520) == 36688 || ir[31:16] == 36719));
+    high_register = ir[15:10] == 17;
+    high_general = high_register && high_rd != 15 && high_rm != 15;
+    branch_exchange = high_register && high_op == 3 && low_rd == 0 && high_rm != 15;
+    compare_low = ir[15:6] == 266;
+    logic_register = (ir[15:10] == 16 &&
+                     (logic_op <= 1 || logic_op == 5 || logic_op == 6 || logic_op == 9 || logic_op >= 12));
+    extend_register = ir[15:8] == 178;
+
+    // Load/store width, register-list transfers, and writeback constraints.
+    base_transfer = family >= 12 && family <= 17;
+    sp_transfer = family == 18 || family == 19;
+    register_transfer = ir[15:12] == 5;
+    signed_load = register_transfer && ir[10:9] == 3;
+    register_width[2] = (ir[10:9] == 3 ? ir[11] : (ir[10:9] == 2 ? 0 : (ir[10:9] == 1 ? 1 : 2)));
+    transfer_size[2] = (register_transfer ? register_width : ((family == 14 || family == 15) ? 0 :
+                       ((family == 16 || family == 17) ? 1 : 2)));
+    stack_push = ir[15:9] == 90 && ir[8:0] != 0;
+    stack_pop = ir[15:9] == 94 && ir[8:0] != 0;
+    wide_ia = ir[15:6] == 930;
+    wide_db = ir[15:6] == 932;
+    narrow_ia = ir[15:12] == 12;
+    multiple_load = wide ? ir[4] : ir[11];
+    multiple_base[4] = wide ? ir[3:0] : ir[10:8];
+    base_bit[16] = ONE16 << multiple_base;
+    base_in_list = (reg_list & base_bit) != 0;
+    transfer_wb = stack_push || stack_pop || (wide ? ir[5] : (!multiple_load || !base_in_list));
+    multiple_ok = (reg_list != 0 && (wide ?
+        (multiple_base != 15 && (reg_list & (reg_list - 1)) != 0 && !reg_list[13] &&
+         (multiple_load ? !(reg_list[14] && reg_list[15]) : !reg_list[15]) &&
+         !(transfer_wb && base_in_list)) :
+        (multiple_load || !base_in_list || (reg_list & (base_bit - 1)) == 0)));
+
+    // Translate instruction encodings to internal ALU and execution operation IDs.
+    if (wide) {
+        op = ((wide_ia || wide_db) && multiple_ok ? (wide_db ? (multiple_load ? 44 : 23) : (multiple_load ? 22 : 21)) :
+              (wide_branch ? (ir[30] ? 10 : 9) : (move_wide ? 15 : (compare_wide ? 4 :
+              (modify_orr ? (ir[3:0] == 15 ? 15 : 26) : (barrier ? 14 :
+              (test_wide ? 40 : (literal_wide ? 5 : (saturating_arithmetic ? 42 + ir[21] : 0)))))))));
+    } else if (branch_exchange) {
+        op = ir[7] ? 29 : 11;
+    } else if (high_general) {
+        op = high_op == 0 ? 18 : (high_op == 1 ? 4 : (high_op == 2 ? 15 : 0));
+    } else if (compare_low) {
+        op = 4;
+    } else if (logic_register) {
+        op = (logic_op == 0 ? 31 : (logic_op == 1 ? 25 : (logic_op == 5 ? 30 : (logic_op == 6 ? 34 :
+             (logic_op == 9 ? 33 : (logic_op == 12 ? 26 : (logic_op == 13 ? 28 : (logic_op == 14 ? 24 : 27))))))));
+    } else if (extend_register) {
+        op = 35 + ir[7:6];
+    } else if (base_transfer || sp_transfer) {
+        op = ir[11] ? 6 : 7;
+    } else if (register_transfer) {
+        op = signed_load ? 39 : (ir[11] ? 6 : 7);
+    } else if (family == 3) {
+        op = ir[9] ? 3 : 2;
+    } else if (family == 4 || family == 5 || family == 6 || family == 7) {
+        op = family == 4 ? 1 : (family == 5 ? 4 : (family == 6 ? 2 : 3));
+    } else if (family == 9) {
+        op = 5;
+    } else if (ir[15:8] == 223) {
+        op = 20;  // SVC #imm8
+    } else if (ir[15:12] == 13 && ir[11:8] < 14) {
+        op = 8;
+    } else if (family == 28) {
+        op = 9;
+    } else if (stack_push || stack_pop) {
+        op = stack_push ? 12 : 13;
+    } else if (narrow_ia && multiple_ok) {
+        op = multiple_load ? 22 : 21;
+    } else if (ir[15:8] == 176) {
+        op = 16;
+    } else if (family == 21) {
+        op = 17;
+    } else if (family == 0) {
+        op = 19;
+    } else if (family == 1) {
+        op = 32;
+    } else if (it_instruction) {
+        op = 41;
+    } else {
+        op = ir[15:0] == 48896 ? 14 : 0;
+    }
+
+    // Register operands are selected only for these ALU forms. BX reads rn.
+    use_reg = saturating_arithmetic || (!wide && ((family == 3 && !ir[10]) || compare_low || register_transfer ||
+              logic_register || extend_register || (high_general && high_op != 3)));
+    rd = wide ? (literal_wide ? ir[31:28] : wide_rd) : (high_register ? high_rd :
+         ((family <= 1 || family == 3 || base_transfer || register_transfer ||
+         compare_low || logic_register || extend_register) ? low_rd :
+         (op == 16 ? 13 : short_rd)));
+    rn = (saturating_arithmetic ? saturation_left : ((op >= 21 && op <= 23) || op == 44 ? multiple_base :
+         (compare_wide || modify_orr || test_wide ? ir[3:0] : (branch_exchange ? high_rm :
+         ((sp_transfer || op == 12 || op == 13 || op == 16 || op == 17) ? 13 :
+         ((base_transfer || register_transfer || family == 3 || family <= 1) ? low_rn : rd))))));
+    rm = (saturating_arithmetic ? saturation_right : (high_register ? high_rm :
+          ((family == 3 || register_transfer) ? ir[8:6] : low_rn)));
+    size_code = transfer_size;
+    condition = ir[11:8];
+    reg_list = (wide ? ir[31:16] : (ir[7:0] |
+               (ir[8] && stack_push ? 16384 : (ir[8] && stack_pop ? 32768 : 0))));
+
+    // Sign-extend byte displacements before the core adds its architectural PC.
+    // Sign-extend branch displacements relative to the architectural PC.
+    short_cond[32] = ((ZERO32 + ir[7:0]) << 1) | (ir[7] ? SIGN9 : 0);
+    short_branch[32] = ((ZERO32 + ir[10:0]) << 1) | (ir[10] ? SIGN12 : 0);
+    wire branch_offset {
+        long_branch[32];
+    }
+    long_branch[31:25] = ir[10] ? 127 : 0;
+    long_branch[24] = ir[10];
+    long_branch[23] = !(ir[29] ^ ir[10]);
+    long_branch[22] = !(ir[27] ^ ir[10]);
+    long_branch[21:12] = ir[9:0];
+    long_branch[11:1] = ir[26:16];
+    long_branch[0] = 0;
+
+    wire wide_imm_bits {
+        wide_constant[32];
+    }
+    // Reconstruct wide Thumb immediate fields.
+    wide_constant[31:16] = 0;
+    wide_constant[15:12] = ir[3:0];
+    wide_constant[11] = ir[10];
+    wide_constant[10:8] = ir[30:28];
+    wide_constant[7:0] = ir[23:16];
+    sp_change[32] = (ZERO32 + ir[6:0]) << 2;
+
+    // Thumb modified immediates replicate a byte or rotate a nonzero seven-bit payload with a leading one.
+    wire modified_immediate {
+        modified_imm[12];
+    }
+    // Thumb modified-immediate expansion, including repeated and rotated bytes.
+    modified_imm[11] = ir[10];
+    modified_imm[10:8] = ir[30:28];
+    modified_imm[7:0] = ir[23:16];
+    imm_byte[32] = ir[23:16];
+    repeated_16[32] = imm_byte | (imm_byte << 16);
+    rotated_byte[32] = 128 | ir[22:16];
+    rotated[32] = (rotated_byte >> modified_imm[11:7]) | (rotated_byte << (32 - modified_imm[11:7]));
+    expanded_imm = (modified_imm[11:10] != 0 ? rotated :
+        (modified_imm[9:8] == 0 ? imm_byte : (modified_imm[9:8] == 1 ? repeated_16 :
+        (modified_imm[9:8] == 2 ? (repeated_16 << 8) : (repeated_16 | (repeated_16 << 8))))));
+
+    // Translate instruction encodings to internal ALU and execution operation IDs.
+    if (wide) {
+        imm = (wide_branch ? long_branch : (compare_wide || modify_orr || test_wide ? expanded_imm :
+               (literal_wide ? (ir[7] ? ir[27:16] : (ZERO32 - ir[27:16])) : wide_constant)));
+    } else if (op == 8) {
+        imm = short_cond;
+    } else if (op == 9) {
+        imm = short_branch;
+    } else if (op == 16) {
+        imm = ir[7] ? (ZERO32 - sp_change) : sp_change;
+    } else if (base_transfer) {
+        imm = (ZERO32 + ir[10:6]) << transfer_size;
+    } else if (sp_transfer || op == 5 || op == 17) {
+        imm = (ZERO32 + ir[7:0]) << 2;
+    } else if (family == 3 || family == 0) {
+        imm = family == 3 ? ir[8:6] : ir[10:6];
+    } else if (family == 1) {
+        imm = ir[10:6] == 0 ? 32 : ir[10:6];
+    } else {
+        imm = ir[7:0];
+    }
+}
+
+// The low 32 bits of the product are the same for signed and unsigned operands.
+// Low-word integer multiply with generated nibble-weighted partial products.
+chip M7FirmwareMultiply(a, b, product) {
+    input operands {
+        a[32], b[32];
+    }
+    output product {
+        product[32];
+    }
+    // Cover the 32-bit multiplicand using eight 4-bit groups.
+    for (int i = 0; i < 8; i++) {
+        nibble*{i}[32] = ((a[i * 4] ? (b << *{i * 4}) : 0) +
+                         (a[i * 4 + 1] ? (b << *{i * 4 + 1}) : 0) +
+                         (a[i * 4 + 2] ? (b << *{i * 4 + 2}) : 0) +
+                         (a[i * 4 + 3] ? (b << *{i * 4 + 3}) : 0));
+    }
+    product = nibble0 + nibble1 + nibble2 + nibble3 + nibble4 + nibble5 + nibble6 + nibble7;
+}
+
+// Shared by the firmware CPU and the small editable Thumb demo.
+chip M7ThumbCondition(condition, nzcv, condition_met) {
+    input condition_flags {
+        condition[4], nzcv[4];
+    }
+    output condition_result {
+        condition_met;
+    }
+    // Each odd condition is the inverse of its preceding even condition.
+    // Encodings 14 and 15 retain the decoder's unsupported-condition result.
+    wire predicate {
+        condition_base;
+    }
+    // Eight base predicates; condition[0] controls inversion.
+    switch (condition[3:1]) {
+        case 0: condition_base = nzcv[2]; break;
+        case 1: condition_base = nzcv[1]; break;
+        case 2: condition_base = nzcv[3]; break;
+        case 3: condition_base = nzcv[0]; break;
+        case 4: condition_base = nzcv[1] && !nzcv[2]; break;
+        case 5: condition_base = nzcv[3] == nzcv[0]; break;
+        case 6: condition_base = !nzcv[2] && nzcv[3] == nzcv[0]; break;
+        default: condition_base = 0;
+    }
+    condition_met = condition < 14 && (condition_base ^ condition[0]);
+}
+
+// 32-bit integer ALU with condition flags, shifts, saturation, and multiplication.
+chip M7FirmwareALU(op, operand, rhs, condition, nzcv, immediate_carry,
+                   result, next_nzcv, condition_met, saturation_hit, product) {
+    input operands {
+        op[6], operand[32], rhs[32], condition[4], nzcv[4];
+    }
+    output arithmetic {
+        result[32], next_nzcv[4], product[32];
+    }
+    input carry_input {
+        immediate_carry;
+    }
+    output status_flags {
+        condition_met, saturation_hit;
+    }
+
+    const ZERO33[33] = 0;
+    const WORD_BITS[32] = 32;
+    const ALL_BITS[32] = 4294967295;
+    wire alu_control {
+        subtraction, addition, move, shift, shift_right, set_flags, carry_add, carry_sub, carry_shift, carry_right;
+        overflow_add, overflow_sub;
+        logic_result[32];
+    }
+    // Evaluate shared multiplication and bitwise operation classes.
+    M7FirmwareMultiply(operand, rhs, product);
+    switch (op) {
+        case 24: logic_result = operand & (ALL_BITS ^ rhs); break;
+        case 25: logic_result = operand ^ rhs; break;
+        case 26: logic_result = operand | rhs; break;
+        case 27: logic_result = ALL_BITS ^ rhs; break;
+        case 28: logic_result = product; break;
+        case 31: logic_result = operand & rhs; break;
+        case 35: logic_result = (rhs[15] ? 4294901760 : 0) | rhs[15:0]; break;
+        case 36: logic_result = (rhs[7] ? 4294967040 : 0) | rhs[7:0]; break;
+        case 37: logic_result = rhs[15:0]; break;
+        case 38: logic_result = rhs[7:0]; break;
+        case 40: logic_result = operand & rhs; break;
+        default: logic_result = 0;
+    }
+    // 33-bit results retain carry/borrow before narrowing to 32 bits.
+    lhs[32] = op == 33 ? 0 : operand;
+    sum[33] = ZERO33 + lhs + rhs + (op == 30 ? nzcv[1] : 0);
+    difference[33] = ZERO33 + lhs - rhs - (op == 34 ? !nzcv[1] : 0);
+    subtraction = op == 3 || op == 4 || op == 33 || op == 34 || op == 43;
+    addition = op == 2 || op == 16 || op == 17 || op == 18 || op == 30 || op == 42;
+    move = op == 1 || op == 15;
+    shift = op == 19;
+    shift_right = op == 32;
+    set_flags = (op >= 1 && op <= 4) || shift || (op >= 24 && op <= 28) || (op >= 30 && op <= 34) || op == 40;
+    carry_add = sum[32];
+    carry_sub = !difference[32];
+    carry_shift = (rhs == 0 ? nzcv[1] :
+                   (rhs <= WORD_BITS && ((operand >> (WORD_BITS - rhs)) & 1) != 0));
+    carry_right = rhs == 0 ? nzcv[1] : (rhs <= WORD_BITS && ((operand >> (rhs - 1)) & 1) != 0);
+    overflow_add = lhs[31] == rhs[31] && sum[31] != lhs[31];
+    overflow_sub = lhs[31] != rhs[31] && difference[31] != lhs[31];
+    saturation_hit = (op == 42 && overflow_add) || (op == 43 && overflow_sub);
+
+    // Select the result and update NZCV only for instructions that write flags.
+    result = (saturation_hit ? (lhs[31] ? 2147483648 : 2147483647) :
+             (move ? rhs : (subtraction ? difference[31:0] :
+             (addition ? sum[31:0] : (shift ? (operand << rhs) : (shift_right ? (operand >> rhs) : logic_result))))));
+    next_nzcv[3] = set_flags ? result[31] : nzcv[3];
+    next_nzcv[2] = set_flags ? result == 0 : nzcv[2];
+    next_nzcv[1] = (op == 2 || op == 30 ? carry_add :
+                   (subtraction && op != 43 ? carry_sub : (shift ? carry_shift :
+                   (shift_right ? carry_right : (op == 40 ? immediate_carry : nzcv[1])))));
+    next_nzcv[0] = op == 2 || op == 30 ? overflow_add : (subtraction && op != 43 ? overflow_sub : nzcv[0]);
+
+    M7ThumbCondition(condition, nzcv, condition_met);
+}
+
+// Thirteen indexed general-purpose registers with independent read ports.
+chip M7FirmwareRegisters(clk, reset, write_enable, write_index, write_data,
+                         base_write, base_index, base_data,
+                         index_a, index_b, index_store, index_high, data_a, data_b, data_store, data_high,
+                         r0, r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12) {
+    input register_ports {
+        clk, reset, write_enable, base_write;
+        write_index[4], base_index[4], index_a[4], index_b[4], index_store[4], index_high[4];
+        write_data[32], base_data[32];
+    }
+    output register_values {
+        data_a[32], data_b[32], data_store[32], data_high[32];
+        for (int i = 0; i < 13; i++) { r*{i}[32]; }
+    }
+
+    // Keep state in one array and expose the named R0-R12 viewer signals.
+    regs[13][32] = 0;
+    data_a = regs[index_a];
+    data_b = regs[index_b];
+    data_store = regs[index_store];
+    data_high = regs[index_high];
+    for (int i = 0; i < 13; i++) { r*{i} = regs[i]; }
+
+    // Writes are clocked; the second base-index write follows the primary write.
+    clock(clk, 10kHz) {
+        if (reset) {
+            clear { regs };
+        } else {
+            if (write_enable) { regs[write_index] = write_data; }
+            if (base_write) { regs[base_index] = base_data; }
+        }
+    }
+}
+

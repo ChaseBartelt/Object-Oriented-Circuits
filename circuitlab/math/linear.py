@@ -129,7 +129,7 @@ class NodalBackend:
         # Q is a native BJT and S a voltage-controlled switch. A manual schematic
         # switch is kind K, already represented by its selected contact resistance
         # and therefore handled by the ordinary linear stamps.
-        nonlinear = any(part.kind in {"Q", "S"} or
+        nonlinear = any(part.kind in {"Q", "S", "D"} or
                         (part.kind == "B" and linear_form(part.behavior.tree) is None)
                         for part in parts)
         # A specified complex Z is a frequency-domain element with no DC or
@@ -140,7 +140,7 @@ class NodalBackend:
                 raise CircuitError("Theoretical impedance Z supports AC steady state only; "
                                    "use physical R/L/C components for DC or transient analysis.", code="UnsupportedComponent")
             if nonlinear:
-                raise CircuitError("Theoretical impedance Z cannot be combined with native BJTs or switches: "
+                raise CircuitError("Theoretical impedance Z cannot be combined with native diodes, BJTs or switches: "
                                    "their native solver supports DC and time-domain analysis, not AC.", code="UnsupportedComponent")
         # Delegate supported DC bias calculations using the original circuit.
         # The time-domain backend handles its own device expansion and result

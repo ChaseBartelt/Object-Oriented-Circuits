@@ -1,0 +1,45 @@
+// BEGIN LINKED FIRMWARE
+chip M7FirmwareRom(address, word, valid) {
+    input {
+        address[32];
+    }
+    output {
+        word[32];
+        valid;
+    }
+    arm(address, word, valid) {
+        .word 0x20000400;          // Initial MSP
+        .word reset_handler + 1;  // Thumb reset vector
+
+    reset_handler:
+        BL firmware_main;
+    idle:
+        B idle;
+        .hword 0xD4D4;            // Padding from the linked image
+
+    firmware_main:
+        PUSH {r7, lr};
+        MOVS r0, #4;              // Argument to nested_add
+        BL nested_add;
+        LDR r1, result_address;
+        STR r0, [r1];             // RAM0 = nested_add(4)
+        POP {r7, pc};
+        NOP;                     // Preserve the original alignment instruction
+        .align 2;
+    result_address:
+        .word 0x20000000;
+
+    nested_add:
+        PUSH {r7, lr};
+        BL leaf_add;
+        ADDS r0, #2;
+        POP {r7, pc};
+
+    leaf_add:
+        ADDS r0, #7;
+        BX lr;
+        .hword 0xD4D4;            // Padding from the linked image
+    }
+}
+// END LINKED FIRMWARE
+

@@ -7,6 +7,10 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from itertools import chain
 import math
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from circuitlab.model.diode import DiodeModel
 
 Scalar = float | complex
 
@@ -267,6 +271,7 @@ class Component:
     gain1: str = ""
     gain8: str = ""
     bypass: str = ""
+    diode: "DiodeModel | None" = None
     dc_only: bool = False  # Private bias sources remain DC during AC time simulation.
 
     @property

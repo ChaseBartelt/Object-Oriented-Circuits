@@ -3,69 +3,76 @@
 # Group compatible output/display bits for readability, condense dependency cycles for layout,
 # and retain the exact live signal identities behind every painted block and arrow.
 
-from collections import defaultdict
+from collections import Counter, defaultdict
 from dataclasses import dataclass
+import math
 import re
 
 from PySide6.QtCore import QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QPainter, QPainterPath, QPainterPathStroker, QPen, QPolygonF
-from PySide6.QtWidgets import QGraphicsObject
+from PySide6.QtWidgets import QGraphicsItem, QGraphicsObject, QStyleOptionGraphicsItem
 
 from circuitlab.layout.logic import LogicGeometry
 
 
 WIDTH, HEIGHT, COLUMN, ROW = 176, 62, 246, 84
-MAX_NODES, MAX_EDGES = 120, 400
 
 
 # Collapse strongly connected dependencies before assigning columns so feedback does not
 # make a topological layering pass loop forever.
 def _layers(names, edges):
     """Condense feedback cycles before assigning dependency columns."""
-    order = {name: index for index, name in enumerate(names)}
-    children = defaultdict(list)
+    children, parents = defaultdict(list), defaultdict(list)
     for source, target in edges:
         children[source].append(target)
-    index, low, stack, active, groups = {}, {}, [], set(), []
+        parents[target].append(source)
 
-    def visit(name):
-        index[name] = low[name] = len(index)
-        stack.append(name)
-        active.add(name)
-        for target in children[name]:
-            if target not in index:
-                visit(target)
-                low[name] = min(low[name], low[target])
-            elif target in active:
-                low[name] = min(low[name], index[target])
-        if low[name] == index[name]:
-            group = []
-            while True:
-                target = stack.pop()
-                active.remove(target)
-                group.append(target)
-                if target == name:
-                    break
-            groups.append(group)
+    # Reverse finish order gives a topological order of strongly connected
+    # components. Explicit stacks also handle long chains without recursion.
+    visited, finished = set(), []
+    for name in names:
+        if name in visited:
+            continue
+        visited.add(name)
+        pending = [(name, iter(children[name]))]
+        while pending:
+            source, targets = pending[-1]
+            if (target := next(targets, None)) is None:
+                finished.append(source)
+                pending.pop()
+            elif target not in visited:
+                visited.add(target)
+                pending.append((target, iter(children[target])))
+    owner, groups = {}, []
+    for name in reversed(finished):
+        if name in owner:
+            continue
+        index = len(groups)
+        owner[name] = index
+        members, pending = [], [name]
+        while pending:
+            target = pending.pop()
+            members.append(target)
+            for source in parents[target]:
+                if source not in owner:
+                    owner[source] = index
+                    pending.append(source)
+        groups.append(members)
 
+    ranks = [0] * len(groups)
+    for index, members in enumerate(groups):
+        for source in members:
+            for target in children[source]:
+                target_group = owner[target]
+                if target_group != index:
+                    ranks[target_group] = max(ranks[target_group], ranks[index] + 1)
+
+    rows, positions = defaultdict(int), {}
     for name in names:
-        if name not in index:
-            visit(name)
-    owner = {name: group for group, members in enumerate(groups) for name in members}
-    parents = {group: set() for group in range(len(groups))}
-    for source, target in edges:
-        if owner[source] != owner[target]:
-            parents[owner[target]].add(owner[source])
-    ranks = {}
-    while len(ranks) < len(groups):
-        for group in parents:
-            if group not in ranks and parents[group] <= ranks.keys():
-                ranks[group] = max((ranks[parent] + 1 for parent in parents[group]), default=0)
-    columns = defaultdict(list)
-    for name in names:
-        columns[ranks[owner[name]]].append(name)
-    return {name: (column, row) for column, members in columns.items()
-            for row, name in enumerate(sorted(members, key=order.get))}
+        column = ranks[owner[name]]
+        positions[name] = column, rows[column]
+        rows[column] += 1
+    return positions
 
 
 @dataclass(frozen=True)
@@ -192,11 +199,7 @@ def behavior_graph(simulation):
         owner[name] = block.name
     edges = tuple(dict.fromkeys((owner[source], owner[target]) for target in names
                                 for source in sim.dependencies.get(target, ()) if source in owner))
-    notice = ''
-    if len(blocks) > MAX_NODES or len(edges) > MAX_EDGES:
-        notice = (f'{len(names)} signals / {len(edges)} connections exceed the view limit '
-                  f'({MAX_NODES} blocks / {MAX_EDGES} connections). Select signals in the simulator to inspect them.')
-    return blocks, edges, notice
+    return blocks, edges
 
 
 def block_positions(blocks, edges, *, width=WIDTH, height=HEIGHT):
@@ -218,16 +221,16 @@ def block_positions(blocks, edges, *, width=WIDTH, height=HEIGHT):
 # the functional block bodies.
 def dependency_paths(rects, edges):
     """Keep feedback in the inter-column gutters, outside component bodies."""
-    incoming, lanes, paths = defaultdict(list), defaultdict(int), {}
-    for source, target in edges:
-        incoming[target].append(source)
+    incoming = Counter(target for _, target in edges)
+    incoming_index, lanes, paths = defaultdict(int), defaultdict(int), {}
+    columns = {x: index for index, x in enumerate(sorted({rect.left() for rect in rects.values()}))}
     floor = max((rect.bottom() for rect in rects.values()), default=0) + 22
     long_lane = 0
     for source, target in edges:
         a, b = rects[source], rects[target]
         start = QPointF(a.right(), a.center().y())
-        offset = incoming[target].index(source) + 1
-        end_y = b.top() + b.height() * offset / (len(incoming[target]) + 1)
+        incoming_index[target] += 1
+        end_y = b.top() + b.height() * incoming_index[target] / (incoming[target] + 1)
         path = QPainterPath(start)
         if a.left() == b.left():
             # Enter from the right too: a feedback return must not pass through
@@ -241,7 +244,7 @@ def dependency_paths(rects, edges):
             end = QPointF(b.right(), end_y)
         else:
             end = QPointF(b.left(), end_y)
-            if 0 < b.left() - a.left() <= COLUMN + 1:
+            if columns[b.left()] == columns[a.left()] + 1:
                 middle = (start.x() + end.x()) / 2
                 path.lineTo(middle, start.y())
                 path.lineTo(middle, end.y())
@@ -258,6 +261,16 @@ def dependency_paths(rects, edges):
     return paths
 
 
+def arrowhead(path):
+    if path.elementCount() < 2:
+        return QPolygonF()
+    end = path.currentPosition()
+    before = path.elementAt(path.elementCount() - 2)
+    angle = math.atan2(end.y() - before.y, end.x() - before.x)
+    return QPolygonF([end, end - QPointF(8 * math.cos(angle - .45), 8 * math.sin(angle - .45)),
+                      end - QPointF(8 * math.cos(angle + .45), 8 * math.sin(angle + .45))])
+
+
 class BehaviorDiagram(QGraphicsObject):
     """One lightweight item paints the functional blocks and live signal arrows."""
     input_toggled = Signal(str)
@@ -268,9 +281,9 @@ class BehaviorDiagram(QGraphicsObject):
     def __init__(self, simulation, *, dark=False):
         super().__init__()
         self.dark = dark
-        self.blocks, self.edges, self.notice = behavior_graph(simulation)
+        self.blocks, self.edges = behavior_graph(simulation)
         self.values = dict(getattr(simulation, 'values', {}))
-        self.rects, self.paths = {}, {}
+        self.rects, self.paths, self.wire_bounds, self.arrows = {}, {}, {}, {}
         self.selected = None
         self.press = None
         self.drag_target = None
@@ -278,45 +291,47 @@ class BehaviorDiagram(QGraphicsObject):
         self.setAcceptHoverEvents(True)
         self.setAcceptedMouseButtons(Qt.MouseButton.LeftButton)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemUsesExtendedStyleOption)
         self.heading = 'Functional schematic · arrows show signal dependencies'
         if simulation.clocks:
             self.heading += '\nClock: ' + ', '.join(simulation.clocks) + ' · ↑ marks clocked blocks'
-        if self.notice:
-            self._bounds = QRectF(0, 0, 640, 150)
-            return
-        self.rects = {name: rect.translated(18, 72) for name, rect
-                      in block_positions(self.blocks, self.edges).items()}
-        self.paths = dependency_paths(self.rects, self.edges)
+        rects = {name: rect.translated(18, 72) for name, rect
+                 in block_positions(self.blocks, self.edges).items()}
+        paths = dependency_paths(rects, self.edges)
         routes = {edge: tuple((path.elementAt(i).x, path.elementAt(i).y)
-                              for i in range(path.elementCount())) for edge, path in self.paths.items()}
+                              for i in range(path.elementCount())) for edge, path in paths.items()}
         self.geometry = LogicGeometry({name: (r.x(), r.y(), r.width(), r.height())
-                                       for name, r in self.rects.items()}, routes)
+                                       for name, r in rects.items()}, routes)
+        self._painted_routes = {}
         self._bounds = QRectF()
         self._update_geometry()
 
     def _update_geometry(self):
         self.prepareGeometryChange()
         self.rects = {name: QRectF(*rect) for name, rect in self.geometry.rects.items()}
-        self.paths = {}
         for edge, points in self.geometry.routes.items():
+            if self._painted_routes.get(edge) == points:
+                continue
             path = QPainterPath(QPointF(*points[0]))
             for point in points[1:]:
                 path.lineTo(*point)
             self.paths[edge] = path
+            self.wire_bounds[edge] = path.boundingRect().adjusted(-8, -8, 8, 8)
+            self.arrows[edge] = arrowhead(path)
+        self._painted_routes = self.geometry.routes
         self._bounds = QRectF(0, 0, 580, 72)
         for rect in self.rects.values():
             self._bounds = self._bounds.united(rect.adjusted(-18, -18, 38, 18))
-        for path in self.paths.values():
-            self._bounds = self._bounds.united(path.boundingRect().adjusted(-8, -8, 8, 8))
+        for bounds in self.wire_bounds.values():
+            self._bounds = self._bounds.united(bounds)
         self.update()
         self.geometry_changed.emit()
 
     def placement(self):
-        return self.geometry.snapshot() if not self.notice else {}
+        return self.geometry.snapshot()
 
     def restore_placement(self, record):
-        if not self.notice:
-            self.geometry.restore(record)
+        if self.geometry.restore(record):
             self._update_geometry()
 
     def boundingRect(self):
@@ -331,32 +346,38 @@ class BehaviorDiagram(QGraphicsObject):
         return QColor('#777777' if value is None else '#299f68' if value else '#888888')
 
     def paint(self, painter, option, widget=None):
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        painter.fillRect(self._bounds, QColor('#252525' if self.dark else '#ffffff'))
+        exposed = option.exposedRect.intersected(self._bounds)
+        detailed = QStyleOptionGraphicsItem.levelOfDetailFromTransform(painter.worldTransform()) >= .45
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, detailed)
+        painter.fillRect(exposed, QColor('#252525' if self.dark else '#ffffff'))
         foreground = QColor('#eeeeee' if self.dark else '#292929')
-        painter.setPen(foreground)
-        painter.drawText(QRectF(18, 9, self._bounds.width() - 36, 52), Qt.TextFlag.TextWordWrap, self.heading)
-        if self.notice:
-            painter.drawText(self._bounds.adjusted(18, 66, -18, -12), Qt.TextFlag.TextWordWrap, self.notice)
-            return
-        for (source, target), path in self.paths.items():
-            selected = self.selected in {source, target}
+        heading_area = QRectF(18, 9, self._bounds.width() - 36, 52)
+        if detailed and heading_area.intersects(exposed):
+            painter.setPen(foreground)
+            painter.drawText(heading_area, Qt.TextFlag.TextWordWrap, self.heading)
+        for edge, bounds in self.wire_bounds.items():
+            if not bounds.intersects(exposed):
+                continue
+            source, _ = edge
+            selected = self.selected in edge
             color = QColor('#278bda') if selected else self._color(self.blocks[source])
             painter.setPen(QPen(color, 2.4 if selected else 1.5))
             painter.setBrush(Qt.BrushStyle.NoBrush)
-            painter.drawPath(path)
-            end = path.currentPosition()
-            before = path.pointAtPercent(.99)
-            direction = 1 if end.x() >= before.x() else -1
-            painter.setBrush(color)
-            painter.drawPolygon(QPolygonF([end, end + QPointF(-7 * direction, -4), end + QPointF(-7 * direction, 4)]))
+            painter.drawPath(self.paths[edge])
+            if detailed and self.arrows[edge].boundingRect().intersects(exposed):
+                painter.setBrush(color)
+                painter.drawPolygon(self.arrows[edge])
+        metrics = painter.fontMetrics()
         for name, block in self.blocks.items():
             area = self.rects[name]
+            if not area.intersects(exposed):
+                continue
             painter.setBrush(QColor('#343434' if self.dark else '#f1f1f1'))
             painter.setPen(QPen(QColor('#278bda' if name == self.selected else '#999999'), 1.8))
             painter.drawRoundedRect(area, 5, 5)
+            if not detailed:
+                continue
             painter.setPen(foreground)
-            metrics = painter.fontMetrics()
             title = metrics.elidedText(block.title, Qt.TextElideMode.ElideMiddle, WIDTH - 18)
             painter.drawText(area.adjusted(9, 4, -9, -36), Qt.AlignmentFlag.AlignVCenter, title)
             caption = metrics.elidedText(block.caption, Qt.TextElideMode.ElideRight, WIDTH - 18)
@@ -371,26 +392,25 @@ class BehaviorDiagram(QGraphicsObject):
                 return self.blocks[name], False
         stroker = QPainterPathStroker()
         stroker.setWidth(9)
-        for (source, _), path in self.paths.items():
-            if stroker.createStroke(path).contains(pos):
-                return self.blocks[source], True
+        for edge, bounds in self.wire_bounds.items():
+            if bounds.contains(pos) and stroker.createStroke(self.paths[edge]).contains(pos):
+                return self.blocks[edge[0]], True
         return None, False
 
     def hoverMoveEvent(self, event):
         block, _ = self._hit(event.pos())
-        self.setToolTip(block.detail if block else self.notice or self.heading)
+        self.setToolTip(block.detail if block else self.heading)
         super().hoverMoveEvent(event)
 
     def mousePressEvent(self, event):
         self.press = (event.screenPos(), event.pos(), self.placement())
         self.dragged = False
         self.drag_target = None
-        if not self.notice:
-            block, wire = self._hit(event.pos())
-            if block and not wire:
-                self.drag_target = ('block', block.name)
-            elif segment := self.geometry.nearest_segment((event.pos().x(), event.pos().y()), 8):
-                self.drag_target = ('wire', *segment)
+        block, wire = self._hit(event.pos())
+        if block and not wire:
+            self.drag_target = ('block', block.name)
+        elif segment := self.geometry.nearest_segment((event.pos().x(), event.pos().y()), 8):
+            self.drag_target = ('wire', *segment)
         event.accept()
 
     def mouseMoveEvent(self, event):

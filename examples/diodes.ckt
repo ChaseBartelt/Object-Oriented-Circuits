@@ -1,0 +1,25 @@
+// Generic diode examples. Compile/Solve in DC, or run the oscilloscope.
+// First wire = anode; second wire = cathode (the bar on the symbol).
+// These are illustrative device models, not manufacturer part specifications.
+V1(12V) between(supply, 0);
+main {
+    R1(1k) between(supply, rectified);
+    D.rect1 between(rectified, 0);
+
+    R2(1k) between(supply, schottky);
+    D.Schot1 between(schottky, 0);
+
+    R3(1k) between(supply, light);
+    D.LED1(2V) between(light, 0);
+
+    R4(1k) between(supply, regulated);
+    D.Zener1(5.1V) between(0, regulated);
+
+    R5(10k) between(supply, tunnel);
+    D.Tun1(ip=5mA, vp=70mV) between(tunnel, 0);
+
+    R6(1k) between(supply, reverse_blocked);
+    D1 between(0, reverse_blocked);
+}
+measure = V regulated 0;
+measure = I D.Zener1;

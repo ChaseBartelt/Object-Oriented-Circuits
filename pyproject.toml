@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 # These runtime dependencies provide the Qt interface, numerical arrays/solvers, and symbolic rules.
 [project]
 name = "electric-circuits-calculator"
-version = "1.1.4"
+version = "1.1.5"
 description = "Editor, schematic renderer, and circuit analysis calculator"
 requires-python = ">=3.10"
 dependencies = ["PySide6-Essentials>=6.6,<7", "numpy>=1.26,<3", "scipy>=1.11,<2", "sympy>=1.12,<2"]

@@ -12,6 +12,10 @@ const { HoverClient } = require("./hover-client");
 const language = { language: "ooc" };
 const methodKinds = new Set(["circuit", "chip", "gate", "series", "parallel"]);
 const symbolKinds = {
+    input: vscode.SymbolKind.Namespace,
+    output: vscode.SymbolKind.Namespace,
+    wire: vscode.SymbolKind.Namespace,
+    pin: vscode.SymbolKind.Variable,
     circuit: vscode.SymbolKind.Function,
     chip: vscode.SymbolKind.Class,
     gate: vscode.SymbolKind.Function,
@@ -62,17 +66,6 @@ function documentSymbol(document, node) {
     );
     symbol.children = node.children.map((child) => documentSymbol(document, child));
     return symbol;
-}
-
-function addFolds(document, nodes, folds) {
-    for (const node of nodes) {
-        const start = document.positionAt(node.start).line;
-        const end = document.positionAt(node.end - 1).line;
-        if (end > start) {
-            folds.push(new vscode.FoldingRange(start, end, vscode.FoldingRangeKind.Region));
-        }
-        addFolds(document, node.children, folds);
-    }
 }
 
 // Resolve an explicit project root first, otherwise walk parents of a saved file until the
@@ -339,10 +332,22 @@ function activate(context, shared = {}) {
     const measureColor = vscode.window.createTextEditorDecorationType({
         color: "#aed6ff", rangeBehavior: vscode.DecorationRangeBehavior.ClosedClosed,
     });
+    const inputColor = vscode.window.createTextEditorDecorationType({
+        color: "#f6a652", rangeBehavior: vscode.DecorationRangeBehavior.ClosedClosed,
+    });
+    const outputColor = vscode.window.createTextEditorDecorationType({
+        color: "#659cd7", rangeBehavior: vscode.DecorationRangeBehavior.ClosedClosed,
+    });
+    const wireColor = vscode.window.createTextEditorDecorationType({
+        color: "#4ec9b0", rangeBehavior: vscode.DecorationRangeBehavior.ClosedClosed,
+    });
+    const groupNameColor = vscode.window.createTextEditorDecorationType({
+        color: "#d4d4d4", rangeBehavior: vscode.DecorationRangeBehavior.ClosedClosed,
+    });
     function refreshKeywordColors(document) {
         for (const editor of vscode.window.visibleTextEditors) {
             if (document && editor.document !== document) continue;
-            const keywords = [], overrides = [], measurements = [];
+            const keywords = [], overrides = [], measurements = [], inputs = [], outputs = [], wires = [], groupNames = [];
             if (editor.document.languageId === "ooc") {
                 // Mask quoted paths and comments without changing UTF-16 offsets.
                 const code = maskComments(editor.document.getText(), true);
@@ -362,14 +367,26 @@ function activate(context, shared = {}) {
                     const [start, end] = match.indices[1];
                     measurements.push(range(editor.document, start, end));
                 }
+                for (const token of sourceInfo(editor.document).portTokens || []) {
+                    const target = token.kind === "label" ? groupNames
+                        : { input: inputs, output: outputs, wire: wires }[token.direction];
+                    if (!target) continue;
+                    target.push(
+                        range(editor.document, token.start, token.end),
+                    );
+                }
             }
             editor.setDecorations(keywordColor, keywords);
             editor.setDecorations(overrideColor, overrides);
             editor.setDecorations(measureColor, measurements);
+            editor.setDecorations(inputColor, inputs);
+            editor.setDecorations(outputColor, outputs);
+            editor.setDecorations(wireColor, wires);
+            editor.setDecorations(groupNameColor, groupNames);
         }
     }
     context.subscriptions.push(
-        keywordColor, overrideColor, measureColor,
+        keywordColor, overrideColor, measureColor, inputColor, outputColor, wireColor, groupNameColor,
         vscode.window.onDidChangeVisibleTextEditors(() => refreshKeywordColors()),
         vscode.workspace.onDidChangeTextDocument(event => refreshKeywordColors(event.document)),
         vscode.workspace.onDidOpenTextDocument(document => refreshKeywordColors(document)),
@@ -505,9 +522,10 @@ function activate(context, shared = {}) {
         }),
         vscode.languages.registerFoldingRangeProvider(language, {
             provideFoldingRanges(document) {
-                const folds = [];
-                addFolds(document, sourceInfo(document).structure, folds);
-                return folds;
+                const kinds = { region: vscode.FoldingRangeKind.Region,
+                    comment: vscode.FoldingRangeKind.Comment, imports: vscode.FoldingRangeKind.Imports };
+                return sourceInfo(document).folds.map(({ start, end, kind }) =>
+                    new vscode.FoldingRange(start, end, kinds[kind]));
             },
         }),
         vscode.languages.registerDefinitionProvider(language, {

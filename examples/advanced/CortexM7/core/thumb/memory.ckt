@@ -1,0 +1,92 @@
+
+ // Decode Thumb-2 memory transfers, exclusive accesses, and table branches.
+chip M7ThumbMemoryDecode(ir, kind, rn, rm, rt, rt2, size, offset, times, shifted_register,
+                        negate, use_offset, writeback, sign_extend, dual, unprivileged,
+                        exclusive_load, exclusive_store, status_reg) {
+    input instruction {
+        ir[32];
+    }
+    output decoded {
+        kind[2], rn[4], rm[4], rt[4], rt2[4], size[2], offset[12], times[2];
+        shifted_register, negate, use_offset, writeback, sign_extend, dual, unprivileged;
+        exclusive_load, exclusive_store, status_reg[4];
+    }
+
+    // Thumb-2 stores the first instruction halfword in ir[15:0].
+    first[16] = ir[15:0];
+    second[16] = ir[31:16];
+    rn = first[3:0];
+    rm = second[3:0];
+    rt = second[15:12];
+    rt2 = second[11:8];
+
+    wire formats {
+        single, index, reg_offset, literal_load, load, unsigned_kind, valid_registers, table_branch;
+        ex_load_word, ex_store_word, ex_load_lane, ex_store_lane, ex_valid, exclusive;
+    }
+
+    // Identify single-register transfers and their addressing modes.
+    single = (first & 65024) == 63488 && first[6:5] != 3;
+    load = first[4];
+    unsigned_kind = !first[8] || (load && first[6:5] != 2);
+    literal_load = rn == 15 && load;
+    index = !first[7] && second[11] && (second[10] || second[8]);
+    reg_offset = !first[7] && second[11:6] == 0 && rm != 13 && rm != 15;
+
+    // Writeback and register validity depend on the transfer format.
+    writeback = rn != 15 && !exclusive && (dual ? first[5] : index && second[8]);
+    valid_registers = ((rt < 13 || rt == 14 || first[6:5] == 2 && (load || rt == 13)) &&
+                      (!writeback || rn != rt) && (!unprivileged || (rt != 13 && rt != 15)));
+
+    // TBB/TBH compute branch destinations using byte or halfword table entries.
+    table_branch = (first & 65520) == 59600 && (second & 65504) == 61440 &&
+                   rn != 13 && rm != 13 && rm != 15;
+
+    // LDRD/STRD transfer two registers while enforcing register restrictions.
+    dual = ((first & 65088) == 59456 && (first[8] || first[5]) &&
+            rt != 13 && rt != 15 && rt2 != 13 && rt2 != 15 && (!load || rt != rt2) &&
+            (!first[5] || (rn != rt && rn != rt2)) &&
+            (rn != 15 || (first[8] && load && !first[5])));
+
+    // Decode LDREX/STREX and their byte/halfword variants.
+    ex_load_word = (first & 65520) == 59472 && second[11:8] == 15;
+    ex_store_word = (first & 65520) == 59456;
+    ex_load_lane = ((first & 65520) == 59600 && second[11:8] == 15 && second[3:0] == 15 &&
+                    (second[7:4] == 4 || second[7:4] == 5));
+    ex_store_lane = ((first & 65520) == 59584 && second[11:8] == 15 &&
+                     (second[7:4] == 4 || second[7:4] == 5));
+
+    // Exclusive stores return their success/failure status through status_reg.
+    ex_valid = rn != 15 && rt != 13 && rt != 15;
+    status_reg = ex_store_lane ? second[3:0] : rt2;
+    exclusive_load = ex_valid && (ex_load_word || ex_load_lane);
+    exclusive_store = (ex_valid && (ex_store_word || ex_store_lane) && status_reg != 13 &&
+                       status_reg != 15 && status_reg != rt && status_reg != rn);
+    exclusive = exclusive_load || exclusive_store;
+
+    // Unprivileged transfers use their own restricted addressing form.
+    unprivileged = single && rn != 15 && index && second[10:8] == 6;
+
+    // Select load, store, table branch, or unsupported instruction.
+    kind = (exclusive ? (exclusive_load ? 1 : 2) :
+            table_branch ? 3 :
+            dual || (single && unsigned_kind && valid_registers &&
+            (rn == 15 ? literal_load : first[7] || index || reg_offset)) ?
+            (load ? 1 : 2) : 0);
+
+    // Determine access width, displacement, and register-offset behavior.
+    size = table_branch || ex_load_lane || ex_store_lane ? second[4] :
+           dual || exclusive ? 2 : first[6:5];
+
+    const ZERO12[12] = 0;
+    offset = (ex_store_lane || ex_load_lane ? 0 :
+              dual || exclusive ? ((ZERO12 + second[7:0]) << 2) :
+              first[7] || literal_load ? second[11:0] : second[7:0]);
+
+    times = table_branch ? second[4] : second[5:4];
+    shifted_register = table_branch || (!dual && !exclusive && !literal_load && reg_offset);
+    negate = !table_branch && !exclusive &&
+             (literal_load || dual ? !first[7] : index && !second[9]);
+    use_offset = dual ? first[8] : table_branch || exclusive || literal_load || !index || second[10];
+    sign_extend = !table_branch && !dual && !exclusive && first[8] && load;
+}

@@ -147,7 +147,11 @@ def compile_de10_lite(source):
     it selects direct, clockless combinational logic instead.
     The original explicit SW0-only synchronizer remains supported.
     """
-    modules = compile_chips(source)
+    return prepare_de10_lite(compile_chips(source))
+
+
+def prepare_de10_lite(modules):
+    """Build the board wrapper and constraints from already compiled OOC."""
     if len(modules) != 1 or modules[0][0] != TOP:
         raise FpgaError("The DE10-Lite profile requires one HYBRID01 chip.")
     _, declared_ports, body, hdl = modules[0]

@@ -15,7 +15,7 @@ def route(circuit, labels):
     layout = Layout()
     if not parts:
         return layout
-    pins = component_pins(parts)
+    pins = component_pins(parts, quad=False)
     columns = min(len(parts), max(1, math.ceil(math.sqrt(len(parts) * 0.75))))
     order = placement_order(parts, pins)
     cells = {i: divmod(j, columns) for j, i in enumerate(order)}

@@ -125,8 +125,7 @@ class BehaviorSchematicTest(unittest.TestCase):
 
     def test_reaction_timer_groups_real_output_bits_and_keeps_control_dependencies(self):
         simulation = DigitalSimulation(REACTION)
-        blocks, edges, notice = behavior_graph(simulation)
-        self.assertFalse(notice)
+        blocks, edges = behavior_graph(simulation)
         self.assertIn('LEDR[7:0]', blocks)
         self.assertEqual(blocks['LEDR[7:0]'].members, tuple(f'LEDR{i}' for i in range(8)))
         self.assertEqual(blocks['LEDR[7:0]'].caption, 'elapsed[7:0]')
@@ -144,7 +143,7 @@ class BehaviorSchematicTest(unittest.TestCase):
             LEDR0,LEDR1,LEDR3,LEDR4 = output;
             LEDR0 = a[0]; LEDR1 = b[1]; LEDR3 = a[2]; LEDR4 = a[3];
         }"""
-        blocks, edges, _ = behavior_graph(DigitalSimulation(source))
+        blocks, edges = behavior_graph(DigitalSimulation(source))
         self.assertIn('LEDR0', blocks)
         self.assertIn('LEDR1', blocks)
         self.assertNotIn('LEDR[4:0]', blocks)

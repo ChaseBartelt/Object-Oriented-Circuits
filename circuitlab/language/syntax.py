@@ -6,9 +6,11 @@
 import re
 
 from circuitlab.language.comments import mask_comments
+from circuitlab.language.thumb_rom import ARM_ROM
 from dataclasses import dataclass, field
 
 from circuitlab.model.graph import CircuitError
+from circuitlab.model.diode import DIODE_NAME
 from circuitlab.math.numbers import NUMBER, real, scalar
 
 # Shared quantity-key groups used by source validation and export. These
@@ -70,7 +72,7 @@ CONTROL_START = re.compile(r"(?:for|while|do|if|else)\b.*\{", re.I)
 # for punctuation, so their internal braces/semicolons are not delimiters.
 # An unfinished interpolation consumes the rest of its line for later
 # validation; this tokenizer does not evaluate interpolated expressions.
-BLOCK_TOKEN = re.compile(r'\$\{[^}]*(?:\}|$)|"[^"]*"|[{}();]')
+BLOCK_TOKEN = re.compile(r'[$*]\{[^}]*(?:\}|$)|"[^"]*"|[{}();]')
 # A do/while tail needs its final semicolon preserved when splitting.
 # Most other statement terminators are discarded by the block splitter.
 WHILE_TAIL = re.compile(r"while\s*\(.*\)", re.I)
@@ -92,7 +94,7 @@ DIGITAL_MAIN = re.compile(r"main(?:\s+([A-Za-z_][A-Za-z0-9_]*))?\s*(?:\(\s*\))?\
 # Capture a call name and its argument text, allowing one nested level
 # of parentheses for grouped pins or component arguments. This is a
 # statement-shape recognizer, not a general expression parser.
-CALL = re.compile(r"([A-Za-z][A-Za-z0-9_]*)\s*\(((?:[^()]|\([^()]*\))*)\)")
+CALL = re.compile(rf"({DIODE_NAME}|[A-Za-z][A-Za-z0-9_]*)\s*\(((?:[^()]|\([^()]*\))*)\)", re.I)
 # Top-level cross-file declarations: connector(...) contains pin text;
 # include("...") contains a quoted path without embedded quotes/newlines.
 # Each permits an optional semicolon; linkage validates names and paths.
@@ -113,20 +115,21 @@ WIRE = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_. \t-]*")
 # Capture an assignment's key and remaining value text without interpreting
 # that value. PIN_DIRECTION similarly recognizes digital input/output
 # declaration shapes; signal widths, ranges, and names are validated later.
-ASSIGNMENT = re.compile(r"([A-Za-z][A-Za-z0-9_]*)\s*=\s*(.*)")
+ASSIGNMENT = re.compile(rf"({DIODE_NAME}|[A-Za-z][A-Za-z0-9_]*)\s*=\s*(.*)", re.I)
 PIN_DIRECTION = re.compile(r"[\w, \t\[\]:]+\s*=\s*(input|output)", re.I)
+PIN_DIRECTION_BLOCK = re.compile(r"(?:input|output)(?:\s+[A-Za-z_][A-Za-z0-9_]*)?\s*\{", re.I)
 # A typed method can bind a formal to a fixed component target such as R1
 # or S1. A part argument instead supplies a caller-chosen component such
 # as R(1k), P(10k,25%), or S(closed); each accepted prefix is explicit.
 PARAMETER_TARGET = re.compile(r"[RCLXZVIS][A-Za-z0-9_]*", re.I)
-PART_ARGUMENT = re.compile(r"([RCLZPS][A-Za-z0-9_]*)(?:\s*\(([^()]*)\))?", re.I)
+PART_ARGUMENT = re.compile(rf"({DIODE_NAME}|[RCLZPS][A-Za-z0-9_]*)(?:\s*\(([^()]*)\))?", re.I)
 # The bare placement form also recognizes a formal component slot before
 # between(...). PLACEMENT additionally captures a parenthesized value,
 # including one nested call such as a pulse source. Terminal count and
 # component-specific values are handled by downstream parsers.
-PART_PLACEMENT = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)\s+between\s*\(([^()]*)\)", re.I)
+PART_PLACEMENT = re.compile(rf"({DIODE_NAME}|[A-Za-z_][A-Za-z0-9_]*)\s+between\s*\(([^()]*)\)", re.I)
 PLACEMENT = re.compile(
-    r"([A-Za-z][A-Za-z0-9_]*)\s*\(((?:[^()]|\([^()]*\))*)\)\s+between\s*\(([^()]*)\)", re.I
+    rf"({DIODE_NAME}|[A-Za-z][A-Za-z0-9_]*)\s*\(((?:[^()]|\([^()]*\))*)\)\s+between\s*\(([^()]*)\)", re.I
 )
 # Capture pulse field text without assigning timing semantics here.
 # SOURCE_WIRE captures source name, value, and wire text for the shorthand
@@ -263,14 +266,12 @@ def has_chip(source):
     # the outer body level count as digital input/output evidence.
     for row, _, _ in source_rows(source):
         if depth:
+            if depth == 1 and (PIN_DIRECTION.fullmatch(row) or PIN_DIRECTION_BLOCK.fullmatch(row)):
+                return True
             if row == "}":
                 depth -= 1
             elif row.endswith("{"):
                 depth += 1
-            # A chip-looking block with direct input/output declarations is behavioral.
-            # Do not use declarations hidden inside deeper nested blocks as evidence.
-            elif depth == 1 and PIN_DIRECTION.fullmatch(row):
-                return True
         # Start inspecting a complete chip or main body. A valid chip header alone
         # is insufficient because electrical package methods share that keyword.
         elif CHIP.fullmatch(row) or DIGITAL_MAIN.fullmatch(row):
@@ -282,7 +283,7 @@ def has_chip(source):
     return False
 
 
-def _block_rows(line, depth):
+def _block_rows(line, depth, arm_depth):
     """Recognize delimiters outside calls, interpolation, and quoted paths."""
     # Scan one physical line at a time. start marks the un-emitted fragment;
     # parentheses is local to this line, while brace depth is passed between
@@ -306,17 +307,26 @@ def _block_rows(line, depth):
         # spelling, whitespace inside fragments, and quoted paths are preserved.
         elif not parentheses and token in {";", "{", "}"}:
             fragment = line[start:match.start()]
+            # Preserve Thumb register lists such as PUSH {r4, lr} as operands.
+            if arm_depth and token == "{":
+                arm_depth += 1
+                continue
+            if arm_depth > 1 and token in {"}", ";"}:
+                arm_depth -= int(token == "}")
+                continue
             # Keep an opening brace attached to its header so downstream recognizers
             # can match the whole block opener and then increase structural depth.
             if token == "{":
                 rows.append(fragment + token)
                 depth += 1
+                arm_depth = int(ARM_ROM.fullmatch((fragment + token).strip()) is not None)
             # Flush any preceding statement before emitting a standalone closing row.
             # Never let unmatched closes produce negative splitter depth; block
             # validation happens after these rows have been produced.
             elif token == "}":
                 rows.extend((fragment, token))
                 depth = max(depth - 1, 0)
+                arm_depth = 0
             else:
                 # Ordinary terminators are dropped. Preserve while(...); specifically
                 # because a do/while closing condition needs to remain distinguishable
@@ -328,7 +338,7 @@ def _block_rows(line, depth):
     # Retain the final fragment even without a terminator. Empty fragments are
     # harmless here; source_rows() strips and filters them before yielding.
     rows.append(line[start:])
-    return "\n".join(rows), depth
+    return "\n".join(rows), depth, arm_depth
 
 
 _EMPTY_PART_ASSIGNMENT = re.compile(
@@ -342,9 +352,10 @@ _LEGACY_END = re.compile(r"\(\s*end\s+", re.I)
 def _logical_lines(source):
     """Join continued pin lists/expressions, retaining the opening line number."""
     pending, opened, parentheses = [], 0, 0
+    quoted, escaped = False, False
     for number, raw in enumerate(mask_comments(source).splitlines(), 1):
         line = raw.strip()
-        if pending and not parentheses:
+        if pending and not parentheses and not quoted:
             # A blank component value is a placeholder. Keep it separate from
             # the next assignment or closing marker, while allowing a value
             # to continue on its own line.
@@ -357,7 +368,25 @@ def _logical_lines(source):
         if not pending:
             opened = number
         pending.append(line)
-        for match in BLOCK_TOKEN.finditer(line):
+        # Quoted argument-list metadata can span physical lines. Hide its
+        # punctuation while counting calls, then retain the original text in
+        # the joined statement so splitting and diagnostics use its start line.
+        visible = []
+        for character in line:
+            if quoted:
+                visible.append(" ")
+                if escaped:
+                    escaped = False
+                elif character == "\\":
+                    escaped = True
+                elif character == '"':
+                    quoted = False
+            elif character == '"':
+                quoted = True
+                visible.append(" ")
+            else:
+                visible.append(character)
+        for match in BLOCK_TOKEN.finditer("".join(visible)):
             if match[0] == "(":
                 parentheses += 1
             elif match[0] == ")":
@@ -365,7 +394,7 @@ def _logical_lines(source):
         # An ordinary statement terminator ends a malformed expression too.
         # Do not swallow its closing chip/main brace and lose the error line.
         # A for header is the one construct with legitimate inner semicolons.
-        terminated = line.endswith(";") and not re.match(r"for\s*\(", pending[0], re.I)
+        terminated = not quoted and line.endswith(";") and not re.match(r"for\s*\(", pending[0], re.I)
         # Analog equations commonly place their RHS on following lines.
         # Join an unfinished assignment/operator too, without consuming a
         # terminated malformed expression and losing its source diagnostic.
@@ -376,7 +405,7 @@ def _logical_lines(source):
         # a trailing modulo after a name may still continue an expression.
         if re.search(rf"(?<![\w.]){NUMBER}\s*%$", joined):
             continued = False
-        if (not parentheses and not continued) or terminated:
+        if (not quoted and not parentheses and not continued) or terminated:
             yield opened, " ".join(pending)
             pending = []
             parentheses = 0
@@ -386,7 +415,7 @@ def _logical_lines(source):
 
 def source_rows(source, *, legacy_markers=True):
     """Split statements while retaining the original line for diagnostics."""
-    depth = 0
+    depth, arm_depth = 0, 0
     # Count physical source lines once, including blank/comment-only lines.
     # All fragments emitted from a physical line retain this same location.
     for number, raw in _logical_lines(source):
@@ -399,7 +428,7 @@ def source_rows(source, *, legacy_markers=True):
             for header in (SECTION, MAIN, DIGITAL_MAIN, INLINE, BATTERY_BRACE, TRANSISTOR,
                            OPAMP_BRACE, OPAMP_DECLARATION, MATH_BRACE, MATH_INLINE, CHIP, CONTROL_START)
         ):
-            line, depth = _block_rows(line, depth)
+            line, depth, arm_depth = _block_rows(line, depth, arm_depth)
         # Legacy parenthesized blocks allow several assignments on the same line.
         # When enabled, put old parenthesized markers on separate rows. Only
         # marker-bearing lines also use the following whitespace-before-assignment

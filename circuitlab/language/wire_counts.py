@@ -1,4 +1,4 @@
-"""Compile main-local wire counters only in electrical connection fields.
+"""Compile main/method-local wire counters in electrical connection fields.
 
 Counter references are source-generation syntax. They become ordinary named
 nets before argument binding, graph construction, simulation, or drawing.
@@ -15,7 +15,7 @@ COUNT_REFERENCE = re.compile(
     r"(?P<prefix>[A-Za-z_][A-Za-z0-9_.-]*)\s*(?P<operator>[*^$])"
     r"\s*(?P<counter>[A-Za-z_][A-Za-z0-9_]*)?"
 )
-_INTERPOLATION = re.compile(r"\$\{[^{}]*\}")
+_INTERPOLATION = re.compile(r"[$*]\{[^{}]*\}")
 _MAX_COUNT = (1 << 63) - 1
 
 
@@ -104,7 +104,7 @@ def has_count_reference(text):
 
 
 class WireCounts:
-    """Remember prefix associations for one main execution, across its branches."""
+    """Remember prefix associations for one local execution, across its branches."""
 
     def __init__(self):
         self.prefixes = {}
@@ -136,7 +136,7 @@ class WireCounts:
             name = prefix
         variable = scope.get(name)
         if variable is None:
-            raise error(f'Unknown wire counter "{name}". Declare {name} = count; inside main first.')
+            raise error(f'Unknown wire counter "{name}". Declare {name} = count; inside main or the current method first.')
         if variable.type != "count":
             raise error(f'"{name}" is not a wire counter. Declare {name} = count; instead of an integer variable.')
         if operation == "*":

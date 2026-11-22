@@ -1,0 +1,255 @@
+// IEEE-754 binary32 square root and fused-arithmetic helpers.
+
+// One restoring step consumes two radicand bits and produces one root bit.
+chip M7FPSqrtStep(root, remainder, pair, next_root, next_remainder) {
+    input step_inputs {
+        root[25], remainder[27], pair[2];
+    }
+    output step_outputs {
+        next_root[25], next_remainder[27];
+    }
+
+    const ZERO28[28] = 0;
+    partial[28] = ((ZERO28 + remainder) << 2) | pair;
+    trial[28] = ((ZERO28 + root) << 2) | 1;
+    difference[28] = partial - trial;
+    wire decision { accept; }
+
+    // Accept the trial subtraction when its sign bit is clear.
+    accept = !difference[27];
+    next_root = (root << 1) | accept;
+    next_remainder = accept ? difference[26:0] : partial[26:0];
+}
+
+// Computes FP32 square root and updates cumulative FPSCR exception flags.
+chip M7FPSqrt(a, fpscr, result, next_fpscr) {
+    input operand { a[32], fpscr[32]; }
+    output value { result[32], next_fpscr[32]; }
+
+    const DEFAULT_NAN[32] = 2143289344;
+    const ZERO9[9] = 0;
+    const ZERO25[25] = 0;
+    const ZERO50[50] = 0;
+    const ZERO_PAIR[2] = 0;
+    const root0[25] = 0;
+    const remainder0[27] = 0;
+
+    wire classification {
+        exp[8], frac[23], subnormal;
+        zero, nan, snan, flushed, negative, infinity, finite;
+    }
+
+    // Classify NaNs, infinities, zeros, and subnormal operands.
+    zero = exp == 0 && frac == 0;
+    M7FPClassify(a, exp, frac, infinity, nan, snan, subnormal);
+    flushed = fpscr[24] && subnormal;
+    negative = a[31] && !zero && !flushed && !nan;
+    finite = !(zero || nan || flushed || negative || infinity);
+
+    // Normalize the significand before extracting radicand bit pairs.
+    significand[24] = frac | (exp != 0 ? 8388608 : 0);
+    wire normalization { normalized[24], left[5]; }
+    M7FPNormalize(significand, normalized, left);
+
+    // Exponent offset allows subnormal handling and exponent halving.
+    exponent_plus_256[9] = ZERO9 + 129 + (exp == 0 ? 1 : exp) - left;
+    radicand[50] = (ZERO50 + normalized) << (exponent_plus_256[0] ? 26 : 25);
+
+    // Generate 13 independently inspectable restoring stages.
+    for (int i = 0; i < 13; i++) {
+        wire {
+            root*{i + 1}[25], remainder*{i + 1}[27], pair*{i}[2];
+        }
+        pair*{i} = radicand[49 - 2 * i:48 - 2 * i];
+        M7FPSqrtStep(root*{i}, remainder*{i}, pair*{i}, root*{i + 1}, remainder*{i + 1});
+    }
+
+    // Finish the 25-bit root using twelve zero-valued radicand pairs.
+    for (int i = 13; i < 25; i++) {
+        wire {
+            root*{i + 1}[25], remainder*{i + 1}[27];
+        }
+        M7FPSqrtStep(root*{i}, remainder*{i}, ZERO_PAIR, root*{i + 1}, remainder*{i + 1});
+    }
+
+    // Round the result using FPSCR rounding controls.
+    wire rounding_state { inexact, increment; }
+    inexact = root25[0] || remainder25 != 0;
+    rounding[2] = fpscr[23:22];
+    increment = (rounding == 0 ? (root25[0] && (root25[1] || remainder25 != 0)) :
+                 rounding == 1 && inexact);
+    rounded[25] = ZERO25 + root25[24:1] + increment;
+    biased_exp[8] = (exponent_plus_256 >> 1) - 1 + rounded[24];
+
+    // Repack sign, exponent, and fraction into IEEE-754 binary32.
+    wire packed_result { normal_result[32]; }
+    normal_result[31] = 0;
+    normal_result[30:23] = biased_exp;
+    normal_result[22:0] = rounded[24] ? rounded[23:1] : rounded[22:0];
+
+    // Special operands override the calculated finite result.
+    result = (nan ? (fpscr[25] ? DEFAULT_NAN : a | 4194304) :
+              negative ? DEFAULT_NAN :
+              zero || infinity ? a :
+              flushed ? a & 2147483648 : normal_result);
+    next_fpscr = (fpscr | (snan || negative ? 1 : 0) |
+                  (flushed ? 128 : 0) | (finite && inexact ? 16 : 0));
+}
+
+// Fused multiply-add/subtract: retain full product precision until addition.
+chip M7FPFused(a, b, accumulator, fpscr, negate_a, negate_accumulator, result, next_fpscr) {
+    input operands {
+        a[32], b[32], accumulator[32], fpscr[32];
+        negate_a, negate_accumulator;
+    }
+    output value { result[32], next_fpscr[32]; }
+
+    const ZERO10[10] = 0;
+    const ZERO25[25] = 0;
+    const ZERO51[51] = 0;
+    const ZERO52[52] = 0;
+    const DEFAULT_NAN[32] = 2143289344;
+
+    wire classification {
+        a_exp[8], a_frac[23], b_exp[8], b_frac[23], c_exp[8], c_frac[23];
+        a_sub, b_sub, c_sub;
+    }
+
+    // Select multiplication and accumulator signs.
+    signed_a[32] = a ^ (negate_a ? 2147483648 : 0);
+    signed_c[32] = accumulator ^ (negate_accumulator ? 2147483648 : 0);
+    wire mode { flush; }
+    flush = fpscr[24];
+    rounding[2] = fpscr[23:22];
+
+    wire cases {
+        a_inf, b_inf, c_inf, a_nan, b_nan, c_nan, a_snan, b_snan, c_snan;
+        a_flush, b_flush, c_flush, a_zero, b_zero, c_zero, product_zero, product_sign, opposite;
+        any_nan, invalid_product, invalid_sum, invalid, default_nan_needed, finite;
+    }
+
+    // Classify operands, including flush-to-zero behavior.
+    a_flush = flush && a_sub;
+    b_flush = flush && b_sub;
+    c_flush = flush && c_sub;
+    a_zero = a_exp == 0 && (a_frac == 0 || a_flush);
+    b_zero = b_exp == 0 && (b_frac == 0 || b_flush);
+    c_zero = c_exp == 0 && (c_frac == 0 || c_flush);
+    product_zero = a_zero || b_zero;
+    product_sign = signed_a[31] != b[31];
+    opposite = product_sign != signed_c[31];
+
+    M7FPClassify(a, a_exp, a_frac, a_inf, a_nan, a_snan, a_sub);
+    M7FPClassify(b, b_exp, b_frac, b_inf, b_nan, b_snan, b_sub);
+    M7FPClassify(accumulator, c_exp, c_frac, c_inf, c_nan, c_snan, c_sub);
+
+    // Apply NaN priority and invalid-operation rules before finite arithmetic.
+    any_nan = a_nan || b_nan || c_nan;
+    invalid_product = (a_inf && b_zero) || (b_inf && a_zero);
+    invalid_sum = c_inf && (a_inf || b_inf) && opposite;
+    // Infinite-times-zero also takes priority over a quiet NaN addend.
+    default_nan_needed = ((!any_nan && (invalid_product || invalid_sum)) ||
+                         (c_nan && !c_snan && invalid_product));
+    invalid = a_snan || b_snan || c_snan || default_nan_needed;
+    nan_bits[32] = ((c_snan ? signed_c : a_snan ? signed_a : b_snan ? b :
+                     c_nan ? signed_c : a_nan ? signed_a : b) | 4194304);
+    finite = !any_nan && !a_inf && !b_inf && !c_inf;
+
+    // Normalize all three significands and compute the exact 48-bit product.
+    a_sig[24] = a_frac | (a_exp == 0 ? 0 : 8388608);
+    b_sig[24] = b_frac | (b_exp == 0 ? 0 : 8388608);
+    c_sig[24] = c_frac | (c_exp == 0 ? 0 : 8388608);
+    wire product_significands {
+        a_normal[24], b_normal[24], c_normal[24], a_shift[5], b_shift[5], c_shift[5];
+        product[48];
+    }
+    M7FPNormalize(a_sig, a_normal, a_shift);
+    M7FPNormalize(b_sig, b_normal, b_shift);
+    M7FPNormalize(c_sig, c_normal, c_shift);
+    M7FPSignificandProduct(a_normal, b_normal, product);
+
+    // Exponent bias includes an extra 256 to simplify unsigned alignment.
+    a_adjusted[8] = a_exp == 0 ? 1 : a_exp;
+    b_adjusted[8] = b_exp == 0 ? 1 : b_exp;
+    c_adjusted[8] = c_exp == 0 ? 1 : c_exp;
+    product_bias[10] = product_zero ? 0 : (ZERO10 + 129 + a_adjusted + b_adjusted - a_shift - b_shift + product[47]);
+    addend_bias[10] = c_zero ? 0 : (ZERO10 + 256 + c_adjusted - c_shift);
+    exact_product[48] = product_zero ? 0 : (product[47] ? product : product << 1);
+
+    wire addend { exact_addend[48]; }
+    exact_addend[47:24] = c_zero ? 0 : c_normal;
+    exact_addend[23:0] = 0;
+
+    // Compare magnitudes before signed add/subtract.
+    wire magnitude_choice { product_larger, sign; }
+    product_larger = product_bias > addend_bias || (product_bias == addend_bias && exact_product >= exact_addend);
+    sign = product_larger ? product_sign : signed_c[31];
+    larger[48] = product_larger ? exact_product : exact_addend;
+    smaller[48] = product_larger ? exact_addend : exact_product;
+    larger_bias[10] = product_larger ? product_bias : addend_bias;
+    smaller_bias[10] = product_larger ? addend_bias : product_bias;
+
+    // Align the smaller operand and preserve lost bits using a sticky bit.
+    gap[10] = larger_bias - smaller_bias;
+    align[6] = gap > 51 ? 51 : gap;
+    large_ext[51] = (ZERO51 + larger) << 3;
+    small_ext[51] = (ZERO51 + smaller) << 3;
+    small_shifted[51] = small_ext >> align;
+    small_recovered[51] = small_shifted << align;
+    small_aligned[51] = small_shifted | (small_ext != small_recovered);
+    total[52] = opposite ? (ZERO52 + large_ext - small_aligned) : (ZERO52 + large_ext + small_aligned);
+
+    // Generated leading-zero stages normalize cancellation results.
+    bits[51] = total[50:0];
+    n64[51] = bits;
+    for (int step = 32; step >= 2; step /= 2) {
+        wire {
+            step*{step}, n*{step}[51];
+        }
+        step*{step} = n*{step * 2}[50:51 - step] == 0;
+        n*{step} = step*{step} ? n*{step * 2} << step : n*{step * 2};
+    }
+    leading[6] = ((step32 ? 32 : 0) | (step16 ? 16 : 0) | (step8 ? 8 : 0) |
+                  (step4 ? 4 : 0) | (step2 ? 2 : 0) | !n2[50]);
+    shift_left[6] = total[51] ? 0 : leading;
+    normalized[51] = total[51] ? (total[51:1] | total[0]) : bits << shift_left;
+    bias[10] = larger_bias + total[51] - shift_left;
+
+    // Handle subnormals, FPSCR rounding, overflow, and sticky exception flags.
+    wire rounding_state {
+        tiny, flushed, inexact, increment, overflow, to_infinity, zero_sign;
+    }
+    tiny = bias < 257;
+    flushed = tiny && flush;
+    sub_gap[10] = tiny ? 257 - bias : 0;
+    sub_shift[6] = sub_gap > 51 ? 51 : sub_gap;
+    sub_shifted[51] = normalized >> sub_shift;
+    sub_restored[51] = sub_shifted << sub_shift;
+    tail[51] = sub_shifted | (normalized != sub_restored);
+    inexact = tail[26:0] != 0;
+    increment = (rounding == 0 ? (tail[26] && (tail[25:0] != 0 || tail[27])) :
+                 inexact && ((rounding == 1 && !sign) || (rounding == 2 && sign)));
+    rounded[25] = ZERO25 + tail[50:27] + increment;
+    final_bias[10] = (tiny ? 257 : bias) + rounded[24];
+    overflow = final_bias >= 511;
+    to_infinity = rounding == 0 || (rounding == 1 && !sign) || (rounding == 2 && sign);
+    zero_sign = opposite ? rounding == 2 : sign;
+    sign_bit[32] = sign ? 2147483648 : 0;
+
+    // Pack finite result; special values override it below.
+    wire packed_result { normal_bits[32]; }
+    normal_bits[31] = sign;
+    normal_bits[30:23] = rounded[23] || rounded[24] ? final_bias[7:0] : 0;
+    normal_bits[22:0] = rounded[24] ? rounded[23:1] : rounded[22:0];
+    finite_bits[32] = (total == 0 ? (zero_sign ? 2147483648 : 0) :
+                       flushed ? sign_bit :
+                       overflow ? (sign_bit | (to_infinity ? 2139095040 : 2139095039)) : normal_bits);
+    result = (default_nan_needed ? DEFAULT_NAN :
+              any_nan ? (fpscr[25] ? DEFAULT_NAN : nan_bits) :
+              a_inf || b_inf ? (product_sign ? 4286578688 : 2139095040) :
+              c_inf ? signed_c : finite_bits);
+    next_fpscr = (fpscr | (a_flush || b_flush || c_flush ? 128 : 0) | (invalid ? 1 : 0) |
+                  (finite && total != 0 && overflow ? 4 : 0) |
+                  (finite && total != 0 && tiny && (inexact || flushed) ? 8 : 0) |
+                  (finite && total != 0 && !flushed && (inexact || overflow) ? 16 : 0));
+}
