@@ -26,14 +26,14 @@ from circuitlab.layout.gates import GateLayouts, default_gate_layout, gate_previ
 from circuitlab.viewer.legacy import GateLayoutDialog, MainWindow
 from circuitlab.layout.geometry import rotate_point, symbol_pins
 from circuitlab.layout.grid import align_layout
-from circuitlab.layout.checks import preserves_nets
+from circuitlab.layout.checks import clear_package_wires, preserves_nets
 from circuitlab.layout.persistence import (
     layout_payload, pack_layout, placement_path, read_placement, restore_layout, strip_placement,
 )
 from circuitlab.math.report import component_labels
 from circuitlab.layout.checks import mark_crossings as _mark_crossings
 from circuitlab.layout.routing import fast_layout
-from circuitlab.layout.editing import move_ground, move_symbol, move_symbols, move_wire
+from circuitlab.layout.editing import attached_ground_islands, move_ground, move_symbol, move_symbols, move_wire
 from circuitlab.viewer.schematic import SCALE, point
 from circuitlab.viewer.snapping import grid_step, snap_radius
 from circuitlab.exporters.spice import export_spice
@@ -81,6 +81,30 @@ class ApplicationTest(unittest.TestCase):
         while schematic.drag.last_position != end and monotonic() < deadline:
             QTest.qWait(10)
         self.assertEqual(schematic.drag.last_position, end)
+
+    def test_syntax_rehighlight_preserves_solution_layout_and_active_drag(self):
+        win = self.window
+        source = ("V1(5V) between(supply,0);\n"
+                  "R1(1k) between(supply,out);\nR2(1k) between(out,0);")
+        win.editor.setPlainText(source)
+        win.compile_source()
+        view = win.schematic
+        solution, layout = win.solution, view.layout
+        self.assertIsNotNone(solution)
+        part, a, b, _ = next(symbol for symbol in layout.symbols if symbol[0].name == "R1")
+        start = view.mapFromScene(point(((a[0] + b[0]) / 2, (a[1] + b[1]) / 2)))
+        view.start_drag("component", part.name, (None, "auto"), start, only_symbol=True)
+        drag = view.drag
+        win.editor.highlighter.rehighlight()
+        QTest.qWait(win.editor.highlighter._refresh.interval() + 10)
+        self.assertEqual(win.editor.toPlainText(), source)
+        self.assertIs(win.solution, solution)
+        self.assertIs(view.layout, layout)
+        self.assertIs(view.drag, drag)
+        view.drag = None
+        win.editor.setPlainText(source.replace("R1(1k)", "R1(2k)"))
+        self.assertIsNone(win.solution)
+        self.assertIsNone(view.layout)
 
     def test_gate_layout_dialog_resizes_and_allows_shortening_a_pin_lead(self):
         config = str(Path(self.fixtures_dir.name) / "pin-settings.ini")
@@ -438,10 +462,12 @@ main { nand(supply, 0, input_a, input_b, out); }
         def drag(name, start, dx, dy):
             before = schematic.layout.positions[name]
             circuit = schematic.levels[None, "auto"]
+            grounds = attached_ground_islands(schematic.layout, {name})
             shifts = ((dx, -dy), (0, 3), (0, -3), (-3, 0), (3, 0), (-1, 0), (0, -1))
-            shift = next((move for move in shifts if move_symbol(
-                circuit, schematic.layout, name, move,
-            ) is not None), None)
+            shift = next((move for move in shifts if
+                          (candidate := move_symbol(circuit, schematic.layout, name, move,
+                                                    ground_islands=grounds)) is not None
+                          and clear_package_wires(candidate)), None)
             self.assertIsNotNone(shift)
             scale = schematic.transform().m11() * SCALE
             end = start + QPoint(round(shift[0] * scale), round(-shift[1] * scale))
@@ -493,13 +519,15 @@ main { nand(supply, 0, input_a, input_b, out); }
         start = center(chip)
         circuit = schematic.levels[None, "auto"]
         shifts = ((0, -3), (0, 3), (3, 0), (-3, 0), (0, -1), (0, 1))
-        shift = next((move for move in shifts if move_symbols(
-            circuit, original, schematic.selected_symbols, move,
-        ) is not None), None)
+        QTest.mousePress(viewport, Qt.MouseButton.LeftButton, ctrl, start)
+        self.assertIsNotNone(schematic.drag)
+        shift = next((move for move in shifts if
+                      (candidate := move_symbols(circuit, original, schematic.selected_symbols, move,
+                                                 ground_islands=schematic.drag.attached_grounds)) is not None
+                      and clear_package_wires(candidate)), None)
         self.assertIsNotNone(shift)
         scale = schematic.transform().m11() * SCALE
         end = start + QPoint(round(shift[0] * scale), round(-shift[1] * scale))
-        QTest.mousePress(viewport, Qt.MouseButton.LeftButton, ctrl, start)
         QTest.mouseMove(viewport, end)
         self.wait_for_drag_preview(schematic, end)
         preview = schematic.layout
@@ -909,8 +937,9 @@ main { nand(supply, 0, input_a, input_b, out); }
                 key=lambda edge: dist(*edge),
             )
             start = schematic.mapFromScene(point(((a[0] + b[0]) / 2, a[1])))
-            # Two different, clear grid rows; +1 would land on discharge's rail.
-            distance = 0.25 if _ == 0 else 0.5
+            # The second move goes away from the package; upward would put
+            # this rail through its body in the current physical pin layout.
+            distance = 0.25 if _ == 0 else -0.5
             end = start + QPoint(0, -round(distance * schematic.transform().m11() * SCALE))
             QTest.mousePress(schematic.viewport(), Qt.MouseButton.LeftButton, pos=start)
             QTest.mouseRelease(schematic.viewport(), Qt.MouseButton.LeftButton, pos=end)
@@ -1157,7 +1186,8 @@ main { nand(supply, 0, input_a, input_b, out); }
         with patch("circuitlab.viewer.schematic.QMenu") as menu:
             schematic.contextMenuEvent(menu_event)
             actions = dict(call.args for call in menu.return_value.addAction.call_args_list)
-            self.assertEqual(list(actions), ["Edit value…", "Rotate clockwise", "Rotate counterclockwise", "Optimize wiring"])
+            self.assertEqual(list(actions), ["Edit value…", "Rotate clockwise", "Rotate counterclockwise",
+                                             "Values only", "Values only (all components)", "Optimize wiring"])
             actions["Rotate counterclockwise"]()
             self.assertEqual(schematic.layout.rotations.get("RA", 0), (turns - 1) % 4)
             self.assertTrue(preserves_nets(schematic.levels[None, "auto"], schematic.layout))
@@ -1470,6 +1500,7 @@ main { nand(supply, 0, input_a, input_b, out); }
         )
         win.render_source()
         self.assertEqual(win.status.text(), "Schematic rendered.")
+        self.assertIn("Floating ground return in DC: bgnd", win.issues.item(0).text())
 
     def test_preserves_source_and_file_encoding(self):
         with TemporaryDirectory(dir=Path.cwd()) as folder:

@@ -84,6 +84,41 @@ def move_symbol(circuit, original, name, delta, *, diagonal=False, rotate=0, ali
     return result
 
 
+def rotate_symbols(circuit, original, names, turns):
+    """Rotate selected symbols about their own centers as one checked edit."""
+    turns %= 4
+    selected = [symbol for symbol in original.symbols if symbol[0].name in names]
+    if not turns or not selected:
+        return original
+    selected_names = {symbol[0].name for symbol in selected}
+    stationary = [symbol for symbol in original.symbols if symbol[0].name not in selected_names]
+    rotations = dict(original.rotations)
+    for part, *_ in selected:
+        rotation = (rotations.get(part.name, 0) + turns) % 4
+        if rotation:
+            rotations[part.name] = rotation
+        else:
+            rotations.pop(part.name, None)
+    bounds = [(symbol[0].name, _symbol_bounds(symbol, rotations.get(symbol[0].name, 0), body_only=True))
+              for symbol in original.symbols]
+    if any((first in selected_names or second in selected_names) and boxes_overlap(a, b)
+           for index, (first, a) in enumerate(bounds) for second, b in bounds[index + 1:]):
+        return None
+    old_pins = [pin for symbol in selected for pin in
+                routed_pins(symbol, original.rotations.get(symbol[0].name, 0), original.pin_grid)]
+    new_pins = [pin for symbol in selected for pin in
+                routed_pins(symbol, rotations.get(symbol[0].name, 0), original.pin_grid)]
+    stationary_pins = [pin for symbol in stationary for pin in
+                       routed_pins(symbol, original.rotations.get(symbol[0].name, 0), original.pin_grid)]
+    docked = {(net, clean_point(at)) for net, at in new_pins} & {
+        (net, clean_point(at)) for net, at in stationary_pins
+    }
+    drawing = replace(original, rotations=rotations)
+    center_x = sum((a[0] + b[0]) / 2 for _, a, b, _ in selected) / len(selected)
+    return _reroute_move(circuit, original, drawing, old_pins, new_pins, center_x,
+                         stationary_pins=stationary_pins, rotate=turns, docked_pins=docked)
+
+
 def flip_opamp_inputs(circuit, original, name):
     """Swap an op amp's input positions and reconnect their existing nets."""
     for index, symbol in enumerate(original.symbols):
@@ -338,7 +373,7 @@ def _terminal_wire_alignments(drawing, moving_pins, axis, stationary_pins=None, 
     return offsets
 
 
-def move_ground(circuit, original, point, delta, *, diagonal=False, align_axis=None):
+def move_ground(circuit, original, point, delta, *, diagonal=False, align_axis=None, repair=False):
     """Move one ground symbol and reconnect its existing branch."""
     end = _shift(point, delta)
     if end == clean_point(point) and align_axis is None:
@@ -364,6 +399,7 @@ def move_ground(circuit, original, point, delta, *, diagonal=False, align_axis=N
         circuit, original, drawing, ((net, point),), ((net, end),), point[0],
         moving_ground=point, diagonal=diagonal, align_axis=align_axis,
         direct=end == ground_attachment(original, point),
+        validate=(lambda candidate: preserves_nets(circuit, candidate, nets={net})) if repair else None,
     )
 
 
@@ -460,7 +496,7 @@ def _external_ground_pins(old_pins, new_pins, attachments):
     return ([old for old, _ in pairs], [new for _, new in pairs])
 
 
-def _prune_joined_connectors(circuit, drawing, net):
+def _prune_joined_connectors(circuit, drawing, net, *, repair=False):
     """Keep one label per disconnected island, or none once fully wired."""
     _, islands = physical_wire_islands(drawing, net)
     disconnected = len(set(islands.values())) > 1
@@ -482,12 +518,12 @@ def _prune_joined_connectors(circuit, drawing, net):
     replace_route(drawing, net, drawing.wires.get(net, ()))
     drawing.crossings = {}
     mark_crossings(drawing)
-    return drawing if preserves_nets(circuit, drawing) else None
+    return drawing if preserves_nets(circuit, drawing, nets={net} if repair else None) else None
 
 
 # A label can join another island only when both belong to the exact same net.
 # Similar text or a nearby ground symbol is not permission to short two nodes.
-def move_connector(circuit, original, index, end, *, join=None, join_wire=False, diagonal=False):
+def move_connector(circuit, original, index, end, *, join=None, join_wire=False, diagonal=False, repair=False):
     """Move a label; join a matching label or a different island of its exact net."""
     net, start, name, left, below = original.connectors[index]
     end = clean_point(end)
@@ -512,9 +548,10 @@ def move_connector(circuit, original, index, end, *, join=None, join_wire=False,
             original, connectors=ports, label_offsets=_move_endpoint_labels(original, connectors={start: end})
         ),
         ((net, start),), ((net, end),), start[0], moving_connector=index, diagonal=diagonal,
+        validate=(lambda candidate: preserves_nets(circuit, candidate, nets={net})) if repair else None,
     )
     if drawing is not None and (join is not None or join_wire):
-        drawing = _prune_joined_connectors(circuit, drawing, net)
+        drawing = _prune_joined_connectors(circuit, drawing, net, repair=repair)
     return drawing
 
 
@@ -556,7 +593,7 @@ def _move_endpoint_labels(layout, *, grounds=None, connectors=None):
 
 # Replace the cut connection with matching labels or appropriate local ground symbols,
 # keeping the electrical net connected even though the visible wire is separated.
-def split_wire(circuit, original, net, edge, at, *, grid=0, origin=(0, 0)):
+def split_wire(circuit, original, net, edge, at, *, grid=0, origin=(0, 0), repair=False):
     """Cut a wire into matching labeled ends, or local ground symbols."""
     a, b = sorted(map(clean_point, edge))
     if a == b or net not in original.wires:
@@ -627,7 +664,7 @@ def split_wire(circuit, original, net, edge, at, *, grid=0, origin=(0, 0)):
     if net in circuit.grounds:
         _prune_split_grounds(drawing, net, (low, high))
     mark_crossings(drawing)
-    return drawing if preserves_nets(circuit, drawing) else None
+    return drawing if preserves_nets(circuit, drawing, nets={net} if repair else None) else None
 
 
 def _prune_split_grounds(drawing, net, added):
@@ -657,6 +694,7 @@ def _reroute_move(
     circuit, original, drawing, old_pins, new_pins, center_x, *,
     stationary_pins=None, moving_ground=None, moving_connector=None, moving_boundary=None,
     diagonal=False, rotate=0, align_axis=None, direct=False, docked_pins=(), moving_ends=(), extra_bends=(),
+    validate=None,
 ):
     affected = {net for net, _ in old_pins}
     coincident = {net for net, end in docked_pins if route_anchors(drawing, net) == {end}}
@@ -723,7 +761,7 @@ def _reroute_move(
     if rotate:
         bends += (("diagonal", 0), ("around", 0.7), ("around", 1.3))
     bends += extra_bends
-    best = _shortest_move(drawing, circuit, affected, connections, fixed_edges, bends, center_x)
+    best = _shortest_move(drawing, circuit, affected, connections, fixed_edges, bends, center_x, validate=validate)
     if best is not None:
         return best
     if docked_pins and not direct:
@@ -731,6 +769,7 @@ def _reroute_move(
             circuit, original, drawing, old_pins, new_pins, center_x,
             stationary_pins=stationary_pins, diagonal=diagonal, rotate=rotate,
             direct=True, docked_pins=docked_pins, extra_bends=extra_bends,
+            validate=validate,
         )
     # Preserve the old junction geometry if trimming leaves no valid route.
     connections = [
@@ -740,7 +779,7 @@ def _reroute_move(
     ]
     previous_edges = {net: edges for net, edges in original.wires.items() if net not in coincident}
     return _shortest_move(
-        drawing, circuit, affected, connections, previous_edges, bends, center_x
+        drawing, circuit, affected, connections, previous_edges, bends, center_x, validate=validate,
     )
 
 
@@ -774,7 +813,7 @@ def _connection_points(start, end, strategy, ratio, center_x, index):
     return start, (lane, y), (lane, v), end
 
 
-def _shortest_move(drawing, circuit, affected, connections, fixed_edges, bends, center_x):
+def _shortest_move(drawing, circuit, affected, connections, fixed_edges, bends, center_x, *, validate=None):
     best = None
     for strategy, ratio in bends:
         routed = route_trial(drawing)
@@ -793,14 +832,14 @@ def _shortest_move(drawing, circuit, affected, connections, fixed_edges, bends, 
         if best is not None and length >= best[0] - 1e-8:
             continue
         mark_crossings(routed)
-        if preserves_nets(circuit, routed):
+        if (preserves_nets(circuit, routed) if validate is None else validate(routed)):
             best = length, routed
     return best[1] if best else None
 
 
 # Try snapped candidates in order and return the first one that preserves every contact.
 # An invalid pointer position should leave the last valid geometry available to the viewer.
-def move_wire(circuit, original, net, edge, distance, *, snap=0, pointer=None, accept_offset=None):
+def move_wire(circuit, original, net, edge, distance, *, snap=0, pointer=None, accept_offset=None, repair=False):
     """Return the first electrically valid slide and its snapped offset, if any."""
     for drawing, offset in wire_slide_candidates(original, net, edge, distance, snap=snap, pointer=pointer):
         if accept_offset is not None and not accept_offset(distance if offset is None else offset):
@@ -808,6 +847,6 @@ def move_wire(circuit, original, net, edge, distance, *, snap=0, pointer=None, a
         if drawing is original:
             return drawing, None
         mark_crossings(drawing)
-        if preserves_nets(circuit, drawing):
+        if preserves_nets(circuit, drawing, nets={net} if repair else None):
             return drawing, offset
     return None, None

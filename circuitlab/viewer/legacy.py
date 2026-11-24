@@ -31,7 +31,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from circuitlab.math.analysis import analyze, diagnostics
+from circuitlab.math.analysis import Diagnostic, analyze, diagnostics
 from circuitlab.language.comments import mask_comments
 from circuitlab.language.compiler import compile_circuit
 from circuitlab.language.syntax import analysis_mode
@@ -102,6 +102,8 @@ class MainWindow(QMainWindow):
         self.path = None
         self.disk_bytes = None
         self.solution = None
+        self.layout_issues = []
+        self._source_issues = []
         self.pins = {}
         self.pin_overrides = {}
         self.placement_dirty = False
@@ -432,6 +434,7 @@ class MainWindow(QMainWindow):
             lambda name, inputs: self.edit_gate_layouts((name, inputs))
         )
         self.schematic.placement_changed.connect(self.placement_changed)
+        self.schematic.layout_issues_changed.connect(self.update_layout_issues)
         self.schematic.probed.connect(self.probe)
         self.schematic.pin_requested.connect(self.name_pin)
         self.schematic.pin_renamed.connect(self.name_pin)
@@ -618,7 +621,22 @@ class MainWindow(QMainWindow):
         self.picker.setCurrentIndex(0)
         self.editor.setFocus()
 
+    @property
+    def visible_issues(self):
+        return [*self._source_issues, *self.layout_issues]
+
+    def update_layout_issues(self, issues):
+        had_warnings = bool(self.layout_issues)
+        self.layout_issues = [Diagnostic("warning", issue.line, issue.message, issue.path) for issue in issues]
+        self.show_issues(self._source_issues)
+        if self.visible_issues:
+            self.status.setText(self.visible_issues[0].message)
+        elif had_warnings:
+            self.status.setText("Schematic rendered.")
+
     def show_issues(self, issues):
+        self._source_issues = list(issues)
+        issues = self.visible_issues
         self.editor.annotate([issue for issue in issues if issue.path in (None, self.path)])
         self.issues.clear()
         if not issues:
@@ -627,7 +645,7 @@ class MainWindow(QMainWindow):
             self.issues.addItem(item)
         for issue in issues:
             location = f"{issue.path.name} Â· " if issue.path and issue.path != self.path else ""
-            label = f"Line {issue.line}" if issue.line is not None else "Simulation"
+            label = f"Line {issue.line}" if issue.line is not None else "Circuit"
             item = QListWidgetItem(f"{location}{label} Â· {issue.severity} Â· {issue.message}")
             item.setForeground(
                 QColor("#f87171" if issue.severity == "error" else "#ffd18b")
@@ -653,17 +671,19 @@ class MainWindow(QMainWindow):
         self.analysis_results.update_rows(rows)
 
     def source_changed(self):
-        self.trace_popup.hide()
-        self.device_popup.hide()
         source = self.editor.toPlainText()
         previous_pins = self.pins
         self.pins = apply_pin_overrides(read_pins(source), self.pin_overrides)
         code = circuit_text(source)
-        # Pin metadata is a comment. Renaming a pin does not invalidate a solve.
-        if self.pins != previous_pins and code == self.circuit_text:
-            self.schematic.update_pins(self.pins)
-            self.set_solution(self.solution)
+        # Qt also emits textChanged for syntax formatting. Only a source edit
+        # invalidates compiled views; pin metadata only refreshes probe labels.
+        if code == self.circuit_text:
+            if self.pins != previous_pins:
+                self.schematic.update_pins(self.pins)
+                self.set_solution(self.solution)
             return
+        self.trace_popup.hide()
+        self.device_popup.hide()
         self.circuit_text = code
         if not getattr(getattr(self, "source_tools", None), "internal_refresh", False):
             self.scope_sidebar.set_circuit(None)
@@ -732,6 +752,9 @@ class MainWindow(QMainWindow):
                 self.views.setCurrentWidget(self.results)
         self.show_issues(issues)
 
+        if self.visible_issues:
+            self.status.setText(self.visible_issues[0].message)
+
     # Keep rendering independent of a successful solve so users can inspect and repair a
     # connected schematic even when its operating point is not yet determined.
     def _draw_source(self, source, mode, *, preserve_scope=False):
@@ -788,7 +811,7 @@ class MainWindow(QMainWindow):
             self.status.setText(issue.message)
         else:
             self.views.setCurrentIndex(0)
-            self.status.setText("Schematic rendered.")
+            self.status.setText(self.layout_issues[0].message if self.layout_issues else "Schematic rendered.")
 
     def change_wiring(self):
         self.schematic.layout_mode = self.wire_style.currentData()

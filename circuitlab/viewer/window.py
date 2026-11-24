@@ -22,6 +22,7 @@ from circuitlab.layout.hierarchy import hood_levels
 from circuitlab.layout.persistence import (
     read_pin_overrides, read_placement, read_logic_placement, embed_placement,
 )
+from circuitlab.math.analysis import Diagnostic
 from circuitlab.math.digital import DigitalSimulation
 from circuitlab.math.report import pin_rows, result_rows
 from circuitlab.model.graph import CircuitError
@@ -67,6 +68,8 @@ class ViewerWindow(QMainWindow):
     def __init__(self, session=None):
         super().__init__()
         self.session = session or CircuitSession()
+        self.layout_issues = []
+        self._source_issues = []
         self._preview_worker = ThreadPoolExecutor(max_workers=1, thread_name_prefix="digital-preview")
         worker = self._preview_worker
         self.destroyed.connect(lambda: worker.shutdown(wait=False, cancel_futures=True))
@@ -153,6 +156,7 @@ class ViewerWindow(QMainWindow):
             lambda name, inputs: self.edit_gate_layouts((name, inputs))
         )
         self.schematic.placement_changed.connect(self.placement_changed)
+        self.schematic.layout_issues_changed.connect(self.update_layout_issues)
         self.schematic.probed.connect(self.probe)
         self.schematic.pin_requested.connect(self.name_pin)
         self.schematic.pin_renamed.connect(self.name_pin)
@@ -304,7 +308,11 @@ class ViewerWindow(QMainWindow):
     def _show_compilation(self, show_logic, preserve_scope, *, layout=None, prepared=None):
         self.update_results()
         if self.session.drawing is not None:
-            self.schematic.draw(self.session.drawing, self.pins, layout=layout)
+            try:
+                self.schematic.draw(self.session.drawing, self.pins, layout=layout)
+            except CircuitError as error:
+                self.schematic.clear(preserve_placement=True)
+                self.session.issues.append(issue_for(error))
             self.scope_sidebar.set_circuit(self.session.drawing, preserve_state=preserve_scope)
         elif preserve_scope:
             self.scope_sidebar.set_circuit(None)
@@ -318,8 +326,8 @@ class ViewerWindow(QMainWindow):
         self.pin_button.setChecked(False)
         self.schematic.set_pin_tool(False)
         self.show_issues(self.session.issues)
-        if self.session.issues:
-            self.status.setText(self.session.issues[0].message)
+        if self.visible_issues:
+            self.status.setText(self.visible_issues[0].message)
         elif self.session.interface_preview:
             self.views.setCurrentIndex(0)
             self.status.setText("Chip interface preview. Include this file in a circuit with main to compile and simulate it.")
@@ -409,6 +417,7 @@ class ViewerWindow(QMainWindow):
             return True
         try:
             circuit = self.session.render(self.mode.currentData())
+            self.schematic.draw(circuit, self.pins)
         except CircuitError as error:
             self.schematic.clear(preserve_placement=True)
             self.scope_sidebar.set_circuit(None)
@@ -417,12 +426,13 @@ class ViewerWindow(QMainWindow):
             self.show_issues([issue_for(error)])
             self.status.setText(error.message)
             return False
-        self.schematic.draw(circuit, self.pins)
         self.scope_sidebar.set_circuit(circuit)
         self.update_digital()
         self.views.setCurrentIndex(0)
-        self.status.setText("Chip interface preview. Include this file in a circuit with main to compile and simulate it."
-                            if self.session.interface_preview else "Schematic rendered.")
+        self.show_issues(self.session.issues)
+        message = ("Chip interface preview. Include this file in a circuit with main to compile and simulate it."
+                   if self.session.interface_preview else "Schematic rendered.")
+        self.status.setText(self.layout_issues[0].message if self.layout_issues else message)
         return True
 
     # Digital software runtime state is separate from an analog chip's electrical model preview;
@@ -459,7 +469,23 @@ class ViewerWindow(QMainWindow):
         self.results.update_rows(rows)
         self.analysis_results.update_rows(rows)
 
+    @property
+    def visible_issues(self):
+        return [*self._source_issues, *self.layout_issues]
+
+    def update_layout_issues(self, issues):
+        """Keep placement warnings live without replacing compiler diagnostics."""
+        had_warnings = bool(self.layout_issues)
+        self.layout_issues = [Diagnostic("warning", issue.line, issue.message, issue.path) for issue in issues]
+        self.show_issues(self._source_issues)
+        if self.visible_issues:
+            self.status.setText(self.visible_issues[0].message)
+        elif had_warnings:
+            self.status.setText("Schematic rendered.")
+
     def show_issues(self, issues):
+        self._source_issues = list(issues)
+        issues = self.visible_issues
         self.issues.clear()
         if not issues:
             item = QListWidgetItem("No compiler diagnostics.")
@@ -467,7 +493,7 @@ class ViewerWindow(QMainWindow):
             self.issues.addItem(item)
         for issue in issues:
             location = f"{issue.path.name} · " if issue.path and issue.path != self.path else ""
-            label = f"Line {issue.line}" if issue.line is not None else "Simulation"
+            label = f"Line {issue.line}" if issue.line is not None else "Circuit"
             item = QListWidgetItem(f"{location}{label} · {issue.severity} · {issue.message}")
             item.setForeground(QColor("#f87171" if issue.severity == "error" else "#ffd18b"))
             item.setData(Qt.ItemDataRole.UserRole, issue.line)

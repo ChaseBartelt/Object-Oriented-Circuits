@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from itertools import chain
 import math
 from typing import TYPE_CHECKING
+from circuitlab.model.perfboard import PerfBoard
 
 if TYPE_CHECKING:
     from circuitlab.model.diode import DiodeModel
@@ -307,6 +308,8 @@ class Probe:
     kind: str
     targets: tuple[str, ...]
     line: int | None = None
+    source_line: int | None = None
+    path: object = None
 
 
 @dataclass(frozen=True)
@@ -394,6 +397,8 @@ class Circuit:
     properties: list[ChipProperty] = field(default_factory=list)
     model_issues: list[ModelIssue] = field(default_factory=list)
     comparators: list[ComparatorInstance] = field(default_factory=list)
+    perfboard: PerfBoard | None = None
+    quantity_origins: dict = field(default_factory=dict)
 
     def resolve_wire(self, name: str) -> str:
         return next((tap.net for tap in self.wire_taps if tap.name == name), name)

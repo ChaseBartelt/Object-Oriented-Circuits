@@ -283,8 +283,8 @@ def compile_linked(source, path, mode, *, render_only=False, read_source=None):
     combined_mode = "mixed" if any(circuit.mode == "mixed" for _, circuit in circuits) else mode
     result = replace(
         root, mode=combined_mode, components=[], known={}, probes=[], port=None, grounds=set(), named_wires=set(),
-        wire_taps=[], instances=[], owners={}, component_lines={}, component_files={}, groups=[],
-        grouped=False, reduce_groups=False, connector_pins=tuple(sorted(shared)), behavior=[], properties=[], model_issues=[], comparators=[],
+        wire_taps=[], instances=[], owners={}, component_lines={}, component_files={}, quantity_origins={}, groups=[],
+        grouped=False, reduce_groups=False, connector_pins=tuple(sorted(shared)), behavior=[], properties=[], model_issues=[], comparators=[], perfboard=None,
     )
     # Process circuits in discovery order. Only declared connector nets are
     # exposed; remaining names in each child receive a unique file prefix.
@@ -319,6 +319,19 @@ def compile_linked(source, path, mode, *, render_only=False, read_source=None):
         # current combined length so parents and component owners can be shifted
         # into the merged instance list without pointing into another file.
         base = len(result.instances)
+        if circuit.perfboard is not None:
+            board = circuit.perfboard
+            if result.perfboard is not None:
+                raise CircuitError("Declare only one perfboard across included circuit files.",
+                                   board.line, path=board.path or path)
+            excluded = []
+            for target in board.exclusions:
+                parts = [part_name(part.name) for part in circuit.components
+                         if target.casefold() in {part.name.casefold(), part.label.casefold()}]
+                instances = [f"@method:{base + number}" for number, instance in enumerate(circuit.instances)
+                             if target.casefold() == instance.name.casefold()]
+                excluded.extend(parts or instances or [part_name(target)])
+            result.perfboard = replace(board, exclusions=tuple(dict.fromkeys(excluded)))
         result.comparators.extend(replace(
             cmp,name=part_name(cmp.name),owner=base+cmp.owner,output_name=part_name(cmp.output_name),
             plus=net(cmp.plus),minus=net(cmp.minus),collector=net(cmp.collector),emitter=net(cmp.emitter),
@@ -397,10 +410,12 @@ def compile_linked(source, path, mode, *, render_only=False, read_source=None):
         # prefixes. set_known accepts consistent repeats and rejects conflicting
         # values; attribute a conflict to the file currently contributing it.
         for key, value in circuit.known.items():
+            line, origin = circuit.quantity_origins.get(key, (None, path))
             try:
                 set_known(result.known, key, value)
             except CircuitError as error:
-                raise CircuitError(error.message, path=path) from None
+                raise CircuitError(error.message, line, error.code, path=origin or path) from None
+            result.quantity_origins[key] = line, origin or path
     # After connector linking, named return domains may connect differently.
     # Recompute ideal op-amp output returns on the combined graph when
     # non-global grounds exist, rather than retaining a per-file guess.
@@ -410,6 +425,6 @@ def compile_linked(source, path, mode, *, render_only=False, read_source=None):
         compiler.connect_amp_returns()
     # A render-only merge still needs something drawable: a component or
     # a retained method/package instance. Definitions alone create no drawing.
-    if render_only and not (result.components or result.instances):
+    if render_only and not (result.components or result.instances or result.perfboard):
         raise CircuitError("Add components to the entry file or an included circuit.")
     return result

@@ -478,11 +478,17 @@ class CircuitEditor(QPlainTextEdit):
             "border: 1px solid #666; selection-background-color: #365777; }"
         )
         self.cursorPositionChanged.connect(self.completer.popup().hide)
-        self.textChanged.connect(self.completer.popup().hide)
-        self.textChanged.connect(self.clear_hover)
+        self.document().contentsChange.connect(self._source_contents_changed)
         self.blockCountChanged.connect(self.resize_gutter)
         self.updateRequest.connect(self.update_gutter)
         self.resize_gutter()
+
+    def _source_contents_changed(self, position, removed, added):
+        # Syntax highlighting also emits textChanged. Only real text edits
+        # invalidate completion suggestions and source hover previews.
+        if removed or added:
+            self.completer.popup().hide()
+            self.clear_hover()
 
     def _before_cursor(self, cursor=None):
         cursor = QTextCursor(cursor) if cursor is not None else self.textCursor()

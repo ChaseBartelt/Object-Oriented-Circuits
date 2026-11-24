@@ -21,6 +21,7 @@ class ChipPackage(Component):
     """Schematic-only component with numbered pins followed by implicit ports."""
 
     physical_pin_count: int = 0
+    pin_pitch: float = field(default=0, compare=False)
 
 
 def wire_axis(edge):
@@ -79,7 +80,7 @@ def package_pins(part, grid=0):
             extra = index - count
             left = extra % 2 == 0
             row = left_count + extra // 2
-        yield label, net, left, (middle - row) * max(1, 2 * grid)
+        yield label, net, left, (middle - row) * (getattr(part, "pin_pitch", 0) or max(1, 2 * grid))
 
 
 def quad_package(part, a=None, b=None):
@@ -99,6 +100,8 @@ def _quad_side_counts(part):
 
 def package_width(part):
     """Measure the horizontal span between the outermost package contacts."""
+    if getattr(part, "pin_pitch", 0):
+        return (max(_quad_side_counts(part)) + 1) * part.pin_pitch if quad_package(part) else 3 * part.pin_pitch
     return max(_quad_side_counts(part)) + 2 if quad_package(part) else PACKAGE_WIDTH
 
 
@@ -106,6 +109,8 @@ def package_half_height(part, grid=0):
     """Measure the package body using only its physical pins for a chip."""
     if isinstance(part, ChipPackage):
         rows = max(1, (part.physical_pin_count + 1) // 2)
+        if part.pin_pitch:
+            return max(.8, (rows - 1) * part.pin_pitch / 2 + .45)
         return max(0.8, rows / 2 + 0.2, (rows - 1) / 2 * max(1, 2 * grid) + 0.2)
     return max(0.8, (len(part.package_pins) + 1) // 2 / 2 + 0.2,
                max((abs(offset) for _, _, _, offset in package_pins(part, grid)), default=0) + 0.2)
@@ -139,7 +144,10 @@ def package_contacts(part, a, b, grid=0):
     for side, count in zip(("left", "bottom", "right", "top"), _quad_side_counts(part)):
         for row in range(count):
             label, net = next(pins)
-            offset = ((count - 1) / 2 - row) * pitch
+            if getattr(part, "pin_pitch", 0):
+                offset = radius - (row + 1) * part.pin_pitch
+            else:
+                offset = ((count - 1) / 2 - row) * pitch
             if side == "left":
                 terminal, edge = (a[0], y + offset), (left, y + offset)
             elif side == "bottom":
@@ -186,7 +194,7 @@ def symbol_pins(part, a, b, top, *, grid=0):
             yield part.vminus, (center, a[1] - power_offset)
         if part.kind == "A":
             gain_offset = pin_offset(1.75, grid)
-            yield part.gain1, (a[0] + 1.5, a[1] + gain_offset)
+            yield part.gain1, (a[0] + pin_offset(1.5, grid), a[1] + gain_offset)
             yield part.gain8, (a[0] + 3.0, a[1] + gain_offset)
             yield part.bypass, (a[0] + 3.0, a[1] - gain_offset)
     elif part.kind == "Q":
@@ -265,6 +273,10 @@ class Layout:
     ground_rotations: dict = field(default_factory=dict)
     label_offsets: dict = field(default_factory=dict)
     pin_grid: float = 0
+    compact_labels: frozenset[str] = frozenset()
+    wires_visible: bool = True
+    wiring_positions: dict = field(default_factory=dict)
+    underside_wires: dict = field(default_factory=dict)
 
     @property
     def uses_packages(self):

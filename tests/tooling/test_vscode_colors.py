@@ -16,6 +16,11 @@ class RichTextMateColorTest(unittest.TestCase):
             raise unittest.SkipTest("VS Code's bundled TextMate/Oniguruma is unavailable.")
         executable, modules, wasm = engine
         cls.sources = {
+            "perfboard": [
+                "perf[A-R,1-24] exclude[Vwavegen, Negative, Positive];",
+                'include("perf[A-R,1-24] exclude[V1].ckt");',
+                "// perf[A-R,1-24] exclude[V1];",
+            ],
             "behavior": [
                 "analog {",
                 "    property offset: V = 2mV;",
@@ -83,6 +88,12 @@ class RichTextMateColorTest(unittest.TestCase):
         self.assert_scope("behavior",1,"mV","constant.other.unit.ooc")
         self.assert_scope("behavior",2,"true","constant.language.boolean.ooc")
         self.assert_scope("behavior",7,"analog","support.type.analog.ooc")
+
+    def test_perfboard_keywords_keep_comments_and_strings_protected(self):
+        self.assert_scope("perfboard", 0, "perf", "storage.type.ooc")
+        self.assert_scope("perfboard", 0, "exclude", "keyword.other.placement.ooc")
+        self.assert_scope("perfboard", 1, "perf[A-R,1-24] exclude[V1].ckt", "string.quoted.double.ooc")
+        self.assert_scope("perfboard", 2, "perf[A-R,1-24] exclude[V1]", "comment.line.double-slash.ooc")
 
     def test_dotted_model_fields_and_references_stay_whole_and_targets_are_components(self):
         for case,row,text in (("models",1,"common.min"),("models",2,"delay.rise"),

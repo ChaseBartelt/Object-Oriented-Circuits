@@ -5,14 +5,28 @@
 import subprocess
 import sys
 import unittest
+from contextlib import redirect_stderr, redirect_stdout
+from io import StringIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
+
+from circuitlab.model.graph import CircuitError
+from circuitlab.tooling.cli import _diagnostic, main
+from circuitlab.tooling.session import issue_for
 
 ROOT = Path(__file__).resolve().parents[2]
 FIXTURES = Path(__file__).resolve().parent.parent / "fixtures"
 
 
 class CliTest(unittest.TestCase):
+    def test_multiline_guidance_remains_one_editor_readable_diagnostic(self):
+        errors = StringIO()
+        with redirect_stderr(errors):
+            _diagnostic(Path("part.ckt"), "error", "Missing wire connections.\nUse R4(10) between(a,b).", 4)
+        self.assertEqual(errors.getvalue(),
+                         "part.ckt(4): error OOC001: Missing wire connections. Use R4(10) between(a,b).\n")
+
     def run_cli(self, command, path):
         return subprocess.run(
             [sys.executable, "-m", "circuitlab.tooling.cli", command, str(path)],
@@ -65,6 +79,35 @@ class CliTest(unittest.TestCase):
         self.assertIn("Check passed (digital chip).", checked.stdout)
         self.assertNotEqual(solved.returncode, 0)
         self.assertIn("Digital chips use the Verilog compiler.", solved.stderr)
+
+    def test_include_only_digital_file_uses_the_same_compiler_as_the_viewer(self):
+        with TemporaryDirectory() as folder:
+            entry = Path(folder) / "library.ckt"
+            child = entry.with_name("inverter.ckt")
+            entry.write_text('include("inverter.ckt");', encoding="utf-8")
+            child.write_text("chip Inverter(a,y) { a=input; y=output; y=!a; }", encoding="utf-8")
+            checked = self.run_cli("check", entry)
+            solved = self.run_cli("solve", entry)
+            self.assertEqual(checked.returncode, 0, checked.stderr)
+            self.assertIn("Check passed (digital chip).", checked.stdout)
+            self.assertIn("Digital chips use the Verilog compiler.", solved.stderr)
+            child.write_text("\nchip Inverter(a,y) { a=input; y=output; y=missing; }", encoding="utf-8")
+            invalid = self.run_cli("check", entry)
+            self.assertNotEqual(invalid.returncode, 0)
+            self.assertIn(f"{child}(2): error OOC001:", invalid.stderr)
+
+    def test_solver_error_guidance_and_locations_match_the_viewer(self):
+        with TemporaryDirectory() as folder:
+            path = Path(folder) / "nonlinear.ckt"
+            path.write_text("V1(5) between(in,0);\nR1(1k) between(in,0);", encoding="utf-8")
+            for line in (None, 2):
+                error = CircuitError("No operating point.", line, "NonlinearConvergence", path=path)
+                output, errors = StringIO(), StringIO()
+                with self.subTest(line=line), patch("circuitlab.tooling.cli.analyze", side_effect=error), \
+                        redirect_stdout(output), redirect_stderr(errors):
+                    self.assertEqual(main(["solve", str(path)]), 1)
+                location = f"{path}({line})" if line else str(path)
+                self.assertEqual(errors.getvalue(), f"{location}: error OOC001: {issue_for(error).message}\n")
 
     def test_digital_states_can_be_checked_but_not_electrically_solved(self):
         with TemporaryDirectory() as folder:

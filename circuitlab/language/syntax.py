@@ -464,7 +464,7 @@ def source_rows(source, *, legacy_markers=True):
         # Enable brace-aware splitting inside an active block or when a known
         # block header begins the line. Leave other top-level legacy rows on
         # their existing path rather than splitting raw punctuation everywhere.
-        if depth or re.search(r"(?:^|[;{}])\s*(?:opamp\s+[A-Za-z_][A-Za-z0-9_]*\b|op[0-9]+\b\s*\(|(?:analog|digital)\b(?:\s*:\s*math)?)", line, re.I) or any(
+        if depth or re.search(r"(?:^|[;{}])\s*(?:perf\b|opamp\s+[A-Za-z_][A-Za-z0-9_]*\b|op[0-9]+\b\s*\(|(?:analog|digital)\b(?:\s*:\s*math)?)", line, re.I) or any(
             header.match(line)
             for header in (SECTION, MAIN, DIGITAL_MAIN, INLINE, BATTERY_BRACE, TRANSISTOR,
                            OPAMP_BRACE, OPAMP_DECLARATION, MATH_BRACE, MATH_INLINE, CHIP, CONTROL_START)

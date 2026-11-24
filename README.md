@@ -297,6 +297,33 @@ The grey plot shows voltage divisions. Drag its left voltage axis upward to zoom
 
 **Optimize wiring** can compact empty space and move components as well as shorten wires. It checks electrical connections and grid alignment before accepting changes; **Ctrl+Z** restores the previous drawing. Saved layouts keep their positions until you explicitly optimize or move them.
 
+For a perfboard placement reference, put the board declaration at the bottom of `main`, after the component calls and measurements:
+
+```ooc
+main {
+    // Component calls and measurements go above the board declaration.
+    perf[A-R,1-24] exclude[VfpgaPower, VdaisyLeft, VdaisyRight, RscarlettLeft, RscarlettRight];
+}
+```
+
+This defines 18 lettered rows and 24 numbered columns at standard 2.54 mm hole spacing. The viewer colors the board green and places each physical chip pin on one hole. Two-terminal parts reserve at least three holes along one row or column, with their terminals two hole pitches apart. Excluded parts stay visible and electrically connected outside the board; the declaration does not change the simulated circuit. Omit `exclude[...]` when every part belongs on the board. See [the perfboard example](examples/perfboard.ckt).
+
+If parts or wiring do not fit yet, the viewer still opens the complete circuit for editing. Overflow parts appear beside the board. Placement and routing warnings remain visible until the layout fits; moving parts, undoing, and reopening a saved layout update those warnings.
+
+Right-click a component and select **Values only** to hide its title and show its value in smaller text. **Values only (all components)** applies this to the visible schematic. Hover to see the full component name and value; toggle the option again to restore titles. These display choices support Undo and are saved with the layout.
+
+For capacitors and other two-terminal perfboard parts, right-click **Adjust length…** and enter the pin length in hole positions, including both terminal holes. A length of **7** spans seven holes (six pitches), keeping the first terminal fixed. The minimum is three holes. This changes the physical placement only, supports Undo, and saves with the layout.
+
+Ctrl-click parts or Ctrl-drag a selection box to select several. Right-click a selected part or the selected area to apply **Adjust length…**, **Rotate clockwise**, or **Rotate counterclockwise** to the selection. Length changes apply to compatible two-terminal parts; rotation turns each selected part about its own center. Each batch operation is one Undo step.
+
+Perfboard wires use half-hole routing steps and can extend outside the board; physical part contacts still snap to whole holes. **Split** creates independently movable matching ends, which stay separate when nearby parts move or rotate. To arrange parts first, right-click and choose **Remove all wires**, move or rotate the parts, then choose **Add wires** to connect their current placement. This placement mode supports Undo and save/reopen without changing the simulated circuit.
+
+**Add wires** and **Optimize wiring** also match interchangeable resistors, capacitors, and other passive parts to nearer connections. Parts must have the same type, value, and model. Their schematic names and source connections move together between the existing physical positions; the source code and chip pin assignments stay intact. The result supports Undo and saves with the layout.
+
+Double-click an empty area of the green perfboard to show a second, mirrored **Underside** view beside it. Hole labels identify the same physical holes on both faces. Right-click a wire or connected component pin and choose **Wire underneath** to put that branch on the solder side. Back wires appear in copper on the underside and dashed on the component side. Drag them in either view to adjust their route; **Wire on top** returns them to the component side. Face assignments support Undo and save/reopen. Double-click the board again, or use **Hide underside**, to close the second view. Ordinary clicks leave the view open.
+
+**Optimize wiring** automatically considers both faces, choosing shorter routes and reducing crossings while keeping the physical part positions fixed. It can run wires beneath components and switch faces at available holes. The underside opens automatically when the result uses it; the complete optimization is one Undo step.
+
 ## FPGA
 
 The viewer's **FPGA...** window supports the DE10-Lite HYBRID01 profile: 50 MHz clock, SW0-SW9, LEDR0-LEDR9, HEX0-HEX5 seven-segment displays and optional AUDIO_OUT. The profile can add two-stage switch synchronization; it is not debouncing. Install Quartus with MAX 10 support and the USB-Blaster driver separately.

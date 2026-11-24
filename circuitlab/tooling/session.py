@@ -27,11 +27,11 @@ def issue_for(error):
     """Use the same actionable solver diagnostics in every presentation."""
     if error.code == "NonlinearConvergence":
         return Diagnostic(
-            "error", None,
+            "error", error.line,
             error.message + " Try a transient in Results or export to SPICE.",
             error.path,
         )
-    return Diagnostic("error", error.line or 1, error.message, error.path)
+    return Diagnostic("error", error.line, error.message, error.path)
 
 
 @dataclass

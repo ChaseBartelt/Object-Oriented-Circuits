@@ -7,6 +7,7 @@
     { "include": "#arm-rom" },
     { "include": "#strings" },
     { "include": "#interpolation" },
+    { "include": "#perfboard" },
     { "include": "#model-properties" },
     { "include": "#port-groups" },
     { "include": "#declarations" },
@@ -24,6 +25,12 @@
     { "include": "#punctuation" }
   ],
   "repository": {
+    "perfboard": {
+      "patterns": [
+        { "name": "storage.type.ooc", "match": "(?i)\\bperf\\b(?=\\s*\\[)" },
+        { "name": "keyword.other.placement.ooc", "match": "(?i)\\bexclude\\b(?=\\s*\\[)" }
+      ]
+    },
     "port-groups": {
       "patterns": [{ "include": "#input-ports" }, { "include": "#output-ports" }, { "include": "#wire-ports" }]
     },

@@ -73,6 +73,8 @@ def hood_levels(circuit, expanded):
         ))
 
     for name, parts in levels.items():
+        if name is None and circuit.perfboard is not None:
+            parts = [replace(part, pin_pitch=1) if isinstance(part, ChipPackage) else part for part in parts]
         if name is None and len(parts) == len(circuit.components) and all(
             part is original for part, original in zip(parts, circuit.components)
         ):
@@ -87,5 +89,6 @@ def hood_levels(circuit, expanded):
         )) if method else ()
         yield name, replace(
             circuit, components=parts, groups=[], behavior=[],
+            perfboard=circuit.perfboard if name is None else None,
             wire_taps=[tap for tap in circuit.wire_taps if tap.component in names],
         ), method.body if method else (), boundary

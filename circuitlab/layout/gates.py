@@ -419,7 +419,10 @@ def rebind_layout(layout, template, view, pins, boundary, *, template_pins=None)
         symbols=symbols,
         positions={part.name: a for part, a, _, _ in symbols},
         rotations={parts[name].name: turns for name, turns in layout.rotations.items()},
+        wiring_positions={parts[name].name: position for name, position in layout.wiring_positions.items()},
         wires=merge(layout.wires),
+        underside_wires={net: list(dict.fromkeys(tuple(sorted(edge)) for edge in edges))
+                         for net, edges in merge(layout.underside_wires).items()},
         junctions=merge(layout.junctions),
         labels={nets[net]: pos for net, pos in layout.labels.items()},
         boundary=boundary_positions,
@@ -429,5 +432,11 @@ def rebind_layout(layout, template, view, pins, boundary, *, template_pins=None)
         connectors=[(net, pos, *caption) for (net, pos), caption in connectors.items()],
         crossings={(nets[net], a, b): cuts for (net, a, b), cuts in layout.crossings.items()},
         label_offsets=label_offsets,
+        compact_labels=frozenset(parts[name].name for name in layout.compact_labels if name in parts),
     )
+    if not drawing.wires_visible:
+        names = {part.name for part, *_ in drawing.symbols}
+        return drawing if (len(drawing.symbols) == len(view.components)
+                           and names == {part.name for part in view.components}
+                           and drawing.wiring_positions.keys() == names) else None
     return drawing if preserves_nets(view, drawing) else None

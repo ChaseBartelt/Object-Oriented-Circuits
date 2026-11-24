@@ -11,13 +11,27 @@ import unittest
 
 from circuitlab.language.linked import CHIP_LIBRARY
 from circuitlab.math.digital import DigitalSimulation
-from circuitlab.tooling.session import CircuitSession
+from circuitlab.model.graph import CircuitError
+from circuitlab.tooling.session import CircuitSession, issue_for
 
 ROOT = Path(__file__).resolve().parents[2]
 DIVIDER = "V1(5) between(supply, 0);\nR1(1k) between(supply, out);\nR2(1k) between(out, 0);\n"
 
 
 class SessionTest(unittest.TestCase):
+    def test_file_level_error_does_not_invent_a_source_line(self):
+        path = ROOT / "floating.ckt"
+        issue = issue_for(CircuitError("The circuit has no reference node.", path=path))
+        self.assertIsNone(issue.line)
+        self.assertEqual(issue.path, path)
+        self.assertEqual(issue.severity, "error")
+
+    def test_convergence_guidance_preserves_an_available_source_location(self):
+        path = ROOT / "amplifier.ckt"
+        issue = issue_for(CircuitError("No operating point.", 7, "NonlinearConvergence", path=path))
+        self.assertEqual((issue.path, issue.line), (path, 7))
+        self.assertIn("Try a transient in Results or export to SPICE.", issue.message)
+
     def test_session_compiles_without_importing_qt_or_editor(self):
         script = """
 import sys

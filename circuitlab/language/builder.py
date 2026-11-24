@@ -35,7 +35,11 @@ from circuitlab.math.numbers import real, scalar
 from circuitlab.math.numbers import set_known as set_known
 from circuitlab.math.quantities import QUANTITIES
 from circuitlab.language.diodes import parse_diode
+from circuitlab.language.component_diagnostics import (
+    COMPONENT_NAME, component_call, contextual_component_error, missing_connections,
+)
 from circuitlab.model.diode import DIODE_NAME
+from circuitlab.language.perfboard import PERF_START, parse_perfboard
 from circuitlab.language.syntax import (
     AC_VOLTAGE,
     ASSIGNMENT,
@@ -110,6 +114,7 @@ class Group:
     # later translates those order numbers into original line/file locations.
     entry_order: dict[int, int] = field(default_factory=dict)
     entry_sources: dict[int, tuple[int, object]] = field(default_factory=dict)
+    path: object = None
 
 
 # A battery is a staged source declaration, possibly inside a group.
@@ -130,6 +135,7 @@ class Battery:
     # Remember use of Vneg independently of its numeric value so a later V
     # or repeated Vneg cannot silently redefine the same supply.
     negative_supply: bool = False
+    path: object = None
 
 
 # Normalize explicit Vpk/Apk or Vrms/Arms notation to an RMS phasor.
@@ -237,10 +243,16 @@ def compile_program(program, mode, *, render_only=False, model_preview=False):
         # Keep an error that already names its source line. Otherwise attach this
         # bound row's original line/file, rather than its position after expansion.
         except CircuitError as error:
-            if error.line is not None:
-                raise
-            raise CircuitError(str(error), line, error.code, path=binding.path) from None
-    circuit = compiler.finish(render_only)
+            raise CircuitError(error.message, error.line if error.line is not None else line,
+                               error.code, path=error.path or binding.path) from None
+    try:
+        circuit = compiler.finish(render_only)
+    except CircuitError as error:
+        # Finalization may point back to an opening row instead of the last row.
+        candidates = {binding.path for _, number, binding in program.rows
+                      if number == error.line and binding.path is not None}
+        origin = next(iter(candidates)) if len(candidates) == 1 else None
+        raise CircuitError(error.message, error.line, error.code, path=error.path or origin) from None
     # Unreduced group entries need provenance too, especially for reporting
     # an unspecified value before the group has become explicit components.
     for group in circuit.groups:
@@ -282,6 +294,7 @@ class Compiler:
         self.mode = mode
         self.active = None
         self.amp = None
+        self.amp_path = None
         self.battery = None
         self.amps = []
         self.opamp_config = None
@@ -290,11 +303,14 @@ class Compiler:
         self.pending_override = False
         self.audios = []
         self.math_block = None
+        self.math_path = None
         self.properties_open = None
         self.property_rows = []
         self.math_rows = []
         self.supply_totals = []
         self.transistor = None
+        self.transistor_path = None
+        self.current_path = None
         self.transistors = []
         self.sources = []
         self.names = set()
@@ -311,7 +327,7 @@ class Compiler:
     # Opening a child changes active; closing it restores its saved parent.
     # Header pins name the initial boundary and optional final boundary.
     def start_group(self, mode, line, name="", pins=(), *, braced=False):
-        group = Group(mode, line, self.active, name, braced=braced)
+        group = Group(mode, line, self.active, name, braced=braced, path=self.current_path)
         if pins:
             group.wires.append((0, pins[0]))
             self.circuit.named_wires.update(pins)
@@ -334,7 +350,16 @@ class Compiler:
     # component. The same token can have different roles inside a battery, group, or device.
     def read(self, text, line, binding):
         """Consume a statement in the current device, source, or group context."""
+        self.current_path = binding.path
         text = text.removesuffix(";").rstrip()
+        if PERF_START.match(text):
+            if (binding.scope or self.group or self.math_block is not None or self.amp
+                    or self.opamp_config is not None or self.battery or self.transistor):
+                raise CircuitError("Put perf[...] at the top level or directly inside main.")
+            if self.circuit.perfboard is not None:
+                raise CircuitError("Declare only one perfboard with perf[rows,columns].")
+            self.circuit.perfboard = parse_perfboard(text, line=line, path=binding.path)
+            return
         if self.math_block is not None:
             digital, opened, priority = self.math_block
             declaration = PROPERTY_DECLARATION.fullmatch(text)
@@ -416,6 +441,7 @@ class Compiler:
             self.pending_override = False
             if math_block:
                 self.math_block = digital, line, priority
+                self.math_path = binding.path
             else:
                 self.add_equation(math_inline[2], digital, binding, line, priority)
             return
@@ -466,6 +492,7 @@ class Compiler:
                 )
             if amp_name:
                 self.amp = (amp_name[1], line, {})
+                self.amp_path = binding.path
             else:
                 try:
                     pins = parse_wires(call[2])
@@ -555,6 +582,7 @@ class Compiler:
                 self.transistor_call(binding.part(name), arguments, line, binding)
             else:
                 self.transistor = (binding.part(transistor[1]), line, {})
+                self.transistor_path = binding.path
             return
         # Reusable method expansion belongs upstream. A remaining section header
         # here opens an electrical block with actual terminal names; a header
@@ -711,6 +739,7 @@ class Compiler:
                 (battery_start[1] or f"Battery {len(self.sources) + 1}").strip(),
                 line,
                 braced_battery is not None,
+                path=binding.path,
             )
             return
         if re.match(r"\(\s*end\s+battery\b", text, re.I):
@@ -729,7 +758,10 @@ class Compiler:
                 lambda match: ("Vmag" if match[1].lower() == "vrms" else "w") + " =",
                 text,
             )
-            self.battery_value(ASSIGNMENT.fullmatch(text), binding)
+            setting = ASSIGNMENT.fullmatch(text)
+            self.battery_value(setting, binding)
+            if setting and setting[1] in FREQUENCY:
+                self.circuit.quantity_origins.setdefault(setting[1], (line, binding.path))
             return
         assignment = ASSIGNMENT.fullmatch(text)
         # Retain the legacy (series)/(parallel) form with explicit matching end
@@ -748,7 +780,7 @@ class Compiler:
                 self.start_group(kind, line)
             return
         if assignment and assignment[1] == "measure":
-            self.measure(assignment[2], binding)
+            self.measure(assignment[2], binding, line=line)
             return
         # The one-wire source shorthand uses node->0 for voltage and 0->node
         # for current, making positive current inject into the named net.
@@ -769,11 +801,20 @@ class Compiler:
             self.group_entry(assignment, binding)
             return
         if waveform := re.fullmatch(r"([iv])\s*\(\s*t\s*\)\s*=\s*(.*)", text):
+            before = set(self.circuit.known)
             self.waveform(waveform[1].upper(), waveform[2])
+            for key in self.circuit.known.keys() - before:
+                self.circuit.quantity_origins.setdefault(key, (line, binding.path))
             return
-        if assignment and "_" not in assignment[1]:
+        if assignment:
             self.assignment(*assignment.groups(), binding)
+            if assignment[1] in self.circuit.known:
+                self.circuit.quantity_origins.setdefault(assignment[1], (line, binding.path))
             return
+        if call and component_call(call[1], call[2]):
+            raise CircuitError(missing_connections(call[1], call[2]))
+        if COMPONENT_NAME.fullmatch(text) and len(text) > 1:
+            raise CircuitError(missing_connections(text, "value"))
         self.node_row(text, binding)
 
     # Defer equation lowering until every property default/patch is known.
@@ -1228,7 +1269,8 @@ class Compiler:
         # A source-local power request targets its bound display label, which
         # will be attached to the generated battery component during elaboration.
         if key == "measure" and raw.upper() == "P":
-            self.circuit.probes.append(Probe("P", (binding.part(label),)))
+            self.circuit.probes.append(Probe("P", (binding.part(label),),
+                                             source_line=self.battery.line, path=binding.path))
             return
         if (
             key != "Vdc"
@@ -1306,6 +1348,14 @@ class Compiler:
     # row order; one-letter anonymous entries get generated labels at expansion.
     # Keep a missing value as None so drawing is possible without simulating it.
     def group_entry(self, assignment, binding):
+        try:
+            self._group_entry(assignment, binding)
+        except CircuitError as error:
+            if assignment:
+                raise contextual_component_error(assignment[1], error) from None
+            raise
+
+    def _group_entry(self, assignment, binding):
         if assignment and assignment[1][0].upper() == "D":
             name, raw = assignment.groups()
             model = parse_diode(name, raw)
@@ -1359,7 +1409,7 @@ class Compiler:
         self.group.entry_order[len(self.group.entries)] = self.order
         self.group.entries.append((kind, name, value))
 
-    def measure(self, raw, binding):
+    def measure(self, raw, binding, *, line=None):
         """Record an explicit probe or the legacy group measurement shorthand."""
         if not raw or self.mode == "transient":
             raise CircuitError("Circuit measurements use a steady-state mode.")
@@ -1368,14 +1418,14 @@ class Compiler:
         kind, *targets = raw.split()
         kind = kind.upper()
         if kind in {"V", "R"} and len(targets) == 2:
-            self.circuit.probes.append(Probe(kind, tuple(map(binding.wire, targets))))
+            self.circuit.probes.append(Probe(kind, tuple(map(binding.wire, targets)), source_line=line, path=binding.path))
         # For a whole-group probe, leave targets empty and temporarily put the
         # group index in Probe.line. elaborate() replaces it with actual terminals
         # and the group's source line once endpoints exist.
         elif kind in {"V", "R"} and not targets and self.group:
-            self.circuit.probes.append(Probe(kind, (), self.active))
+            self.circuit.probes.append(Probe(kind, (), self.active, source_line=line, path=binding.path))
         elif kind in {"I", "P"} and len(targets) == 1:
-            self.circuit.probes.append(Probe(kind, (binding.part(targets[0]),)))
+            self.circuit.probes.append(Probe(kind, (binding.part(targets[0]),), source_line=line, path=binding.path))
         # Legacy measure=Ix inside a group inserts a current-probe P marker.
         # It later becomes a zero-volt branch in series with the measured path.
         elif self.group and re.fullmatch(r"I[A-Za-z0-9_]*", raw, re.I):
@@ -1446,6 +1496,11 @@ class Compiler:
         else:
             info = QUANTITIES.get(self.mode, QUANTITIES["ac"])
             if key not in info or (self.mode == "mixed" and key not in FREQUENCY):
+                # Named parts outside structural groups need explicit terminals.
+                # Keep analysis quantities in the normal diagnostic path even
+                # when they belong to another mode (for example XL or V0).
+                if not any(key in quantities for quantities in QUANTITIES.values()) and COMPONENT_NAME.fullmatch(key):
+                    raise CircuitError(missing_connections(key, raw))
                 raise CircuitError(f'Unknown quantity "{key}" for this analysis.')
             set_known(c.known, key, scalar(raw, info[key][1]))
 
@@ -1475,21 +1530,47 @@ class Compiler:
         if name[0].upper() == "P":
             if self.mode == "transient":
                 raise CircuitError("Use DC mode and Run in Results for a potentiometer time simulation.")
-            p, wiper, n = map(binding.wire, parse_wires(wires, 3))
-            value, position = parse_potentiometer(raw)
+            p, wiper, n = map(binding.wire, self.component_wires(name, raw, wires, 3))
+            try:
+                value, position = parse_potentiometer(raw)
+            except CircuitError as error:
+                raise contextual_component_error(name, error) from None
             name = self.component_name(name, binding)
             self.circuit.components.append(Component(name, "P", p, n, value, label=name,
                                                     order=self.order, wiper=wiper, position=position))
             self.circuit.named_wires.update((p, wiper, n))
             self.method_parts |= bool(binding.scope)
             return
-        p, n = parse_wires(wires, 2)
+        p, n = self.component_wires(name, raw, wires, 2)
         self.add_node_component(name, raw, p, n, binding)
+
+    @staticmethod
+    def component_wires(name, value, wires, count):
+        try:
+            return parse_wires(wires, count)
+        except CircuitError:
+            supplied = len(wires.split(",")) if wires.strip() else 0
+            problem = (f"requires {count} wire names, but received {supplied}"
+                       if supplied != count else "has an invalid or empty wire name")
+            example = "high, wiper, low" if count == 3 else "wire1, wire2"
+            raise CircuitError(f'Component "{name}" {problem}. '
+                               f'Use {name}({value}) between({example}).') from None
 
     # Create explicit-terminal parts directly, preserving their bound instance names.
     # Special devices such as switches need their own state parsing before ordinary unit parsing.
     def add_node_component(self, name, raw, p, n, binding):
+        try:
+            self._add_node_component(name, raw, p, n, binding)
+        except CircuitError as error:
+            raise contextual_component_error(name, error) from None
+
+    def _add_node_component(self, name, raw, p, n, binding):
         kind = name[0].upper()
+        if kind == "X":
+            raise CircuitError(
+                f'Reactance "{name}" uses assignments inside series or parallel blocks. '
+                "For explicit wires, use a complex impedance such as Z1(j10) between(wire1, wire2) in AC mode."
+            )
         if kind == "D":
             if self.mode == "transient":
                 raise CircuitError("Use DC/AC mode and the oscilloscope for diode time simulation.")
@@ -1527,7 +1608,8 @@ class Compiler:
             )
         if kind not in "RCLZVI":
             raise CircuitError(
-                f'Component "{name}" needs a name beginning R, C, L, Z, V, I, or S.'
+                f'Component "{name}" needs a supported prefix: R, C, L, Z, D, P, V, I, or S. '
+                "For example, R1(1k) between(wire1, wire2)."
             )
         pulse = None
         # A missing number is None with an explanatory label. Preserve this for
@@ -1593,23 +1675,24 @@ class Compiler:
         # Close every syntactic state before interpreting electrical connectivity.
         # Opening lines retained in the pending records locate missing terminators.
         if self.math_block is not None:
-            raise CircuitError("Close the mathematical behavior block with }.", self.math_block[1])
+            raise CircuitError("Close the mathematical behavior block with }.", self.math_block[1], path=self.math_path)
         if self.amp:
-            raise CircuitError("Missing (end opamp).", self.amp[1])
+            raise CircuitError("Missing (end opamp).", self.amp[1], path=self.amp_path)
         if self.opamp_config is not None:
             raise CircuitError("Close the analog model block with }.", self.opamp_config.line, path=self.opamp_config.path)
         if self.pending_override:
             raise CircuitError("Put @override directly above an analog or digital model block.")
         if self.transistor:
             name, line, _ = self.transistor
-            raise CircuitError(f"Close transistor {name} with }}.", line)
+            raise CircuitError(f"Close transistor {name} with }}.", line, path=self.transistor_path)
         if self.battery:
             closing = "}" if self.battery.braced else "(end battery)"
-            raise CircuitError(f"Missing {closing}.", self.battery.line)
+            raise CircuitError(f"Missing {closing}.", self.battery.line, path=self.battery.path)
         if self.group:
             raise CircuitError(
                 f"Missing closing marker for {self.group.name or self.group.mode}.",
                 self.group.line,
+                path=self.group.path,
             )
         self.compile_math()
         if self.inline_chain is not None:
@@ -1754,7 +1837,7 @@ class Compiler:
         c.behavior = list(driven.values())
         if self.amps and c.grounds != {"0"}:
             self.connect_amp_returns()
-        if render_only and not c.components and not c.instances and not c.behavior:
+        if render_only and not c.components and not c.instances and not c.behavior and c.perfboard is None:
             raise CircuitError(
                 "Enter a circuit with component rows or series/parallel blocks to render it."
             )
@@ -1825,6 +1908,7 @@ class Compiler:
             raise CircuitError(
                 "Bare blocks in main need one grounded source. Use series(input, output) or parallel(input, output) to wire them explicitly.",
                 group.line,
+                path=group.path,
             )
         supply, ground = supplies[0]
         # A return explicitly set on the last block overrides the supply's default
@@ -1903,12 +1987,13 @@ class Compiler:
         # Register one explicit name for a provisional junction. Conflicting names
         # are source errors; an already declared ground cannot be renamed through
         # this path into a different wire identity.
-        def alias(node, wire, line):
+        def alias(node, wire, line, path=None):
             existing = node if node in c.grounds else aliases.get(node)
             if existing is not None and existing != wire:
                 raise CircuitError(
                     f'Wire names "{existing}" and "{wire}" refer to the same junction.',
                     line,
+                    path=path,
                 )
             aliases[node] = wire
 
@@ -1938,11 +2023,12 @@ class Compiler:
                     raise CircuitError(
                         "The output wire and ground must name the same return.",
                         group.line,
+                        path=group.path,
                     )
                 if group.parent is not None:
                     parent = c.groups[group.parent]
                     if parent.mode == "series":
-                        alias(last, group.ground, group.line)
+                        alias(last, group.ground, group.line, group.path)
                 last = group.ground
                 nodes[i] = first, last
             count = len(group.entries)
@@ -1956,7 +2042,7 @@ class Compiler:
                 ]
                 endpoints = list(zip(junctions, junctions[1:]))
                 for position, name in group.wires:
-                    alias(junctions[position], name, group.line)
+                    alias(junctions[position], name, group.line, group.path)
             # Parallel entries initially share both rails. Strong wire bindings can
             # name only the first/last boundary; terminal taps are handled separately.
             else:
@@ -1966,8 +2052,9 @@ class Compiler:
                         raise CircuitError(
                             "Put parallel wires before the first or after the last branch.",
                             group.line,
+                            path=group.path,
                         )
-                    alias(first if position == 0 else last, name, group.line)
+                    alias(first if position == 0 else last, name, group.line, group.path)
                 # Put a current-probe marker in series with exactly the following branch:
                 # split that branch at a private probe node, rather than shorting the
                 # parallel input/output rails with the probe's zero-volt source.
@@ -1987,6 +2074,7 @@ class Compiler:
                         raise CircuitError(
                             "Put a branch ground after the component being measured.",
                             group.line,
+                            path=group.path,
                         )
                     endpoints[j] = endpoints[j][0], ground
             # A tap between entries refers to the next entry's input terminal; a tap
@@ -2010,7 +2098,7 @@ class Compiler:
                 if kind == "B":
                     part, wires = self.sources[value]
                     for node, wire in zip((p, n), wires):
-                        alias(node, wire, group.line)
+                        alias(node, wire, group.line, group.path)
                     if part.kind == "I":
                         reversed_source = True
                         p, n = n, p
@@ -2069,7 +2157,7 @@ class Compiler:
             part, pin, raw = terminal(group, entry, side)
             node = resolve(raw)
             if node.startswith("@") and name not in c.grounds:
-                alias(node, name, line)
+                alias(node, name, line, c.groups[group].path)
             positions.append((name, raw, part.name, pin, line))
 
         # Then resolve all aliases and build persistent WireTap records. Reusing

@@ -20,6 +20,7 @@ from circuitlab.language.gates import GATE_HELP, gate_accepts, gate_body, gate_c
 from circuitlab.model.graph import CircuitError, MethodInstance
 from circuitlab.math.numbers import scalar
 from circuitlab.language.diodes import parse_diode
+from circuitlab.language.component_diagnostics import component_call, missing_connections
 from circuitlab.language.syntax import (
     ASSIGNMENT,
     BATTERY_BRACE,
@@ -525,6 +526,8 @@ def expand_main(rows: list[SourceRow], instances: list[MethodInstance], *, impor
                 if top_level or TRANS_CALL.fullmatch(call[1]) or SWITCH_CALL.fullmatch(call[1]):
                     yield text, line, parent
                     continue
+                if component_call(call[1], call[2]):
+                    raise CircuitError(missing_connections(call[1], call[2]), line, path=parent.path)
                 raise CircuitError(f'Unknown section "{call[1]}".', line, path=parent.path)
             else:
                 method = definitions[key]

@@ -6,12 +6,14 @@
 import json
 import math
 import os
+from dataclasses import replace
 from pathlib import Path
 import re
 from tempfile import NamedTemporaryFile
 import time
 
 from circuitlab.layout.geometry import Layout
+from circuitlab.layout.board_layers import remap_wire_layers, wire_subset
 from circuitlab.layout.checks import preserves_nets
 from circuitlab.layout.checks import mark_crossings as _mark_crossings
 from circuitlab.layout.wire_edit import replace_route
@@ -247,16 +249,24 @@ def pack_layout(layout):
         "crossings": [[net, a, b, cuts] for (net, a, b), cuts in layout.crossings.items()],
         "label_offsets": list(layout.label_offsets.items()),
         **({"pin_grid": layout.pin_grid} if layout.pin_grid else {}),
+        **({"compact_labels": sorted(layout.compact_labels)} if layout.compact_labels else {}),
+        **({"underside_wires": layout.underside_wires} if layout.underside_wires else {}),
+        **({"wires_visible": False,
+            "wiring_positions": [[name, a, b, turns]
+                                 for name, (a, b, turns) in sorted(layout.wiring_positions.items())]}
+           if not layout.wires_visible else {}),
     }
 
 
 # Bind records to current parts and verify contacts before returning a usable drawing.
 # A structurally valid JSON object is insufficient if its electrical wiring no longer agrees.
-def restore_layout(record, circuit, boundary):
+def restore_layout(record, circuit, boundary, *, editable_perfboard=False):
     """Bind saved coordinates to the current parts and verify their wiring."""
     def point(position):
+        if not isinstance(position, (list, tuple)) or len(position) != 2:
+            raise ValueError("Invalid schematic coordinate")
         x, y = position
-        if not (math.isfinite(x) and math.isfinite(y)):
+        if not all(type(value) in (int, float) and math.isfinite(value) for value in (x, y)):
             raise ValueError("Invalid schematic coordinate")
         return x, y
 
@@ -271,10 +281,17 @@ def restore_layout(record, circuit, boundary):
         return value
 
     try:
+        wires_visible = record.get("wires_visible", True)
+        if type(wires_visible) is not bool:
+            return None
         grid = record.get("pin_grid", 0)
         if not isinstance(grid, (int, float)) or not math.isfinite(grid) or not 0 <= grid <= 16:
             return None
         parts = {part.name: part for part in circuit.components}
+        compact_labels = record.get("compact_labels", [])
+        if (not isinstance(compact_labels, list)
+                or any(not isinstance(name, str) or name not in parts for name in compact_labels)):
+            return None
         symbols = []
         for name, kind, nets, a, b, top in record["symbols"]:
             part = parts[name]
@@ -284,8 +301,55 @@ def restore_layout(record, circuit, boundary):
             if a == b:
                 return None
             symbols.append((part, a, b, top))
+        wiring_rows = record.get("wiring_positions", [])
+        if not isinstance(wiring_rows, list):
+            return None
+        wiring_positions = {}
+        for row in wiring_rows:
+            if not isinstance(row, list) or len(row) != 4:
+                return None
+            name, a, b, turns = row
+            if not isinstance(name, str) or name not in parts or name in wiring_positions:
+                return None
+            a, b = point(a), point(b)
+            if a == b:
+                return None
+            wiring_positions[name] = (a, b, rotation(turns))
+        if not wires_visible and (
+                len(symbols) != len(parts)
+                or {part.name for part, *_ in symbols} != parts.keys()
+                or wiring_positions.keys() != parts.keys()):
+            return None
+        wires = {net: [(point(a), point(b)) for a, b in edges]
+                 for net, edges in record["wires"].items()}
+        underside_rows = record.get("underside_wires", {})
+        if not isinstance(underside_rows, dict):
+            return None
+        known_nets = {net for part in parts.values() for net in part.terminal_nets} | set(boundary)
+        underside_wires = {}
+        for net, rows in underside_rows.items():
+            if not isinstance(net, str) or net not in known_nets or net not in wires or not isinstance(rows, list):
+                return None
+            edges, seen = [], set()
+            for row in rows:
+                if not isinstance(row, (list, tuple)) or len(row) != 2:
+                    return None
+                a, b = point(row[0]), point(row[1])
+                edge = tuple(sorted((a, b)))
+                if a == b or edge in seen:
+                    return None
+                seen.add(edge)
+                edges.append(edge)
+            if not wire_subset(edges, wires[net]):
+                return None
+            if edges:
+                underside_wires[net] = edges
         drawing = Layout(
             pin_grid=grid,
+            compact_labels=frozenset(compact_labels),
+            wires_visible=wires_visible,
+            wiring_positions=wiring_positions,
+            underside_wires=underside_wires,
             symbols=symbols,
             positions={part.name: a for part, a, _, _ in symbols},
             rotations={name: rotation(turns) for name, turns in record["rotations"].items()},
@@ -294,8 +358,7 @@ def restore_layout(record, circuit, boundary):
             ground_rotations={point(p): rotation(turns) for p, turns in record["ground_rotations"]},
             connectors=[(net, point(p), name, bool(left), bool(below))
                         for net, p, name, left, below in record["connectors"]],
-            wires={net: [(point(a), point(b)) for a, b in edges]
-                   for net, edges in record["wires"].items()},
+            wires=wires,
             junctions={net: [point(p) for p in positions]
                        for net, positions in record["junctions"].items()},
             labels={net: point(p) for net, p in record["labels"].items()},
@@ -308,7 +371,23 @@ def restore_layout(record, circuit, boundary):
             },
         )
         if drawing.boundary.keys() <= set(boundary):
+            if not wires_visible:
+                # The retained routes belong to the saved wiring positions;
+                # placement mode deliberately lets the current pins move away.
+                return drawing
+            before_repair = (
+                replace(drawing, wires={net: list(edges) for net, edges in drawing.wires.items()})
+                if drawing.underside_wires else None
+            )
             _restore_ground_boundaries(drawing, circuit.grounds)
+            if before_repair is not None:
+                drawing = remap_wire_layers(before_repair, drawing)
+            if (editable_perfboard and circuit.perfboard is not None and grid == 1
+                    and len(symbols) == len(parts)
+                    and {part.name for part, *_ in symbols} == parts.keys()):
+                # Retain unfinished board placements so users can reopen and
+                # repair them. The viewer revalidates their fit and routing.
+                return drawing
             if preserves_nets(circuit, drawing):
                 return drawing
     except (AttributeError, KeyError, TypeError, ValueError, OverflowError):

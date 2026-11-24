@@ -1,0 +1,29 @@
+// A labeled perfboard placement reference at 2.54 mm hole spacing.
+// External instruments and supplies stay visible outside the green board.
+
+chip Amplifier(trim1, minus, plus, negative, nc, out, positive, trim2) {
+    op1(plus, minus, out, positive, negative);
+}
+
+battery Positive {
+    V = 5;
+    wire = vcc;
+    wire = 0;
+}
+battery Negative {
+    V = -5;
+    wire = vee;
+    wire = 0;
+}
+Vwavegen(0.1V) between(signal, 0);
+
+main {
+    Rin(10k) between(signal, inverting);
+    Rfeedback(10k) between(output, inverting);
+    Amplifier(trim1, inverting, 0, vee, nc, output, vcc, trim2);
+    Rload(10k) between(output, 0);
+    Cpositive(100nF) between(vcc, 0);
+    Cnegative(100nF) between(vee, 0);
+    measure = V output 0;
+    perf[A-R,1-24] exclude[Vwavegen, Negative, Positive];
+}

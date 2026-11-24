@@ -7,7 +7,6 @@ import math
 import re
 from dataclasses import dataclass, field, replace
 
-from circuitlab.language.comments import mask_comments
 from circuitlab.language.compiler import compile_circuit
 from circuitlab.model.graph import Circuit, CircuitError
 from circuitlab.math.equations import solve_known
@@ -133,8 +132,17 @@ def analyze(circuit, backend=None):
 
     # Explicit component networks carry their own source and part values.
     # Only global frequency quantities may accompany that representation.
-    if set(known) - (FREQUENCY if mode in {"ac", "mixed"} else set()):
-        raise CircuitError("Use only frequency quantities alongside a circuit list.")
+    misplaced = set(known) - (FREQUENCY if mode in {"ac", "mixed"} else set())
+    if misplaced:
+        key = max(sorted(misplaced), key=lambda key: circuit.quantity_origins.get(key, (0, None))[0] or 0)
+        line, path = circuit.quantity_origins.get(key, (None, None))
+        raise CircuitError(
+            f'Global quantity "{key}" cannot be combined with an explicitly wired circuit. '
+            "Put values in component declarations, such as R1(1k) between(a, b) or V1(5V) between(a, 0). "
+            + ("Only f, T, or w may be global quantities alongside this AC circuit." if mode in {"ac", "mixed"}
+               else "Use quantity-only input or explicit component connections for a DC circuit."),
+            line, path=path,
+        )
     frequency = None
     # Normalize frequency inputs such as f, period T, and angular frequency w.
     # The backend decides whether a particular AC network needs a frequency.
@@ -199,21 +207,37 @@ class Diagnostic:
 def diagnostics(source, result):
     """Report both solver messages and dangling resistor banks."""
     # Promote contradictory inputs to errors; other solver messages remain warnings.
-    # Messages without a more specific source location initially point to line 1.
-    issues = [
-        Diagnostic("error" if conflicts([note]) else "warning", 1, note)
-        for note in result.diagnostics
-    ]
-    # Ignore comments when locating the code responsible for a wiring warning.
-    lines = mask_comments(source).splitlines()
-    parts = result.circuit.components
+    # General advice has no invented source line; quantities retain declaration
+    # origins even when included files contributed the values.
+    circuit = result.circuit
+    issues = []
+    for note in result.diagnostics:
+        keys = set(re.findall(r"\b[A-Za-z][A-Za-z0-9_]*\b", note))
+        origins = [origin for key, origin in circuit.quantity_origins.items() if key in keys and origin[0] is not None]
+        line, path = max(origins, key=lambda origin: origin[0]) if origins else (None, None)
+        if not origins:
+            paths = {origin[1] for origin in circuit.quantity_origins.values() if origin[1] is not None}
+            if len(paths) == 1:
+                path, = paths
+        message = note
+        if note == "Time constant tauRL is undefined at R = 0.":
+            message += " Use a positive resistance for a finite RL time constant."
+        issues.append(Diagnostic("error" if conflicts([note]) else "warning", line, message, path))
+    parts = circuit.components
     # Ideal op-amp inputs sense voltage without drawing input current; they
     # should not be mistaken for an accidentally unused resistor-bank node.
     inputs = {pin for p in parts if p.kind in {"O", "A"} for pin in (p.in_plus, p.in_minus)}
-    inputs.update(net for cmp in result.circuit.comparators
+    inputs.update(net for cmp in circuit.comparators
                   for net in (cmp.plus,cmp.minus,cmp.collector,cmp.emitter,cmp.vplus,cmp.vminus))
-    for node in result.circuit.simulation_nodes:
-        if node == "0" or node in inputs:
+    inputs.update(net for equation in circuit.behavior
+                  for net in (equation.output, equation.reference, *equation.inputs))
+    interfaces = set(circuit.connector_pins).union(circuit.port or ())
+    references = {"0"}
+    for network in (result.network, result.dc_network):
+        if network is not None:
+            references.update(node for node, reference in network.references.items() if node == reference)
+    for node in circuit.simulation_nodes:
+        if node in references or node in inputs or node in interfaces:
             continue
         # Find every component touching this node, then look at the other ends.
         incident = [
@@ -228,20 +252,21 @@ def diagnostics(source, result):
             or any(p.kind != "R" for p in incident)
         ):
             continue
-        # Match the complete wire name, including names containing dots/hyphens.
-        # Escape it because a wire name must not become a regular expression.
-        pattern = re.compile(r"(?<![\w.-])" + re.escape(node) + r"(?![\w.-])")
-        # Attach the warning to the last code line mentioning this node.
-        line = max(
-            (i for i, text in enumerate(lines, 1) if pattern.search(text)), default=1
-        )
+        # Prefer actual component declarations over a later measurement or an
+        # entry-file line containing the same text as an imported private net.
+        located = [part for part in incident if part.name in circuit.component_lines]
+        part = max(located, key=lambda part: (part.order, circuit.component_lines[part.name])) if located else None
+        line = circuit.component_lines[part.name] if part is not None else None
+        path = circuit.component_files.get(part.name) if part is not None else None
         neighbor = next(iter(neighbors))
         issues.append(
             Diagnostic(
                 "warning",
                 line,
                 f'Node "{node}" only connects to "{neighbor}" through parallel resistors. '
-                "The bank has no return path and carries no current.",
+                "The bank has no return path and carries no current. "
+                "Check whether this node should connect to another component or return wire.",
+                path,
             )
         )
     return issues
@@ -465,6 +490,7 @@ def add_probes(result, network, ac, backend):
     prefix = ("AC " if ac else "DC ") if c.mode == "mixed" else ""
     for probe in c.probes:
         kind, targets = probe.kind, probe.targets
+        line = probe.source_line if probe.source_line is not None else probe.line
         # Current and power probes name a component rather than a pair of nodes.
         if kind in "IP":
             target = targets[0]
@@ -479,10 +505,11 @@ def add_probes(result, network, ac, backend):
                 None,
             )
             if i is None:
-                raise CircuitError(f'Unknown component "{target}".')
+                raise CircuitError(f'Unknown component "{target}" in measure = {kind} {target}. '
+                                   f"Use the name of a declared component, such as measure = {kind} R1.", line, path=probe.path)
             if c.components[i].name in network.unavailable_components:
                 raise CircuitError("This internal schematic component is not resolved by the comparator macromodel; probe its declared terminals instead.",
-                                   probe.line,"UnavailableModelProbe")
+                                   line,"UnavailableModelProbe", path=probe.path)
             # A potentiometer exposes current entering its high terminal; its two
             # internal resistor legs have already been folded into one public component.
             if kind == "I":
@@ -511,17 +538,18 @@ def add_probes(result, network, ac, backend):
             resolved = tuple(map(c.resolve_wire, targets))
             if any(node in network.unavailable_nodes for node in resolved):
                 raise CircuitError("Comparator internal voltages are unavailable in the behavioral model; probe its declared terminals instead.",
-                                   probe.line,"UnavailableModelProbe")
+                                   line,"UnavailableModelProbe", path=probe.path)
             # Require existing nodes. Different aliases of one net may measure 0 V,
             # but they cannot define a two-terminal equivalent resistance.
-            if (
-                len(set(targets)) != 2
-                or (kind != "V" and resolved[0] == resolved[1])
-                or any(node not in network.nodes for node in resolved)
-            ):
+            missing = tuple(dict.fromkeys(node for node in resolved if node not in network.nodes))
+            if missing:
                 raise CircuitError(
-                    "Use two distinct existing nodes to measure voltage or resistance."
+                    f'Unknown measurement {"node" if len(missing) == 1 else "nodes"}: {", ".join(missing)}. '
+                    "Use wire names connected in this circuit, such as measure = V out 0.", line, path=probe.path,
                 )
+            if kind != "V" and resolved[0] == resolved[1]:
+                raise CircuitError("Equivalent resistance needs two distinct nodes. "
+                                   "Choose two different connected wires, such as measure = R out 0.", line, path=probe.path)
             # Grouped probes keep their source-line context; explicit probes show names.
             name = (
                 f"group at line {probe.line}"
@@ -532,7 +560,8 @@ def add_probes(result, network, ac, backend):
             # Voltages from separate reference domains cannot be directly subtracted.
             if network.references.get(p) != network.references.get(n):
                 raise CircuitError(
-                    "Measure between two nodes in the same connected circuit."
+                    f'Nodes "{targets[0]}" and "{targets[1]}" use different voltage references. '
+                    "Measure between two nodes in the same connected circuit.", line, path=probe.path,
                 )
             if kind == "V":
                 # The requested polarity is the first node minus the second node.
@@ -544,12 +573,14 @@ def add_probes(result, network, ac, backend):
             else:
                 # Ask the backend for the equivalent seen at this port, using the same
                 # analysis mode and frequency as the operating point being measured.
-                test = backend.solve(
-                    c, ac=ac, frequency=network.frequency, port=resolved
-                )
+                try:
+                    test = backend.solve(c, ac=ac, frequency=network.frequency, port=resolved)
+                except CircuitError as error:
+                    raise CircuitError(error.message, error.line if error.line is not None else line,
+                                       error.code, path=error.path or probe.path) from None
                 # Propagate the backend's explanation if no valid equivalent can be obtained.
                 if not test.equivalent:
-                    raise CircuitError(test.equivalent_issue)
+                    raise CircuitError(test.equivalent_issue, line, path=probe.path)
                 reading = (
                     f"Measured {'impedance' if ac else 'resistance'} ({name})",
                     "Z_eq = V_test / 1 A (sources off)",

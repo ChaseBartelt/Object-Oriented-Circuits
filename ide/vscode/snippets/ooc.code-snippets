@@ -1,4 +1,9 @@
 {
+  "Perfboard area": {
+    "prefix": "perf",
+    "body": "perf[${1:A-R},${2:1-24}] exclude[${3:VfpgaPower, VdaisyLeft, VdaisyRight, RscarlettLeft, RscarlettRight}];$0",
+    "description": "Add at the bottom of main, after components and measurements; excluded parts stay visible off the board."
+  },
   "OOC divider example": {
     "prefix": "ooc-divider",
     "body": [
